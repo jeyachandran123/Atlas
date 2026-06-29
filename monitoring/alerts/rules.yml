@@ -1,0 +1,41 @@
+groups:
+  - name: ai_coding_assistant
+    rules:
+      # Ollama offline for > 2 minutes — wake someone up
+      - alert: OllamaOffline
+        expr: ollama_available == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ollama model server is offline"
+          description: "AI responses are failing. Start Ollama: ollama serve"
+
+      # High API error rate
+      - alert: HighErrorRate
+        expr: |
+          rate(http_requests_total{status_code=~"5.."}[5m]) /
+          rate(http_requests_total[5m]) > 0.1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API error rate > 10%"
+
+      # Slow agent responses
+      - alert: SlowAgentResponses
+        expr: histogram_quantile(0.95, rate(agent_execution_duration_seconds_bucket[5m])) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent p95 latency > 30s — user experience degraded"
+
+      # Index queue backing up
+      - alert: IndexQueueDepth
+        expr: indexing_queue_depth > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Index queue depth > 20 — workers may be down"
