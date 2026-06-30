@@ -65,6 +65,7 @@ class CodeChunk(BaseModel):
     class_name: Optional[str] = None
     repo_id: str
     file_hash: str
+    embedding: Optional[list[float]] = None  # V1.2+: for MMR similarity
 
     @property
     def display_location(self) -> str:

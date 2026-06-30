@@ -114,12 +114,15 @@ class ChromaVectorStore(VectorStore):
             query_embeddings=[query_embedding],
             n_results=min(top_k, await collection.count()),
             where=where,
-            include=["documents", "metadatas", "distances"],
+            include=["documents", "metadatas", "distances", "embeddings"],  # V1.2+: include embeddings for MMR
         )
 
         search_results = []
         if not results["documents"] or not results["documents"][0]:
             return []
+
+        # Extract embeddings if available (V1.2+)
+        embeddings_list = results.get("embeddings", [[]])[0] if "embeddings" in results else []
 
         for i, (doc, meta, distance) in enumerate(
             zip(
@@ -133,6 +136,11 @@ class ChromaVectorStore(VectorStore):
             # Convert to similarity score: 1 - (distance / 2)
             score = max(0.0, 1.0 - (distance / 2.0))
             chunk = _metadata_to_chunk(doc, meta, "")
+            
+            # Attach embedding if available (for MMR similarity)
+            if embeddings_list and i < len(embeddings_list):
+                chunk.embedding = embeddings_list[i]
+            
             search_results.append(SearchResult(chunk=chunk, score=score, rank=i + 1))
 
         return search_results

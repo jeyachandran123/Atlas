@@ -38,6 +38,7 @@ def mmr_rerank(
     results: list[SearchResult],
     top_k: int = 8,
     lambda_param: float = 0.7,
+    use_embeddings: bool = True,
 ) -> list[SearchResult]:
     """
     Maximal Marginal Relevance re-ranking.
@@ -49,6 +50,10 @@ def mmr_rerank(
     lambda_param = 1.0 → pure relevance (no diversity)
     lambda_param = 0.0 → pure diversity (ignore relevance)
     lambda_param = 0.7 → strongly favour relevance, add diversity
+    
+    Args:
+        use_embeddings: If True, use cosine similarity on embeddings (accurate).
+                       If False, fall back to Jaccard token overlap (fast).
     """
     if len(results) <= top_k:
         for i, r in enumerate(results):
@@ -57,11 +62,6 @@ def mmr_rerank(
 
     selected: list[SearchResult] = []
     candidates = list(results)
-
-    # Pre-compute embeddings needed for MMR
-    # Note: we use the score from ChromaDB as a proxy for similarity
-    # to avoid re-embedding all candidates (expensive)
-    # For higher quality MMR, embed all candidates and compute true similarity
 
     for _ in range(min(top_k, len(candidates))):
         if not candidates:
@@ -74,11 +74,21 @@ def mmr_rerank(
             # Subsequent selections: MMR score
             def mmr_score(candidate: SearchResult) -> float:
                 relevance = candidate.score
-                # Similarity to already-selected: use text overlap as proxy
-                max_sim = max(
-                    _text_overlap(candidate.chunk.content, s.chunk.content)
-                    for s in selected
-                )
+                
+                if use_embeddings and candidate.chunk.embedding:
+                    # Use true cosine similarity on embeddings (V1.2+)
+                    max_sim = max(
+                        _cosine_similarity(candidate.chunk.embedding, s.chunk.embedding)
+                        for s in selected
+                        if s.chunk.embedding
+                    )
+                else:
+                    # Fall back to Jaccard token overlap (V1.0 compatibility)
+                    max_sim = max(
+                        _text_overlap(candidate.chunk.content, s.chunk.content)
+                        for s in selected
+                    )
+                
                 return lambda_param * relevance - (1 - lambda_param) * max_sim
 
             best = max(candidates, key=mmr_score)
@@ -95,7 +105,12 @@ def mmr_rerank(
 def _text_overlap(a: str, b: str) -> float:
     """
     Simple token overlap similarity (Jaccard).
-    Used as a cheap proxy for semantic similarity in MMR.
+    
+    V1.0: Used as primary similarity metric in MMR.
+    V1.2+: Fallback when embeddings not available.
+    
+    Kept for backward compatibility and cases where embedding
+    retrieval is disabled or chunks don't have stored embeddings.
     """
     tokens_a = set(a.lower().split())
     tokens_b = set(b.lower().split())
@@ -176,12 +191,13 @@ class CodeRetriever:
         if not candidates:
             return []
 
-        # 4. MMR re-ranking
+        # 4. MMR re-ranking with embedding-based similarity
         reranked = mmr_rerank(
             query_embedding=query_embedding,
             results=candidates,
             top_k=top_k,
             lambda_param=lambda_param,
+            use_embeddings=True,  # V1.2: Use cosine similarity on embeddings
         )
 
         return reranked

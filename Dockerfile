@@ -6,26 +6,16 @@ FROM python:3.12-slim AS builder
 
 WORKDIR /build
 
-# Build dependencies only (not in final image)
+# Build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc \
         g++ \
-        unixodbc-dev \
-        curl \
-        gnupg \
-    && curl https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
-    && curl https://packages.microsoft.com/config/debian/12/prod.list > /etc/apt/sources.list.d/mssql-release.list \
-    && apt-get update \
-    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql17 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN python -m venv /opt/venv && \
     /opt/venv/bin/pip install --upgrade pip && \
-    # Try full install; fall back excluding pyodbc if MSSQL driver unavailable
-    /opt/venv/bin/pip install --no-cache-dir -r requirements.txt || \
-    (grep -v "^pyodbc\|^aioodbc" requirements.txt | \
-     /opt/venv/bin/pip install --no-cache-dir -r /dev/stdin)
+    /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 2 — Runtime
@@ -35,17 +25,6 @@ FROM python:3.12-slim AS runtime
 LABEL org.opencontainers.image.title="AI Coding Assistant" \
       org.opencontainers.image.description="Local-first AI coding assistant" \
       org.opencontainers.image.version="1.0.0"
-
-# ODBC runtime (for MSSQL connections)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        unixodbc \
-        curl \
-        gnupg \
-    && curl https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
-    && curl https://packages.microsoft.com/config/debian/12/prod.list > /etc/apt/sources.list.d/mssql-release.list \
-    && apt-get update \
-    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql17 \
-    && rm -rf /var/lib/apt/lists/*
 
 # Copy venv from builder
 COPY --from=builder /opt/venv /opt/venv

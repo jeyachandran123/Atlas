@@ -37,12 +37,12 @@ class Settings(BaseSettings):
     jwt_access_token_expire_minutes: int = 15
     jwt_refresh_token_expire_days: int = 7
 
-    # ── MSSQL ────────────────────────────────────────────────────────────────
+    # ── PostgreSQL ───────────────────────────────────────────────────────────
     db_host: str = "localhost"
-    db_port: int = 1433
+    db_port: int = 5432
     db_name: str = "ai_coding_assistant"
-    db_user: str = "sa"
-    db_password: SecretStr = SecretStr("YourStrong!Password123")
+    db_user: str = "postgres"
+    db_password: SecretStr = SecretStr("postgres")
     db_pool_size: int = 10
     db_max_overflow: int = 20
 
@@ -90,9 +90,8 @@ class Settings(BaseSettings):
     def database_url(self) -> str:
         pwd = self.db_password.get_secret_value()
         return (
-            f"mssql+aioodbc://{self.db_user}:{pwd}@{self.db_host}:{self.db_port}"
-            f"/{self.db_name}?driver=ODBC+Driver+17+for+SQL+Server"
-            f"&TrustServerCertificate=yes"
+            f"postgresql+asyncpg://{self.db_user}:{pwd}@{self.db_host}:{self.db_port}"
+            f"/{self.db_name}"
         )
 
     @property

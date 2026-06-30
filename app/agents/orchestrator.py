@@ -1,13 +1,31 @@
 """
 LangGraph orchestrator — the StateGraph that connects all nodes.
 
-V1 graph is intentionally simple:
-  START → retrieve_context → route → coding_agent → END
+V1.2 graph implements full tool-use loop + review/revision loop:
 
-No review loop in V1 (adds 10-20s latency for marginal quality gain).
-ReviewAgent added in V2 with explicit user trigger.
+  START → route_intent → load_memory → retrieve_context → plan_tools
+    ↓
+  ┌─────────────────────────────────────────────────┐
+  │ Tool Loop (max 5 iterations)                    │
+  │   execute_tools → coding_agent → should_continue │
+  │   (loops back to plan_tools if more tools needed)│
+  └─────────────────────────────────────────────────┘
+    ↓
+  should_review? (triggered by fix/test/review intents or file modifications)
+    ├── yes → review_agent → check_revision
+    │           ├── needs_revision → increment_revision → plan_tools (LOOP)
+    │           └── approved → finalise
+    └── no → finalise
+    ↓
+  END
 
-Adding a node in V2/V3 = add a function + add_node() + add_conditional_edges().
+Key features:
+- Autonomous tool calling (agent requests tools, system executes, agent sees results)
+- Review loop with max 2 revisions (adversarial ReviewAgent validates output)
+- Memory integration (session + long-term learning)
+- Intent-based routing (fix, test, review, code, explain, search, chat)
+
+Adding nodes in V3+ = add function + add_node() + add_conditional_edges().
 The graph structure makes the agent flow explicit and testable.
 """
 
@@ -36,18 +54,26 @@ from app.vector_store.base import VectorStore
 def _detect_intent(message: str) -> str:
     """
     Simple rule-based intent detection.
-    In V2: replace with a fast LLM classification call.
+    
+    V1.2: Keyword matching (fast, good enough for 80% of cases)
+    V2 TODO: Replace with fast LLM classification call (100-200ms overhead)
+           OR tiny classifier model for 99% accuracy at <10ms
+    
+    Current approach trades accuracy for speed (0ms overhead).
+    Misclassifications are rare and non-critical (worst case: wrong routing).
 
     Returns one of: code | review | explain | search | chat | fix | test
     """
     lower = message.lower()
 
-    review_keywords = ["review", "check", "audit", "critique", "quality", "smell"]
-    explain_keywords = ["explain", "what does", "how does", "what is", "describe", "walk me through"]
-    search_keywords = ["find", "where", "search", "locate", "show me", "which file"]
-    fix_keywords = ["fix", "bug", "error", "broken", "failing", "issue", "problem", "debug"]
-    test_keywords = ["test", "write test", "add test", "test case", "unit test"]
+    # Intent keywords (ordered by specificity - most specific first)
+    review_keywords = ["review", "check", "audit", "critique", "quality", "smell", "analyze code"]
+    test_keywords = ["test", "write test", "add test", "test case", "unit test", "testing"]
+    fix_keywords = ["fix", "bug", "error", "broken", "failing", "issue", "problem", "debug", "crash"]
+    explain_keywords = ["explain", "what does", "how does", "what is", "describe", "walk me through", "understand"]
+    search_keywords = ["find", "where", "search", "locate", "show me", "which file", "grep"]
 
+    # Check in priority order (most specific first to avoid false positives)
     if any(k in lower for k in review_keywords):
         return "review"
     if any(k in lower for k in test_keywords):
@@ -56,9 +82,12 @@ def _detect_intent(message: str) -> str:
         return "fix"
     if any(k in lower for k in explain_keywords):
         return "explain"
+    # Avoid false positives: "how to find" should be explain, not search
     if any(k in lower for k in search_keywords) and "how" not in lower:
         return "search"
-    # Default to code for generation tasks
+    
+    # Default to code for generation/modification tasks
+    # ("create", "add", "implement", "write", "build", etc.)
     return "code"
 
 
@@ -315,27 +344,47 @@ class AgentOrchestrator:
     async def _should_continue_node(self, state: AgentState) -> AgentState:
         """
         Decide whether to continue the tool loop or finalize.
-        Agent can request more tools by mentioning them in draft_output.
+        
+        Decision factors:
+        1. Max steps reached? -> Exit
+        2. Agent output suggests needing more tools? -> Continue
+        3. Tool results contain errors that need addressing? -> Continue
+        4. Otherwise -> Exit to review/finalize
+        
+        TODO P2: Replace phrase matching with structured LLM output
+        (agent emits explicit {"needs_tools": true, "reason": "..."})
         """
         # Check if we've hit max steps
         if state["current_step"] >= state["max_steps"]:
             return {**state, "tool_calls": []}  # Force exit
 
-        # Check if agent explicitly requests more tools in its output
         draft = state.get("draft_output", "").lower()
         
-        # Look for phrases that indicate agent needs more information
-        needs_more = any(
-            phrase in draft
-            for phrase in [
-                "need to see",
-                "need to check",
-                "need to read",
-                "let me search",
-                "let me check",
-                "i need to",
-            ]
-        )
+        # Check if last tool execution had errors that agent needs to handle
+        if state["tool_results"]:
+            last_result = state["tool_results"][-1]
+            if not last_result.success and state["current_step"] < state["max_steps"]:
+                # Tool failed - agent might need to try alternative approach
+                tool_calls = await self._tool_planner.plan(state)
+                if tool_calls:
+                    return {**state, "tool_calls": tool_calls}
+        
+        # Look for explicit phrases indicating agent needs more information
+        # This is brittle but works for V1.2 - V2 will use structured output
+        continuation_phrases = [
+            "need to see",
+            "need to check",
+            "need to read",
+            "need to search",
+            "let me search",
+            "let me check",
+            "let me read",
+            "i need to",
+            "i should check",
+            "first, let me",
+        ]
+        
+        needs_more = any(phrase in draft for phrase in continuation_phrases)
 
         if needs_more and state["current_step"] < state["max_steps"]:
             # Re-plan tools based on agent's output

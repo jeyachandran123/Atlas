@@ -6,8 +6,7 @@ python-multipart==0.0.12
 # ── Database ───────────────────────────────────────────────────────────────────
 sqlalchemy[asyncio]==2.0.36
 alembic==1.14.0
-pyodbc==5.1.0              # MSSQL ODBC driver
-aioodbc==0.5.0             # async MSSQL
+asyncpg==0.30.0            # PostgreSQL async driver
 
 # ── Cache ─────────────────────────────────────────────────────────────────────
 redis[hiredis]==5.2.1

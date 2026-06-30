@@ -107,16 +107,23 @@ class ToolPlanner:
             return []
 
     def _parse_tool_calls(self, response: str) -> list[ToolCall]:
-        """Parse LLM response into ToolCall objects."""
+        """Parse LLM response into ToolCall objects using structured output."""
         # Clean response (remove markdown code blocks if present)
         cleaned = response.strip()
         if cleaned.startswith("```"):
             # Extract content between ``` markers
             lines = cleaned.split("\n")
-            cleaned = "\n".join(lines[1:-1]) if len(lines) > 2 else cleaned
+            # Handle both ```json and ``` markers
+            start_idx = 1
+            end_idx = -1
+            if len(lines) > 2:
+                cleaned = "\n".join(lines[start_idx:end_idx])
+            else:
+                cleaned = cleaned.strip("`")
 
         # Remove json prefix if present
-        if cleaned.startswith("json"):
+        cleaned = cleaned.strip()
+        if cleaned.lower().startswith("json"):
             cleaned = cleaned[4:].strip()
 
         try:
@@ -145,8 +152,10 @@ class ToolPlanner:
 
             return tool_calls
 
-        except json.JSONDecodeError:
-            # If JSON parsing fails, return empty list
+        except json.JSONDecodeError as e:
+            # If JSON parsing fails, log and return empty list
+            from loguru import logger
+            logger.warning(f"Failed to parse tool calls JSON: {e}. Response: {cleaned[:200]}")
             return []
 
 
