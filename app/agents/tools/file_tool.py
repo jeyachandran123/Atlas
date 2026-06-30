@@ -145,7 +145,7 @@ class FileTool(BaseTool):
         )
 
     async def _apply_patch(self, repo_path: str, relative_path: str, diff: str) -> ToolResult:
-        """Apply a unified diff patch to a file."""
+        """Apply a diff patch to a file using robust diff applier."""
         try:
             abs_path = _safe_resolve(repo_path, relative_path)
         except PathTraversalError as e:
@@ -157,24 +157,44 @@ class FileTool(BaseTool):
         with open(abs_path, encoding="utf-8", errors="replace") as f:
             original = f.read()
 
-        # Apply unified diff
-        try:
-            patched = self._apply_unified_diff(original, diff)
-        except Exception as e:
-            return ToolResult(self.name, False, error=f"Patch failed: {e}")
+        # Use robust diff applier
+        from app.agents.diff_applier import get_diff_applier
+        
+        applier = get_diff_applier()
+        result = applier.apply(original, diff, dry_run=False)
+        
+        if not result.success:
+            error_msg = result.error or "Unknown patch error"
+            if result.details:
+                error_msg += "\n" + "\n".join(result.details)
+            return ToolResult(self.name, False, error=f"Patch failed: {error_msg}")
 
+        # Write patched content
         with open(abs_path, "w", encoding="utf-8") as f:
-            f.write(patched)
+            f.write(result.patched_content)
 
         original_lines = original.count("\n") + 1
-        patched_lines = patched.count("\n") + 1
+        patched_lines = result.patched_content.count("\n") + 1
         changed = abs(patched_lines - original_lines)
+        
+        # Build success message
+        success_msg = f"Patch applied to {relative_path}. Lines changed: ~{changed}"
+        if result.strategy_used:
+            success_msg += f" (strategy: {result.strategy_used.value})"
+        if result.details:
+            success_msg += "\n" + "\n".join(result.details)
 
         return ToolResult(
             self.name,
             True,
-            output=f"Patch applied to {relative_path}. Lines changed: ~{changed}",
-            metadata={"path": relative_path, "original_lines": original_lines, "new_lines": patched_lines},
+            output=success_msg,
+            metadata={
+                "path": relative_path,
+                "original_lines": original_lines,
+                "new_lines": patched_lines,
+                "strategy": result.strategy_used.value if result.strategy_used else None,
+                "hunks_applied": result.hunks_applied,
+            },
         )
 
     async def _list_directory(self, repo_path: str, relative_path: str, depth: int = 2) -> ToolResult:
@@ -247,32 +267,4 @@ class FileTool(BaseTool):
 
         return "\n".join(lines)
 
-    @staticmethod
-    def _apply_unified_diff(original: str, diff: str) -> str:
-        """
-        Minimal unified diff applier.
-        For production use, replace with the `patch` library.
-        """
-        lines = original.splitlines(keepends=True)
-        result = list(lines)
 
-        # Parse diff hunks
-        current_line = 0
-        for raw_line in diff.splitlines():
-            if raw_line.startswith("--- ") or raw_line.startswith("+++ "):
-                continue
-            elif raw_line.startswith("@@ "):
-                # Parse @@ -start,count +start,count @@
-                match = re.search(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", raw_line)
-                if match:
-                    current_line = int(match.group(2)) - 1
-            elif raw_line.startswith("+"):
-                result.insert(current_line, raw_line[1:] + "\n")
-                current_line += 1
-            elif raw_line.startswith("-"):
-                if current_line < len(result):
-                    result.pop(current_line)
-            else:
-                current_line += 1
-
-        return "".join(result)

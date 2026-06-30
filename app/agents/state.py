@@ -43,9 +43,10 @@ class AgentState(TypedDict):
     code_context: list[SearchResult]
     session_messages: list[dict]  # last N conversation turns
     context_block: str  # formatted context_builder output
+    memory_context: str  # formatted memory context (session + long-term)
 
     # ── Routing ───────────────────────────────────────────────────────────────
-    intent: str  # "code" | "review" | "explain" | "search" | "chat"
+    intent: str  # "code" | "review" | "explain" | "search" | "chat" | "fix" | "test"
 
     # ── Execution (modified by agents) ────────────────────────────────────────
     tool_calls: list[ToolCall]  # Planned tool calls from LLM
@@ -54,7 +55,9 @@ class AgentState(TypedDict):
     max_steps: int  # Maximum iterations to prevent infinite loops
     draft_output: str
     revision_count: int
+    max_revisions: int  # Maximum revisions allowed (default 2)
     review_feedback: str
+    review_status: str  # "pending" | "approved" | "needs_revision" | "skipped"
 
     # ── Output (set at terminal node) ─────────────────────────────────────────
     final_response: str
@@ -83,6 +86,7 @@ def initial_state(
         code_context=[],
         session_messages=[],
         context_block="",
+        memory_context="",
         intent="code",
         tool_calls=[],
         tool_results=[],
@@ -90,7 +94,9 @@ def initial_state(
         max_steps=5,
         draft_output="",
         revision_count=0,
+        max_revisions=2,
         review_feedback="",
+        review_status="pending",
         final_response="",
         files_modified=[],
         context_chunks_used=0,

@@ -86,13 +86,21 @@ User Query
   → Streaming response via SSE
 ```
 
-**Tool-Use Loop (NEW in V1.1):**
+**Tool-Use Loop (V1.1):**
 - Agent can now call tools autonomously
 - Available tools: read_file, write_file, search_code, git_diff, run_command
 - LLM plans which tools to call based on user request
 - Tools execute sequentially (later tools can use earlier results)
 - Max 5 iterations to prevent infinite loops
 - Tool failures don't crash the pipeline - agent adapts
+
+**Memory System (V1.1):**
+- Session memory: Last 20 messages in Redis, 24h TTL
+- Long-term memory: Important facts in Redis (V1) / MSSQL+ChromaDB (V2)
+- Automatic fact extraction from conversations
+- Memory types: preference, fact, pattern, issue
+- Importance scoring and access tracking
+- Semantic search and filtering (V2)
 
 **Repository indexing** runs in a background worker:
 
@@ -108,7 +116,7 @@ Git repo → Scanner (SHA256 hash) → AST Chunker (tree-sitter)
 | Agent framework | LangGraph | Explicit state graph, loops, conditional edges |
 | Chunking | AST-aware (tree-sitter) | 30-40% better retrieval vs text chunking |
 | Vector DB | ChromaDB → Qdrant | Zero-config for V1; abstract interface for migration |
-| Memory | Session (Redis) | Long-term memory added in V2 when needed |
+| Memory | Session (Redis) + Long-term (Redis→DB) | Fast access, automatic consolidation, persistent learning |
 | Agent count | 1 in V1 | Avoid coordination overhead; split only when measured benefit |
 
 ## Roadmap
