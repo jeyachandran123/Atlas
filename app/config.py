@@ -55,7 +55,7 @@ class Settings(BaseSettings):
 
     # ── ChromaDB ─────────────────────────────────────────────────────────────
     chroma_host: str = "localhost"
-    chroma_port: int = 8001
+    chroma_port: int = 8000
     chroma_auth_token: SecretStr = SecretStr("")
 
     # ── Ollama ───────────────────────────────────────────────────────────────

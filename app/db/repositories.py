@@ -235,19 +235,53 @@ class ConversationRepository:
         self.session = session
 
     async def get_by_id(self, conv_id: str) -> Optional[Conversation]:
+        from sqlalchemy.orm import selectinload
         result = await self.session.execute(
-            select(Conversation).where(Conversation.id == conv_id)
+            select(Conversation)
+            .options(selectinload(Conversation.messages))
+            .where(Conversation.id == conv_id)
         )
         return result.scalar_one_or_none()
 
-    async def list_for_user(self, user_id: str, limit: int = 20) -> list[Conversation]:
-        result = await self.session.execute(
-            select(Conversation)
-            .where(Conversation.user_id == user_id, Conversation.is_archived == False)  # noqa: E712
-            .order_by(Conversation.updated_at.desc())
-            .limit(limit)
+    async def list_for_user(self, user_id: str, limit: int = 20, offset: int = 0, include_archived: bool = False) -> tuple[list[Conversation], int]:
+        """
+        List conversations for a user with pagination.
+        Returns (conversations, total_count)
+        
+        Pinned conversations are always shown first, then sorted by updated_at DESC.
+        """
+        from sqlalchemy import func, case
+        
+        # Build base query
+        query = select(Conversation).where(Conversation.user_id == user_id)
+        
+        if not include_archived:
+            query = query.where(Conversation.is_archived == False)  # noqa: E712
+        
+        # Order: pinned first (by pin_order), then by updated_at DESC
+        query = query.order_by(
+            case(
+                (Conversation.is_pinned == True, Conversation.pin_order),  # noqa: E712
+                else_=999999  # Put unpinned conversations after pinned
+            ),
+            Conversation.updated_at.desc()
         )
-        return list(result.scalars().all())
+        
+        # Get total count
+        count_query = select(func.count()).select_from(Conversation).where(Conversation.user_id == user_id)
+        if not include_archived:
+            count_query = count_query.where(Conversation.is_archived == False)  # noqa: E712
+        
+        total = await self.session.execute(count_query)
+        total_count = total.scalar() or 0
+        
+        # Apply pagination
+        query = query.limit(limit).offset(offset)
+        
+        result = await self.session.execute(query)
+        conversations = list(result.scalars().all())
+        
+        return conversations, total_count
 
     async def create(self, **kwargs) -> Conversation:  # noqa: ANN003
         conv = Conversation(**kwargs)
@@ -308,6 +342,72 @@ class ConversationRepository:
         self.session.add(execution)
         await self.session.flush()
         return execution
+
+    async def update_title(self, conversation_id: str, title: str) -> None:
+        """Update conversation title."""
+        await self.session.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(title=title, updated_at=datetime.now(timezone.utc))
+        )
+
+    async def delete_conversation(self, conversation_id: str) -> None:
+        """Delete a conversation and all its messages."""
+        from sqlalchemy import delete
+        # Delete messages first (foreign key constraint)
+        await self.session.execute(
+            delete(Message).where(Message.conversation_id == conversation_id)
+        )
+        # Delete conversation
+        await self.session.execute(
+            delete(Conversation).where(Conversation.id == conversation_id)
+        )
+
+    async def pin_conversation(self, conversation_id: str, user_id: str) -> None:
+        """Pin a conversation to the top."""
+        # Get current max pin_order for this user
+        from sqlalchemy import func
+        result = await self.session.execute(
+            select(func.max(Conversation.pin_order))
+            .where(Conversation.user_id == user_id, Conversation.is_pinned == True)  # noqa: E712
+        )
+        max_order = result.scalar() or 0
+        
+        # Pin with next order
+        await self.session.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(is_pinned=True, pin_order=max_order + 1)
+        )
+
+    async def unpin_conversation(self, conversation_id: str) -> None:
+        """Unpin a conversation."""
+        await self.session.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(is_pinned=False, pin_order=None)
+        )
+
+    async def archive_conversation(self, conversation_id: str) -> None:
+        """Archive a conversation."""
+        await self.session.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(is_archived=True, updated_at=datetime.now(timezone.utc))
+        )
+
+    async def auto_generate_title(self, conversation_id: str, first_message: str) -> None:
+        """Auto-generate title from first message."""
+        # Take first 50 characters, clean up
+        title = first_message.strip()[:50]
+        if len(first_message) > 50:
+            title += "..."
+        
+        await self.session.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(title=title)
+        )
 
 
 class AuditRepository:

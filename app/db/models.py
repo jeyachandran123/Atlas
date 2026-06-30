@@ -72,22 +72,45 @@ class User(Base):
     """
     A developer who uses the system.
     Role controls what they can do (admin/developer/viewer).
+    
+    Auth providers:
+    - email: Traditional email/password (hashed_password set)
+    - google: Google Sign-In via Firebase (firebase_uid set)
+    - apple: Apple Sign-In via Firebase (firebase_uid set)
+    - microsoft: Microsoft Sign-In via Firebase (firebase_uid set)
+    - github: GitHub Sign-In via Firebase (firebase_uid set)
     """
 
     __tablename__ = "users"
-    __table_args__ = (UniqueConstraint("org_id", "email", name="uq_users_org_email"),)
+    __table_args__ = (
+        UniqueConstraint("org_id", "email", name="uq_users_org_email"),
+        Index("ix_users_firebase_uid", "firebase_uid"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     org_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("organizations.id"), nullable=False
     )
     email: Mapped[str] = mapped_column(String(255), nullable=False)
-    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     full_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     role: Mapped[str] = mapped_column(
         String(20), nullable=False, default="developer"
     )  # admin|developer|viewer
+    
+    # Firebase OAuth fields (V1.2+)
+    auth_provider: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="email"
+    )  # email|google|apple|microsoft|github
+    firebase_uid: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True, unique=True
+    )  # Firebase user ID for OAuth users
+    profile_picture_url: Mapped[Optional[str]] = mapped_column(
+        String(500), nullable=True
+    )  # Profile picture from OAuth provider
+    
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )
@@ -306,9 +329,18 @@ class Conversation(Base):
     """
     A conversation session between a user and the assistant.
     Messages are loaded separately to avoid fetching all content on list views.
+    
+    Features:
+    - is_pinned: Pin important conversations to top
+    - pin_order: Order of pinned conversations (lower = higher priority)
+    - is_archived: Hide old conversations
+    - title: Auto-generated from first message or manually edited
     """
 
     __tablename__ = "conversations"
+    __table_args__ = (
+        Index("ix_conversations_pinned", "user_id", "is_pinned", "pin_order"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(
@@ -321,6 +353,8 @@ class Conversation(Base):
         String(255), nullable=False, default="New Conversation"
     )
     is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pin_order: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now

@@ -51,6 +51,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     configure_logging()
     logger.info(f"Starting AI Coding Assistant [{cfg.app_env}]")
 
+    # Initialize Firebase Admin SDK
+    from app.firebase_admin import initialize_firebase
+    try:
+        initialize_firebase()
+    except Exception as e:
+        logger.error(f"Failed to initialize Firebase: {e}")
+        logger.warning("Firebase authentication will not be available")
+
     # Verify DB engine can connect (doesn't create tables — use Alembic)
     engine = get_engine()
     logger.info("Database engine ready")

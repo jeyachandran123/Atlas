@@ -87,7 +87,9 @@ PROGRESS_TTL = 7200  # 2 hours
 
 async def set_index_progress(job_id: str, progress: dict[str, Any]) -> None:
     r = get_redis()
-    await r.hset(f"index:progress:{job_id}", mapping={k: str(v) for k, v in progress.items()})
+    # Convert all values to strings for Redis HSET
+    string_progress = {k: str(v) for k, v in progress.items()}
+    await r.hset(f"index:progress:{job_id}", mapping=string_progress)
     await r.expire(f"index:progress:{job_id}", PROGRESS_TTL)
 
 

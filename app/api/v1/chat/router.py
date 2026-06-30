@@ -78,25 +78,34 @@ async def create_conversation(
     )
 
 
-@router.get("/conversations", response_model=list[ConversationOut])
+@router.get("/conversations", response_model=dict)
 async def list_conversations(
+    limit: int = 15,
+    offset: int = 0,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> list[ConversationOut]:
-    """List the current user's conversations."""
+) -> dict:
+    """List the current user's conversations with pagination."""
     conv_repo = ConversationRepository(db)
-    convs = await conv_repo.list_for_user(current_user.id)
-    return [
-        ConversationOut(
-            id=c.id,
-            title=c.title,
-            repo_id=c.repo_id,
-            total_tokens=c.total_tokens,
-            created_at=c.created_at,
-            updated_at=c.updated_at,
-        )
-        for c in convs
-    ]
+    convs, total = await conv_repo.list_for_user(current_user.id, limit=limit, offset=offset)
+    return {
+        "conversations": [
+            {
+                "id": c.id,
+                "title": c.title,
+                "repo_id": c.repo_id,
+                "total_tokens": c.total_tokens,
+                "is_pinned": c.is_pinned,
+                "pin_order": c.pin_order,
+                "created_at": c.created_at.isoformat(),
+                "updated_at": c.updated_at.isoformat(),
+            }
+            for c in convs
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/conversations/{conversation_id}/messages", response_model=list[MessageOut])
@@ -254,8 +263,12 @@ async def stream_message(
             user_id=current_user.id,
             repo_id=req.repo_id,
         )
+        # Auto-generate title from first message
+        await conv_repo.auto_generate_title(conv.id, req.message)
 
     await conv_repo.add_message(conv.id, "user", req.message)
+    await db.commit()  # Commit user message immediately
+    
     session_messages = await get_session_messages(current_user.id, conv.id)
 
     state = initial_state(
@@ -290,12 +303,17 @@ async def stream_message(
                 tokens_used=tokens_used,
                 latency_ms=latency_ms,
             )
+            
+            # CRITICAL: Commit the transaction so the message is saved
+            await db.commit()
+            
             await push_session_message(current_user.id, conv.id, "user", req.message)
             await push_session_message(current_user.id, conv.id, "assistant", full_response)
 
             yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv.id, 'message_id': assistant_msg.id, 'tokens_used': tokens_used, 'latency_ms': latency_ms})}\n\n"
 
         except Exception as e:
+            await db.rollback()  # Rollback on error
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
     return StreamingResponse(
@@ -307,3 +325,93 @@ async def stream_message(
             "X-Request-ID": request_id,
         },
     )
+
+
+
+class UpdateConversationRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=255)
+
+
+@router.patch("/conversations/{conversation_id}")
+async def update_conversation(
+    conversation_id: str,
+    req: UpdateConversationRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Update conversation title."""
+    conv_repo = ConversationRepository(db)
+    conv = await conv_repo.get_by_id(conversation_id)
+    
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    if conv.user_id != current_user.id:
+        raise HTTPException(403, "Access denied")
+    
+    await conv_repo.update_title(conversation_id, req.title)
+    await db.commit()
+    
+    return {"id": conversation_id, "title": req.title}
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(
+    conversation_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Delete a conversation and all its messages."""
+    conv_repo = ConversationRepository(db)
+    conv = await conv_repo.get_by_id(conversation_id)
+    
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    if conv.user_id != current_user.id:
+        raise HTTPException(403, "Access denied")
+    
+    await conv_repo.delete_conversation(conversation_id)
+    await db.commit()
+    
+    return {"id": conversation_id, "deleted": True}
+
+
+@router.post("/conversations/{conversation_id}/pin")
+async def pin_conversation(
+    conversation_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Pin a conversation to the top."""
+    conv_repo = ConversationRepository(db)
+    conv = await conv_repo.get_by_id(conversation_id)
+    
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    if conv.user_id != current_user.id:
+        raise HTTPException(403, "Access denied")
+    
+    await conv_repo.pin_conversation(conversation_id, current_user.id)
+    await db.commit()
+    
+    return {"id": conversation_id, "is_pinned": True}
+
+
+@router.delete("/conversations/{conversation_id}/pin")
+async def unpin_conversation(
+    conversation_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Unpin a conversation."""
+    conv_repo = ConversationRepository(db)
+    conv = await conv_repo.get_by_id(conversation_id)
+    
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    if conv.user_id != current_user.id:
+        raise HTTPException(403, "Access denied")
+    
+    await conv_repo.unpin_conversation(conversation_id)
+    await db.commit()
+    
+    return {"id": conversation_id, "is_pinned": False}

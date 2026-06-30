@@ -241,6 +241,8 @@ class ConversationOut(BaseModel):
     title: str
     repo_id: Optional[str]
     total_tokens: int
+    is_pinned: bool = False
+    pin_order: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 

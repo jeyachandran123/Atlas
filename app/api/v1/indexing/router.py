@@ -62,7 +62,20 @@ async def get_job_progress(
     progress = await get_index_progress(job_id)
     if not progress:
         return {"status": "unknown", "message": "No progress data available. Job may have completed."}
-    return progress
+    
+    # Convert string values from Redis to proper types
+    parsed_progress = {
+        "status": progress.get("status", "unknown"),
+        "total": int(progress.get("total", 0)),
+        "processed": int(progress.get("processed", 0)),
+        "chunks": int(progress.get("chunks", 0)),
+    }
+    
+    # Add current_file if present
+    if "current_file" in progress:
+        parsed_progress["current_file"] = progress["current_file"]
+    
+    return parsed_progress
 
 
 @router.get("/repos/{repo_id}/jobs", response_model=list[IndexJobOut])

@@ -37,11 +37,13 @@ services:
       DB_HOST: postgres
       REDIS_HOST: redis
       CHROMA_HOST: chromadb
+      CHROMA_PORT: 8000
       OLLAMA_HOST: http://ollama:11434
       APP_ENV: development
       APP_DEBUG: "true"
     volumes:
       - ./app:/app/app:ro              # live reload in dev
+      - ./firebase-service-account.json:/app/firebase-service-account.json:ro  # Firebase auth
     depends_on:
       postgres:
         condition: service_healthy
@@ -73,8 +75,10 @@ services:
       DB_HOST: postgres
       REDIS_HOST: redis
       CHROMA_HOST: chromadb
+      CHROMA_PORT: 8000
       OLLAMA_HOST: http://ollama:11434
     volumes:
+      - ./app:/app/app:ro                    # live reload in dev
       - C:/Users/Jayachandran:/host_home:ro  # access to local repos (read-only)
     depends_on:
       postgres:
