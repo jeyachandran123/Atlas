@@ -367,12 +367,38 @@ class GenericChunker(LanguageChunker):
 
 def get_chunker(language: str) -> LanguageChunker:
     """Factory: return the best available chunker for a language."""
-    chunkers: dict[str, LanguageChunker] = {
-        "python": PythonChunker(),
-        "javascript": GenericChunker("javascript"),
-        "typescript": GenericChunker("typescript"),
-        "java": GenericChunker("java"),
-        "csharp": GenericChunker("csharp"),
-        "go": GenericChunker("go"),
-    }
+    # Import language-specific chunkers
+    try:
+        from app.indexing.languages.javascript import JavaScriptChunker, TypeScriptChunker
+        from app.indexing.languages.java import JavaChunker
+        from app.indexing.languages.go_rust import GoChunker, RustChunker
+        from app.indexing.languages.c_cpp import CChunker, CppChunker
+        
+        chunkers: dict[str, LanguageChunker] = {
+            # AST-aware chunkers (tree-sitter)
+            "python": PythonChunker(),
+            "javascript": JavaScriptChunker(),
+            "typescript": TypeScriptChunker(),
+            "java": JavaChunker(),
+            "go": GoChunker(),
+            "rust": RustChunker(),
+            "c": CChunker(),
+            "cpp": CppChunker(),
+            "c++": CppChunker(),
+            # Fallback to generic regex-based chunkers
+            "csharp": GenericChunker("csharp"),
+            "ruby": GenericChunker("ruby"),
+            "php": GenericChunker("php"),
+        }
+    except ImportError:
+        # Fallback if tree-sitter packages not available
+        chunkers: dict[str, LanguageChunker] = {
+            "python": PythonChunker(),
+            "javascript": GenericChunker("javascript"),
+            "typescript": GenericChunker("typescript"),
+            "java": GenericChunker("java"),
+            "csharp": GenericChunker("csharp"),
+            "go": GenericChunker("go"),
+        }
+    
     return chunkers.get(language, LanguageChunker())
