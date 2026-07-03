@@ -183,6 +183,7 @@ async def send_message(
         org_id=current_user.org_id,
         request_id=request_id,
         repo_id=req.repo_id or conv.repo_id,
+        agent_mode=req.agent_mode,
     )
     state["session_messages"] = session_messages
 
@@ -239,10 +240,6 @@ async def stream_message(
     """
     Send a message and receive a streaming response via Server-Sent Events.
 
-    Client usage:
-        const es = new EventSource('/api/v1/chat/stream');
-        es.onmessage = (e) => console.log(JSON.parse(e.data));
-
     Event format:
         data: {"type": "token", "content": "Hello"}
         data: {"type": "done", "conversation_id": "...", "tokens_used": 42}
@@ -253,7 +250,8 @@ async def stream_message(
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     conv_repo = ConversationRepository(db)
 
-    # Get or create conversation
+    # Get or create conversation BEFORE entering the generator
+    # (generator runs outside the request context in some ASGI servers)
     if req.conversation_id:
         conv = await conv_repo.get_by_id(req.conversation_id)
         if not conv or conv.user_id != current_user.id:
@@ -263,12 +261,11 @@ async def stream_message(
             user_id=current_user.id,
             repo_id=req.repo_id,
         )
-        # Auto-generate title from first message
         await conv_repo.auto_generate_title(conv.id, req.message)
 
     await conv_repo.add_message(conv.id, "user", req.message)
-    await db.commit()  # Commit user message immediately
-    
+    await db.commit()
+
     session_messages = await get_session_messages(current_user.id, conv.id)
 
     state = initial_state(
@@ -278,51 +275,63 @@ async def stream_message(
         org_id=current_user.org_id,
         request_id=request_id,
         repo_id=req.repo_id or conv.repo_id,
+        agent_mode=req.agent_mode,
     )
     state["session_messages"] = session_messages
 
     orch = request.app.state.orchestrator
+
+    # Capture these for use inside the generator (avoid closure over mutable `conv`)
+    conv_id = conv.id
+    user_id = current_user.id
 
     async def event_generator() -> AsyncGenerator[str, None]:
         full_response = ""
         start = time.monotonic()
         try:
             async for chunk in orch.stream(state):
+                if not chunk:
+                    continue
                 full_response += chunk
+                # Each SSE frame must end with double newline to be flushed immediately
                 yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
 
             tokens_used = len(full_response) // 4
             latency_ms = int((time.monotonic() - start) * 1000)
 
-            # Persist to DB after streaming completes
+            # Persist assistant message after streaming completes
             assistant_msg = await conv_repo.add_message(
-                conversation_id=conv.id,
+                conversation_id=conv_id,
                 role="assistant",
                 content=full_response,
                 agent_used="coding_agent",
                 tokens_used=tokens_used,
                 latency_ms=latency_ms,
             )
-            
-            # CRITICAL: Commit the transaction so the message is saved
             await db.commit()
-            
-            await push_session_message(current_user.id, conv.id, "user", req.message)
-            await push_session_message(current_user.id, conv.id, "assistant", full_response)
 
-            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv.id, 'message_id': assistant_msg.id, 'tokens_used': tokens_used, 'latency_ms': latency_ms})}\n\n"
+            await push_session_message(user_id, conv_id, "user", req.message)
+            await push_session_message(user_id, conv_id, "assistant", full_response)
+
+            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv_id, 'message_id': assistant_msg.id, 'tokens_used': tokens_used, 'latency_ms': latency_ms})}\n\n"
 
         except Exception as e:
-            await db.rollback()  # Rollback on error
+            from loguru import logger
+            logger.exception(f"Stream error: {e}")
+            try:
+                await db.rollback()
+            except Exception:
+                pass
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
             "X-Request-ID": request_id,
+            "Connection": "keep-alive",
         },
     )
 

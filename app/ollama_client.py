@@ -45,7 +45,7 @@ class OllamaClient:
         prompt: str,
         system_prompt: Optional[str] = None,
         model: Optional[str] = None,
-        temperature: float = 0.1,
+        temperature: float = 0.15,
     ) -> str:
         """
         Single-turn chat completion.
@@ -64,7 +64,12 @@ class OllamaClient:
                     "model": model,
                     "messages": messages,
                     "stream": False,
-                    "options": {"temperature": temperature},
+                    "options": {
+                        "temperature": temperature,
+                        "num_ctx": settings.ollama_num_ctx,
+                        "num_predict": settings.ollama_num_predict,
+                        "repeat_penalty": 1.1,
+                    },
                 },
             )
             response.raise_for_status()
@@ -86,6 +91,8 @@ class OllamaClient:
         Streaming chat completion.
         Yields text chunks as they arrive from Ollama.
         """
+        import json as _json
+
         model = model or settings.ollama_chat_model
         messages = []
         if system_prompt:
@@ -93,27 +100,42 @@ class OllamaClient:
         messages.append({"role": "user", "content": prompt})
 
         try:
-            async with self._client.stream(
-                "POST",
-                "/api/chat",
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "stream": True,
-                    "options": {"temperature": temperature},
-                },
-            ) as response:
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if line:
-                        import json
-                        chunk = json.loads(line)
+            # Use a separate client with no read timeout for streaming
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0),
+            ) as stream_client:
+                async with stream_client.stream(
+                    "POST",
+                    "/api/chat",
+                    json={
+                        "model": model,
+                        "messages": messages,
+                        "stream": True,
+                        "options": {
+                            "temperature": temperature,
+                            "num_ctx": settings.ollama_num_ctx,
+                            "num_predict": settings.ollama_num_predict,
+                            "repeat_penalty": 1.1,
+                        },
+                    },
+                ) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if not line:
+                            continue
+                        try:
+                            chunk = _json.loads(line)
+                        except _json.JSONDecodeError:
+                            continue
                         if content := chunk.get("message", {}).get("content"):
                             yield content
                         if chunk.get("done"):
                             break
         except httpx.ConnectError as e:
             raise OllamaUnavailableError() from e
+        except httpx.TimeoutException as e:
+            raise OllamaUnavailableError("Ollama stream timed out") from e
 
     @retry(
         stop=stop_after_attempt(3),

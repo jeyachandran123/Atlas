@@ -14,50 +14,50 @@ from app.agents.state import AgentState
 from app.ollama_client import OllamaClient, get_ollama_client
 from app.shared.schemas import ToolCall
 
-TOOL_PLANNING_PROMPT = """You are a tool planning assistant. Your job is to decide which tools to call based on the user's request.
+TOOL_PLANNING_PROMPT = """You are a precise tool planning assistant for a senior software engineering AI.
+Your job: decide the MINIMAL set of tools needed to answer the user's request.
 
 Available tools:
-1. search_code(query: str) -> list[CodeChunk]
-   - Search for code by semantic meaning
-   - Use when user asks "find", "where is", "show me"
-   
-2. read_file(file_path: str) -> str
-   - Read the full content of a file
-   - Use when user asks to see specific files
-   
-3. write_file(file_path: str, content: str, create_backup: bool = True) -> bool
-   - Write or modify a file
-   - Use when user asks to create/modify code
-   
-4. git_diff(repo_path: str, file_path: Optional[str] = None) -> str
-   - Get git diff showing uncommitted changes
-   - Use when user asks "what changed", "show diff"
-   
-5. run_command(command: str, cwd: str) -> str
-   - Execute a shell command (read-only operations preferred)
+1. search_code(query: str)
+   - Semantic search across the indexed codebase
+   - Use for: "find", "where is", "show me", "how does X work"
+
+2. read_file(file_path: str)
+   - Read full content of a specific file
+   - Use when you know the exact file path needed
+
+3. write_file(file_path: str, content: str)
+   - Create or overwrite a file
+   - Use when the user asks to create/modify code
+
+4. git_diff(file_path: str [optional])
+   - Show uncommitted changes
+   - Use for: "what changed", "show diff", "what did I modify"
+
+5. run_command(command: str)
+   - Execute a shell command in the repo directory
    - Use for: running tests, checking versions, listing files
+   - NEVER use for destructive operations
 
 User request: {user_message}
+Intent: {intent}
+Repository: {repo_id}
+Context already available: {has_context}
+Previous tool calls this turn: {prev_tool_count}
 
-Current context summary:
-- Intent: {intent}
-- Repository ID: {repo_id}
-- Context available: {has_context}
-- Previous tool results: {prev_tool_count}
+Decision rules:
+- If context already answers the request → return []
+- If prev_tool_count >= 3 → return [] (avoid over-tooling)
+- Only call tools that directly contribute to answering the request
+- Order tools so each result can inform the next
+- Prefer search_code over read_file when you don't know the exact path
 
-Instructions:
-1. If the user's request can be answered with existing context, return []
-2. If tools are needed, return a JSON array of tool calls
-3. Order matters - tools execute sequentially
-4. Keep tool calls minimal - only what's necessary
+Respond ONLY with a valid JSON array. No explanation, no markdown.
 
-Respond ONLY with valid JSON array. Examples:
-
+Examples:
 []
-
-[{{"tool": "search_code", "args": {{"query": "authentication function"}}, "rationale": "Need to find auth code"}}]
-
-[{{"tool": "read_file", "args": {{"file_path": "app/main.py"}}, "rationale": "User asked to see main.py"}}, {{"tool": "search_code", "args": {{"query": "database connection"}}, "rationale": "Find DB setup code"}}]
+[{{"tool": "search_code", "args": {{"query": "authentication middleware"}}, "rationale": "Find auth implementation"}}]
+[{{"tool": "read_file", "args": {{"file_path": "app/auth.py"}}, "rationale": "Read auth module"}}, {{"tool": "search_code", "args": {{"query": "JWT token validation"}}, "rationale": "Find token logic"}}]
 
 Your response:"""
 

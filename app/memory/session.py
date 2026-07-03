@@ -42,6 +42,7 @@ class SessionMemory:
         conversation_id: str,
         role: str,
         content: str,
+        agent_mode: str = "auto",
     ) -> None:
         """
         Add a message to the session window.
@@ -52,7 +53,7 @@ class SessionMemory:
             role: Message role (user, assistant, system, tool)
             content: Message content
         """
-        await push_session_message(user_id, conversation_id, role, content)
+        await push_session_message(user_id, conversation_id, role, content, agent_mode)
 
     async def get_messages(
         self,
@@ -96,31 +97,19 @@ class SessionMemory:
     ) -> str:
         """
         Get session messages formatted for LLM context.
-        
-        Returns:
-            Formatted string like:
-            ```
-            Previous conversation:
-            User: Hello
-            Assistant: Hi! How can I help?
-            User: Show me the code
-            ```
+        Returns plain text — no XML tags, no structural markers the LLM might echo.
         """
         messages = await self.get_messages(user_id, conversation_id, limit)
-        
         if not messages:
             return ""
-        
-        formatted_lines = ["Previous conversation:"]
+        lines = []
         for msg in messages:
-            role = msg["role"].capitalize()
+            role = "You" if msg["role"] == "assistant" else "User"
             content = msg["content"]
-            # Truncate very long messages for context efficiency
             if len(content) > 500:
                 content = content[:500] + "..."
-            formatted_lines.append(f"{role}: {content}")
-        
-        return "\n".join(formatted_lines)
+            lines.append(f"{role}: {content}")
+        return "\n".join(lines)
 
 
 # Singleton instance

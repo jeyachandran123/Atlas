@@ -79,7 +79,7 @@ def verify_firebase_token(id_token: str) -> dict:
     # - Expiration check
     # - Issuer validation
     # - Audience validation
-    decoded_token = firebase_auth.verify_id_token(id_token, check_revoked=True)
+    decoded_token = firebase_auth.verify_id_token(id_token, check_revoked=False)
     
     logger.debug(f"✅ Verified Firebase token for user: {decoded_token.get('email')}")
     

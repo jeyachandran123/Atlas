@@ -138,12 +138,6 @@ async def firebase_login(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Firebase token expired. Please sign in again.",
             )
-        except firebase_auth_errors.RevokedIdTokenError:
-            logger.warning("Firebase token revoked")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Firebase token has been revoked. Please sign in again.",
-            )
         except firebase_auth_errors.InvalidIdTokenError as e:
             logger.error(f"Invalid Firebase token: {str(e)}")
             raise HTTPException(
@@ -151,16 +145,15 @@ async def firebase_login(
                 detail=f"Invalid Firebase token: {str(e)}",
             )
         except RuntimeError as e:
-            # Firebase not initialized
             logger.error(f"Firebase not initialized: {str(e)}")
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Firebase authentication is not available. Contact administrator.",
             )
         except Exception as e:
             logger.exception(f"Unexpected error verifying Firebase token: {str(e)}")
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"Failed to verify Firebase token: {str(e)}",
             )
         

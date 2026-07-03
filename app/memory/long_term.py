@@ -242,26 +242,19 @@ class LongTermMemory:
         repo_id: Optional[str] = None,
         limit: int = 3,
     ) -> str:
-        """
-        Get long-term memories formatted for LLM context.
-        
-        Returns:
-            Formatted string with relevant memories
-        """
+        # Only surface long-term memory when there's a repo context
+        # (coding facts). General conversation facts bleed across chats.
+        if not repo_id:
+            return ""
         memories = await self.retrieve(
             user_id=user_id,
             query=query,
             repo_id=repo_id,
             limit=limit,
         )
-        
         if not memories:
             return ""
-        
-        lines = ["Relevant context from past conversations:"]
-        for mem in memories:
-            lines.append(f"- {mem.content}")
-        
+        lines = [f"- {mem.content}" for mem in memories]
         return "\n".join(lines)
 
 

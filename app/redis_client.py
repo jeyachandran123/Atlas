@@ -56,11 +56,12 @@ async def push_session_message(
     conversation_id: str,
     role: str,
     content: str,
+    agent_mode: str = "auto",
 ) -> None:
     """Add a message to the session window, trim to last SESSION_WINDOW messages."""
     key = f"session:{user_id}:{conversation_id}"
     r = get_redis()
-    message = json.dumps({"role": role, "content": content})
+    message = json.dumps({"role": role, "content": content, "agent_mode": agent_mode})
     await r.lpush(key, message)
     await r.ltrim(key, 0, SESSION_WINDOW - 1)
     await r.expire(key, SESSION_TTL)

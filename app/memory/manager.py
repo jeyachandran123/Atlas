@@ -59,17 +59,9 @@ class MemoryManager:
         conversation_id: str,
         role: str,
         content: str,
+        agent_mode: str = "auto",
     ) -> None:
-        """
-        Add a message to session memory.
-        
-        Args:
-            user_id: User ID
-            conversation_id: Conversation ID
-            role: Message role (user, assistant, system, tool)
-            content: Message content
-        """
-        await self.session.add_message(user_id, conversation_id, role, content)
+        await self.session.add_message(user_id, conversation_id, role, content, agent_mode)
 
     async def get_messages(
         self,

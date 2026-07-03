@@ -60,10 +60,34 @@ class Settings(BaseSettings):
 
     # ── Ollama ───────────────────────────────────────────────────────────────
     ollama_host: str = "http://localhost:11434"
-    ollama_chat_model: str = "qwen2.5-coder:7b"
+    # Model per agent mode — swap these to whichever local models you have
+    ollama_chat_model: str = "qwen2.5-coder:7b"      # code mode (default)
+    ollama_auto_model: str = "llama3.2:3b"            # auto / general chat
+    ollama_business_model: str = "llama3.2:3b"        # business mode
     ollama_embed_model: str = "nomic-embed-text"
-    ollama_timeout: int = 120
+    ollama_timeout: int = 300          # 5 min — long responses need time
     ollama_max_retries: int = 3
+    ollama_num_ctx: int = 16384        # context window (tokens)
+    ollama_num_predict: int = 8192     # max output tokens — never truncate
+    ollama_chat_temperature: float = 0.3   # slightly creative for richer prose
+    ollama_code_temperature: float = 0.15  # more deterministic for code blocks
+
+    @field_validator("ollama_host", mode="before")
+    @classmethod
+    def normalize_ollama_host(cls, v: str) -> str:
+        """Ensure ollama_host always has an http:// prefix.
+
+        Ollama sets OLLAMA_HOST=0.0.0.0:11434 (no protocol) as a system env
+        var when running as a service. Pydantic-settings picks that up with
+        higher priority than .env, so we normalise it here.
+        """
+        v = str(v).strip()
+        if v and not v.startswith(("http://", "https://")):
+            v = f"http://{v}"
+        # Replace 0.0.0.0 with localhost — 0.0.0.0 is a bind address, not
+        # a valid client target on Windows/macOS.
+        v = v.replace("http://0.0.0.0", "http://localhost")
+        return v
 
     # ── Indexing ─────────────────────────────────────────────────────────────
     index_max_file_size_mb: int = 1
