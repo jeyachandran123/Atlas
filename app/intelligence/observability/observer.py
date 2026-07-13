@@ -99,6 +99,37 @@ class IntelligenceObserver:
 
     def _log(self) -> None:
         t = self._trace
+        sep = "=" * 72
+        lines = [
+            f"\n{sep}",
+            f"  INTELLIGENCE PIPELINE TRACE  |  {t.request_id[:16]}",
+            sep,
+            f"  Message   : {t.user_message_preview[:60]}",
+            f"  Intent    : {t.detected_intents[0] if t.detected_intents else 'unknown'}"
+            f"  (confidence: {round(t.primary_intent_confidence, 2)})",
+        ]
+        if len(t.detected_intents) > 1:
+            lines.append(f"  Secondary : {', '.join(t.detected_intents[1:])}"),
+        lines += [
+            f"  Complexity: {t.complexity_level}",
+            f"  Turn type : {t.conversation_turn_type}",
+            f"  Policy    : {t.policy_decision}",
+            f"  Persona   : {t.selected_persona}",
+            f"  Strategy  : {t.selected_strategy}",
+        ]
+        if t.tool_plan:
+            tools = getattr(t.tool_plan, 'tools', [])
+            lines.append(f"  Tools     : {tools if tools else 'none'}")
+        lines += [
+            f"  Modules   : {', '.join(t.prompt_modules_used)}",
+            f"  Prompt ~  : {t.prompt_token_estimate} tokens",
+            f"  Timing    : intent={t.intent_ms:.0f}ms  complexity={t.complexity_ms:.0f}ms"
+            f"  conv={t.conversation_ms:.0f}ms  prompt={t.prompt_compose_ms:.0f}ms"
+            f"  total={t.total_ms:.0f}ms",
+            sep,
+        ]
+        output = "\n".join(lines)
+        print(output, flush=True)
         logger.debug(
             "Intelligence pipeline complete",
             extra={

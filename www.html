@@ -1,53 +1,300 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Snake Game</title>
-    <style>
-        #game-board {
-            width: 400px;
-            height: 400px;
-            background-color: #f0f0f0;
-            display: grid;
-            grid-template-columns: repeat(20, 20px);
-            grid-template-rows: repeat(20, 20px);
-        }
-    </style>
+  <meta charset="UTF-8" />
+  <title>Atlas - AI Software Engineer</title>
+  <style>
+    /* Global Styles */
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: linear-gradient(to bottom, #1a202c, #0d1117);
+      color: white;
+    }
+    .min-h-screen {
+      min-height: 100vh;
+    }
+    /* Hero Section */
+    .hero-section {
+      padding: 4rem 2rem;
+      text-align: center;
+    }
+    .hero-section h1 {
+      font-size: 2.5rem;
+      margin-bottom: 1rem;
+    }
+    .hero-section p {
+      font-size: 1.2rem;
+      opacity: 0.9;
+      margin-bottom: 3rem;
+    }
+    /* Reasoning Visualization */
+    .reasoning-visualization {
+      width: 100%;
+      height: 160px;
+      background: #1a202c;
+      border: 1px solid #2d3748;
+      margin-bottom: 2rem;
+      position: relative;
+    }
+    .reasoning-visualization svg {
+      width: 100%;
+      height: 100%;
+    }
+    .reasoning-visualization circle {
+      fill-opacity: 0.9;
+    }
+    /* CTA Buttons */
+    .cta-buttons a {
+      display: inline-block;
+      margin: 0 1rem;
+      padding: 0.75rem 1.5rem;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: bold;
+      transition: all 0.3s ease;
+    }
+    .cta-buttons a:hover {
+      transform: translateY(-2px);
+    }
+    /* Decorative Elements */
+    .decorative-element {
+      position: absolute;
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      opacity: 0.3;
+    }
+    /* Developer Experience Section */
+    .dev-experience-section {
+      padding: 4rem 2rem;
+      background-color: #1a202c;
+    }
+    .pipeline-container {
+      position: relative;
+      height: 80px;
+      background-color: #1e2736;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .pipeline-steps {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem;
+    }
+    .pipeline-step {
+      text-align: center;
+    }
+    .pipeline-step svg {
+      width: 24px;
+      height: 24px;
+      margin-bottom: 0.5rem;
+    }
+    /* Core Features Section */
+    .features-section {
+      padding: 4rem 2rem;
+    }
+    .feature-card {
+      background-color: #1a202c;
+      border: 1px solid #2d3748;
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+      transition: all 0.3s ease;
+    }
+    .feature-card:hover {
+      border-color: #6366f1;
+    }
+    /* Why Atlas Section */
+    .why-atlas-section {
+      padding: 4rem 2rem;
+      background-color: #1a202c;
+    }
+    .why-atlas-section ul {
+      list-style-type: none;
+      padding-left: 0;
+    }
+    .why-atlas-section li::before {
+      content: "•";
+      color: #6366f1;
+      margin-right: 0.5rem;
+    }
+    /* Footer */
+    footer {
+      background-color: #1a202c;
+      padding: 4rem 2rem;
+      text-align: center;
+    }
+    footer a {
+      color: #9e9e9e;
+      margin: 0 1rem;
+      transition: color 0.3s ease;
+    }
+    footer a:hover {
+      color: white;
+    }
+  </style>
 </head>
 <body>
-    <div id="game-board"></div>
-    <script>
-        const boardSize = 20;
-        let snake = [{ x: 10, y: 10 }];
-        let direction = { x: 0, y: 0 };
-        let food = { x: 5, y: 5 };
+  <div class="min-h-screen">
+    <!-- Hero Section -->
+    <section class="hero-section">
+      <h1>The AI Software Engineer for Modern Development</h1>
+      <p>Atlas understands your repository, reasons through problems, edits code, runs tools, executes tests, and assists throughout the entire software development lifecycle.</p>
 
-        function setup() {
-            document.getElementById('game-board').addEventListener('click', handleClick);
-        }
+      <!-- Reasoning Visualization -->
+      <div class="reasoning-visualization">
+        <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet">
+          <!-- Intent Detection -->
+          <circle cx="25" cy="25" r="15" fill="#6366F1" />
+          <!-- Context Resolution -->
+          <circle cx="50" cy="25" r="15" fill="#8B5CF6" />
+          <!-- Reasoning -->
+          <circle cx="75" cy="25" r="15" fill="#EC4899" />
+          <!-- Planning -->
+          <circle cx="25" cy="50" r="15" fill="#F97386" />
+          <!-- Tool Invocation -->
+          <circle cx="50" cy="50" r="15" fill="#EF4444" />
+          <!-- Response Generation -->
+          <circle cx="75" cy="50" r="15" fill="#F59E0B" />
+          <!-- Connecting lines -->
+          <line x1="25" y1="35" x2="50" y2="25" stroke="#6366F1" stroke-width="2" />
+          <line x1="50" y1="35" x2="75" y2="25" stroke="#8B5CF6" stroke-width="2" />
+          <line x1="25" y1="55" x2="50" y2="50" stroke="#F97386" stroke-width="2" />
+          <line x1="50" y1="55" x2="75" y2="50" stroke="#EF4444" stroke-width="2" />
+        </svg>
+      </div>
 
-        function draw() {
-            const cells = document.querySelectorAll('#game-board div');
-            cells.forEach(cell => cell.style.backgroundColor = '');
+      <!-- CTA Buttons -->
+      <div class="cta-buttons">
+        <a href="#" style="background: linear-gradient(to right, #6366F1, #8B5CF6);">Download Atlas</a>
+        <a href="#" style="background-color: #2d3748;">View Documentation</a>
+      </div>
 
-            snake.forEach(segment => {
-                const x = segment.x * 20;
-                const y = segment.y * 20;
-                cells[y + (x / 20) * boardSize].style.backgroundColor = 'green';
-            });
+      <!-- Decorative Elements -->
+      <div class="decorative-element absolute top-0 right-0 w-48 h-48 bg-gradient-to-br from-gray-800 to-black rounded-full opacity-30"></div>
+      <div class="decorative-element absolute bottom-0 left-0 w-48 h-48 bg-gradient-to-tr from-gray-800 to-black rounded-full opacity-20"></div>
+    </section>
 
-            const foodX = food.x * 20;
-            const foodY = food.y * 20;
-            cells[foodY + (foodX / 20) * boardSize].style.backgroundColor = 'red';
-        }
+    <!-- Developer Experience Section -->
+    <section class="dev-experience-section">
+      <h2>Developer Experience</h2>
+      <div class="pipeline-container">
+        <div class="pipeline-steps">
+          <div class="pipeline-step">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-3v-3h3v3zm0-6h-3v-3h3v3z"/></svg>
+            <p>Developer asks</p>
+          </div>
+          <div class="pipeline-step">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-3v-3h3v3zm0-6h-3v-3h3v3z"/></svg>
+            <p>Atlas understands</p>
+          </div>
+          <div class="pipeline-step">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-3v-3h3v3zm0-6h-3v-3h3v3z"/></svg>
+            <p>Atlas searches</p>
+          </div>
+          <div class="pipeline-step">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-3v-3h3v3zm0-6h-3v-3h3v3z"/></svg>
+            <p>Atlas reasons</p>
+          </div>
+          <div class="pipeline-step">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-3v-3h3v3zm0-6h-3v-3h3v3z"/></svg>
+            <p>Atlas edits</p>
+          </div>
+          <div class="pipeline-step">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-3v-3h3v3zm0-6h-3v-3h3v3z"/></svg>
+            <p>Atlas validates</p>
+          </div>
+          <div class="pipeline-step">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-3v-3h3v3zm0-6h-3v-3h3v3z"/></svg>
+            <p>Atlas explains</p>
+          </div>
+        </div>
+      </div>
+    </section>
 
-        function handleClick(event) {
-            // Handle direction changes
-        }
+    <!-- Core Features Section -->
+    <section class="features-section">
+      <h2>Core Features</h2>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem;">
+        <div class="feature-card">
+          <div style="width: 48px; height: 48px; background-color: #6366F1; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
+            <span style="color: white; font-weight: bold;">1</span>
+          </div>
+          <h3>Repository Understanding</h3>
+          <p>Atlas comprehends your codebase, dependencies, and architecture to provide context-aware assistance.</p>
+        </div>
+        <div class="feature-card">
+          <div style="width: 48px; height: 48px; background-color: #8B5CF6; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
+            <span style="color: white; font-weight: bold;">2</span>
+          </div>
+          <h3>Semantic Search</h3>
+          <p>Discover relevant code patterns, documentation, and solutions through intelligent search.</p>
+        </div>
+        <div class="feature-card">
+          <div style="width: 48px; height: 48px; background-color: #F59E0B; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
+            <span style="color: white; font-weight: bold;">3</span>
+          </div>
+          <h3>Multi-Agent Architecture</h3>
+          <p>Collaborative problem-solving through specialized AI agents working together on your behalf.</p>
+        </div>
+      </div>
+    </section>
 
-        setup();
-    </script>
-</head>
-<body onload="setup()">
+    <!-- Why Atlas Section -->
+    <section class="why-atlas-section">
+      <h2>Why Atlas</h2>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem;">
+        <div>
+          <h3 style="font-weight: bold; margin-bottom: 1rem;">Traditional AI vs. Atlas</h3>
+          <ul>
+            <li><span style="color: #6366F1; margin-right: 0.5rem;">•</span> Traditional AI answers questions. Atlas solves engineering problems.</li>
+            <li><span style="color: #8B5CF6; margin-right: 0.5rem;">•</span> Traditional AI generates code. Atlas understands repositories.</li>
+            <li><span style="color: #F59E0B; margin-right: 0.5rem;">•</span> Traditional AI chats. Atlas collaborates.</li>
+          </ul>
+        </div>
+        <div>
+          <h3 style="font-weight: bold; margin-bottom: 1rem;">Engineering Philosophy</h3>
+          <p>We build tools that understand your workflow, not just respond to prompts. Atlas is designed for developers who want intelligent assistance without the noise.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Architecture Section -->
+    <section class="dev-experience-section">
+      <h2>Architecture</h2>
+      <div style="background-color: #1a202c; padding: 1.5rem; border-radius: 12px; border: 1px solid #2d3748;">
+        <p style="opacity: 0.8; margin-bottom: 1rem;">Our architecture is designed for performance, security, and developer control. It includes:</p>
+        <ul style="list-style-type: none; padding-left: 0;">
+          <li>Frontend</li>
+          <li>Backend</li>
+          <li>Conversation Intelligence</li>
+          <li>Reasoning Engine</li>
+          <li>Prompt Intelligence</li>
+          <li>Repository Indexing</li>
+          <li>Vector Search</li>
+          <li>Tool Invocation</li>
+          <li>LLM</li>
+          <li>Memory</li>
+          <li>Review Pipeline</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+      <p style="opacity: 0.8; margin-bottom: 1rem;">Atlas - The AI Software Engineer for Modern Development</p>
+      <div style="display: flex; justify-content: center; gap: 1rem;">
+        <a href="#" style="color: #9e9e9e;">Documentation</a>
+        <a href="#" style="color: #9e9e9e;">Roadmap</a>
+      </div>
+    </footer>
+  </div>
+
+  <!-- JavaScript -->
+  <script>
+    // No interactivity needed - this is a static page
+  </script>
 </body>
 </html>

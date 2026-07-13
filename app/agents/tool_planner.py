@@ -79,6 +79,23 @@ class ToolPlanner:
         if state["current_step"] >= state["max_steps"]:
             return []
 
+        # ── Hard gate: never plan tools when no repo is connected ─────────────
+        # write_file, read_file, git_diff, run_command all require a repo_path.
+        # search_code requires a repo_id.
+        # If neither exists, no tool can succeed — skip the LLM call entirely.
+        if not state.get("repo_id") and not state.get("repo_path"):
+            return []
+
+        # ── Hard gate: skip tool planning for non-code intents ────────────────
+        # The LLM hallucinates write_file/read_file calls for general chat,
+        # science questions, and explanations. These intents never need tools.
+        _NO_TOOL_INTENTS = {
+            "general_chat", "learning", "deep_teaching", "research",
+            "recommendation", "comparison", "brainstorming", "unknown",
+        }
+        if state.get("intent") in _NO_TOOL_INTENTS:
+            return []
+
         # Build the prompt
         prompt = TOOL_PLANNING_PROMPT.format(
             user_message=state["user_message"],

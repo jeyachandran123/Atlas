@@ -258,7 +258,7 @@ class MessageOut(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(..., min_length=1, max_length=10000)
+    message: str = Field(..., min_length=1, max_length=100000)
     conversation_id: Optional[str] = None
     repo_id: Optional[str] = None
     agent_mode: str = Field(default="auto")  # auto | code | business

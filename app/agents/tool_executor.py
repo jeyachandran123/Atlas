@@ -80,7 +80,7 @@ class ToolExecutor:
             )
 
         except ToolExecutionError as e:
-            logger.error(f"Tool execution failed: {tool_call.tool_name} - {e}")
+            logger.warning(f"Tool skipped — {tool_call.tool_name}: {e}")
             return ToolResult(
                 tool_name=tool_call.tool_name,
                 success=False,

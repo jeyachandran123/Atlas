@@ -1,10 +1,16 @@
 """
-User prompt builder — V2 Dynamic Prompt Architecture.
+User prompt builder — V3 Prompt Intelligence Architecture.
 
-build_user_prompt() assembles the user-turn message that goes to the LLM.
-The system prompt is now built by PromptComposer and stored in state["system_prompt"].
+build_user_prompt() assembles the user-turn message sent to the LLM.
+The system prompt is built by DynamicPromptComposer (which uses PromptIntelligenceEngine).
 
-This file only handles the USER prompt (context, history, tool results, request).
+This file handles the USER prompt only:
+  - Codebase context (from ChromaDB)
+  - Conversation history (filtered by PromptIntelligenceEngine, not raw)
+  - Tool results
+  - Review feedback
+  - Truthfulness notes
+  - The user's request (clean, no template injection)
 """
 
 from __future__ import annotations
@@ -25,15 +31,15 @@ def build_user_prompt(
     self_corrections: list[str] | None = None,
 ) -> str:
     """
-    Build the full user-turn prompt for the LLM.
+    Build the user-turn prompt for the LLM.
 
     Structure:
-      [CONTEXT]              Retrieved code chunks from ChromaDB
-      [CONVERSATION]         Last N conversation turns
-      [TOOL RESULTS]         Results from tools called this turn
-      [REVIEW FEEDBACK]      Issues from ReviewAgent (revision passes only)
-      [TRUTHFULNESS NOTES]   Warnings and self-corrections (if any)
-      [REQUEST]              Enhanced user message
+      [CONTEXT]           Retrieved code chunks from ChromaDB
+      [CONVERSATION]      Filtered conversation turns (resolved by PromptIntelligenceEngine)
+      [TOOL RESULTS]      Results from tools called this turn
+      [REVIEW FEEDBACK]   Issues from ReviewAgent (revision passes only)
+      [TRUTHFULNESS]      Warnings and self-corrections (if any)
+      [REQUEST]           The user's message (clean pass-through)
     """
     parts: list[str] = []
 
@@ -41,7 +47,9 @@ def build_user_prompt(
     if context_block and context_block != "No relevant code context found.":
         parts.append(f"### CODEBASE CONTEXT\n{context_block}")
 
-    # 2. Conversation history (last 6 messages = 3 turns)
+    # 2. Conversation history
+    # session_messages here are already filtered by the PromptIntelligenceEngine
+    # via the orchestrator's load_memory_node + context resolver.
     if session_messages:
         history_parts = []
         prev_mode = None
@@ -51,7 +59,6 @@ def build_user_prompt(
             mode = msg.get("agent_mode", "auto")
             if not content:
                 continue
-            # Insert a mode-switch marker when mode changes
             if mode != prev_mode:
                 history_parts.append(f"[Mode: {mode.upper()}]")
                 prev_mode = mode
@@ -87,28 +94,19 @@ def build_user_prompt(
             truth_parts.append("WARNINGS:\n" + "\n".join(f"- {w}" for w in warnings))
         parts.append("### TRUTHFULNESS NOTES\n" + "\n\n".join(truth_parts))
 
-    # 6. User request
+    # 6. User request — clean pass-through (no template injection)
     enhanced = enhance_user_message(message, intent, agent_mode)
     parts.append(f"### REQUEST\n{enhanced}")
 
     return "\n\n".join(parts)
 
 
-# ── Backward-compatibility alias ──────────────────────────────────────────────
-# Old code that imports build_coding_prompt still works.
+# Backward-compatibility alias
 build_coding_prompt = build_user_prompt
 
 
 def build_system_prompt(intent: str, agent_mode: str = "auto") -> str:
-    """
-    Backward-compatibility shim.
-    New code uses PromptComposer. This is kept for any direct callers.
-    """
+    """Backward-compatibility shim."""
     from app.prompts.composer import get_composer
-    # Build a minimal fake state for the composer
-    fake_state = {
-        "user_message": "",
-        "intent": intent,
-        "agent_mode": agent_mode,
-    }
+    fake_state = {"user_message": "", "intent": intent, "agent_mode": agent_mode}
     return get_composer().compose(fake_state)  # type: ignore[arg-type]

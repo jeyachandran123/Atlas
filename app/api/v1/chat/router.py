@@ -24,7 +24,7 @@ from app.agents.orchestrator import AgentOrchestrator ,get_orchestrator_dep
 from app.agents.state import initial_state
 from app.auth import get_current_user, require_developer
 from app.database import get_db
-from app.db.models import User
+from app.db.models import User, Message, AgentExecution
 from app.db.repositories import ConversationRepository, RepositoryRepo
 from app.redis_client import get_session_messages, push_session_message
 from app.shared.exceptions import ConversationNotFoundError, RepositoryNotFoundError
@@ -403,6 +403,72 @@ async def pin_conversation(
     await db.commit()
     
     return {"id": conversation_id, "is_pinned": True}
+
+
+@router.delete("/conversations/{conversation_id}/messages/from/{message_id}")
+async def truncate_messages_from(
+    conversation_id: str,
+    message_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Delete a message and all messages after it in the conversation."""
+    from sqlalchemy import delete as sql_delete
+    conv_repo = ConversationRepository(db)
+    conv = await conv_repo.get_by_id(conversation_id)
+
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    if conv.user_id != current_user.id:
+        raise HTTPException(403, "Access denied")
+
+    target = next((m for m in conv.messages if m.id == message_id), None)
+    if not target:
+        raise HTTPException(404, "Message not found")
+
+    # Collect IDs to delete agent_executions first (FK constraint)
+    msg_ids = [m.id for m in conv.messages if m.created_at >= target.created_at]
+    await db.execute(
+        sql_delete(AgentExecution).where(AgentExecution.message_id.in_(msg_ids))
+    )
+    await db.execute(
+        sql_delete(Message).where(
+            Message.conversation_id == conversation_id,
+            Message.created_at >= target.created_at,
+        )
+    )
+    await db.commit()
+    return {"deleted_from": message_id}
+
+
+@router.delete("/conversations/{conversation_id}/messages/{message_id}")
+async def delete_single_message(
+    conversation_id: str,
+    message_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Delete a single message by ID (and its agent_executions)."""
+    from sqlalchemy import delete as sql_delete
+    conv_repo = ConversationRepository(db)
+    conv = await conv_repo.get_by_id(conversation_id)
+
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    if conv.user_id != current_user.id:
+        raise HTTPException(403, "Access denied")
+
+    target = next((m for m in conv.messages if m.id == message_id), None)
+    if not target:
+        raise HTTPException(404, "Message not found")
+
+    # Delete agent_executions first to satisfy FK constraint
+    await db.execute(
+        sql_delete(AgentExecution).where(AgentExecution.message_id == message_id)
+    )
+    await db.execute(sql_delete(Message).where(Message.id == message_id))
+    await db.commit()
+    return {"deleted": message_id}
 
 
 @router.delete("/conversations/{conversation_id}/pin")

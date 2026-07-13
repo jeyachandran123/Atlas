@@ -1,21 +1,20 @@
 """
-Dynamic Prompt Composer.
+Dynamic Prompt Composer — V2.
 
-Builds a structured system prompt from modular fragments.
-There is no single static system prompt. Every request generates a different prompt.
+Builds the system prompt from a PromptPlan produced by the PromptIntelligenceEngine.
+No static templates. Every section is derived from analysis.
 
-Inputs:
-- IntelligenceContext (intent, complexity, strategy, persona, policy, retrieved knowledge)
-
-Output:
-- A structured system prompt string
-- A list of module keys used (for observability)
-
-Design:
-- Each prompt section is an independent fragment
-- Fragments are selected based on context, never hardcoded
-- No duplication — each fragment appears at most once
-- The existing REGISTRY from app.prompts.registry is reused for domain modules
+Sections assembled (only those that add value are included):
+  1. Identity
+  2. Personality principles (behavioural, not scripted)
+  3. Response strategy instruction
+  4. Depth instruction
+  5. Conversation continuity note
+  6. Policy warnings
+  7. Domain knowledge modules (from registry, only when relevant)
+  8. Long-term memory
+  9. Code context
+  10. Tool results
 """
 
 from __future__ import annotations
@@ -29,31 +28,30 @@ from app.intelligence.models import (
     ResponseStrategy,
 )
 from app.intelligence.persona.engine import _PERSONAS
+from app.intelligence.prompting.engine import PromptIntelligenceEngine, get_prompt_intelligence_engine
 from app.intelligence.strategy.planner import STRATEGY_REGISTRY
 
 
 def _get_domain_registry() -> dict:
-    """Lazy import — avoids pulling in the full prompt module chain at import time."""
     from app.prompts.registry import REGISTRY
     return REGISTRY
 
 
-# ── Prompt Section Builders ───────────────────────────────────────────────────
+# ── Section builders ──────────────────────────────────────────────────────────
 
-
-def _build_identity_section() -> str:
+def _build_identity() -> str:
     return (
         "You are Atlas, an AI engineering platform. "
-        "You are not a generic chatbot. You are a specialized engineering intelligence "
-        "built to help software teams design, build, debug, and understand software systems."
+        "You are a specialized engineering intelligence built to help software teams "
+        "design, build, debug, and understand software systems. "
+        "You also answer general knowledge, science, and educational questions with depth and clarity."
     )
 
 
-def _build_persona_section(persona: Persona) -> str:
-    definition = _PERSONAS.get(persona)
-    if not definition:
+def _build_personality_section(principles: list[str]) -> str:
+    if not principles:
         return ""
-    return definition.prompt_fragment
+    return "Behavioural principles:\n" + "\n".join(f"- {p}" for p in principles)
 
 
 def _build_strategy_section(strategy: ResponseStrategy) -> str:
@@ -72,25 +70,8 @@ def _build_policy_section(context: IntelligenceContext) -> str:
     return ""
 
 
-def _build_conversation_section(context: IntelligenceContext) -> str:
-    conv = context.conversation
-    if not conv.is_continuation:
-        return ""
-    parts = [f"This is a continuation of an ongoing conversation. Turn type: {conv.turn_type.value}."]
-    if conv.prior_context_summary:
-        parts.append(f"Prior context: {conv.prior_context_summary[:150]}")
-    if conv.assumptions:
-        parts.append("Established context: " + "; ".join(conv.assumptions[:3]))
-    return " ".join(parts)
-
-
-def _build_complexity_section(context: IntelligenceContext) -> str:
-    c = context.complexity
-    return (
-        f"Response depth: {c.reasoning_depth}. "
-        f"Expected length: {c.expected_response_length}. "
-        f"Token budget: {c.expected_token_budget} tokens."
-    )
+def _build_continuity_section(continuity_note: str) -> str:
+    return continuity_note  # already a clean sentence from context resolver
 
 
 def _build_memory_section(context: IntelligenceContext) -> str:
@@ -121,10 +102,7 @@ def _build_tool_results_section(context: IntelligenceContext) -> str:
 
 
 def _select_domain_modules(context: IntelligenceContext) -> list[str]:
-    """
-    Select domain-specific prompt modules from the existing REGISTRY
-    based on detected context in the message.
-    """
+    """Select domain modules only when genuinely relevant."""
     registry = _get_domain_registry()
     message = context.user_message.lower()
     selected: list[str] = []
@@ -135,7 +113,6 @@ def _select_domain_modules(context: IntelligenceContext) -> list[str]:
             seen.add(key)
             selected.append(key)
 
-    # Language detection
     lang_map = {
         "typescript": "typescript", ".ts": "typescript", ".tsx": "typescript",
         "javascript": "javascript", " js ": "javascript",
@@ -148,9 +125,8 @@ def _select_domain_modules(context: IntelligenceContext) -> list[str]:
     for kw, key in lang_map.items():
         if kw in message:
             add(key)
-            break  # one language module is enough
+            break
 
-    # Framework detection
     fw_map = {
         "react": "react", "next.js": "nextjs", "nextjs": "nextjs",
         "vue": "vue", "fastapi": "fastapi", "django": "django",
@@ -160,7 +136,6 @@ def _select_domain_modules(context: IntelligenceContext) -> list[str]:
         if kw in message:
             add(key)
 
-    # Database detection
     db_map = {
         "postgresql": "postgresql", "postgres": "postgresql",
         "mysql": "mysql", "mongodb": "mongodb", "redis": "redis",
@@ -169,7 +144,6 @@ def _select_domain_modules(context: IntelligenceContext) -> list[str]:
         if kw in message:
             add(key)
 
-    # Cloud/infra detection
     cloud_map = {
         "aws": "aws", "azure": "azure", "gcp": "gcp",
         "docker": "docker", "kubernetes": "kubernetes",
@@ -178,25 +152,21 @@ def _select_domain_modules(context: IntelligenceContext) -> list[str]:
         if kw in message:
             add(key)
 
-    # Security
     if any(k in message for k in ["security", "auth", "jwt", "oauth", "owasp"]):
         add("owasp")
         add("auth_security")
 
-    # AI/agents
     if any(k in message for k in ["langgraph", "langchain", "rag", "embedding", "agent"]):
         add("langgraph")
         add("rag")
 
-    # Architecture
     if any(k in message for k in ["clean architecture", "ddd", "microservice", "solid"]):
         add("clean_architecture")
 
-    # Testing
     if any(k in message for k in ["pytest", "unit test", "jest", "vitest"]):
         add("unit_testing")
 
-    # Always include truthfulness
+    # Always include truthfulness and output standards
     add("truthfulness_core")
     add("output_standards")
 
@@ -205,62 +175,66 @@ def _select_domain_modules(context: IntelligenceContext) -> list[str]:
 
 # ── Composer ──────────────────────────────────────────────────────────────────
 
-
 class DynamicPromptComposer(AbstractPromptComposer):
     """
-    Builds a structured system prompt from modular fragments.
-    Every request produces a different prompt.
+    Builds the system prompt from a PromptPlan.
+    Every section is derived from analysis — no static templates.
     """
+
+    def __init__(self, prompt_engine: PromptIntelligenceEngine | None = None) -> None:
+        self._prompt_engine = prompt_engine or get_prompt_intelligence_engine()
 
     def compose(self, context: IntelligenceContext) -> tuple[str, list[str]]:
         """
         Returns (system_prompt, modules_used).
-        modules_used is for observability.
         """
-        sections: list[str] = []
-        modules_used: list[str] = []
+        # Run the Prompt Intelligence Engine
+        plan = self._prompt_engine.plan(context)
 
-        def add_section(key: str, text: str) -> None:
+        sections: list[str] = []
+        modules_used: list[str] = list(plan.modules_applied)
+
+        def add(key: str, text: str) -> None:
             if text.strip():
                 sections.append(text.strip())
                 modules_used.append(key)
 
-        # 1. Identity (always)
-        add_section("identity", _build_identity_section())
+        # 1. Identity
+        add("identity", _build_identity())
 
-        # 2. Persona
-        add_section("persona", _build_persona_section(context.persona))
+        # 2. Personality principles (behavioural, not scripted)
+        add("personality", _build_personality_section(plan.personality_principles))
 
         # 3. Response strategy
-        add_section("strategy", _build_strategy_section(context.strategy))
+        add("strategy", _build_strategy_section(context.strategy))
 
-        # 4. Complexity guidance
-        add_section("complexity", _build_complexity_section(context))
+        # 4. Depth instruction (from PromptPlan — dynamic, not hardcoded)
+        add("depth", plan.depth.depth_instruction)
 
-        # 5. Conversation continuity
-        add_section("conversation", _build_conversation_section(context))
+        # 5. Conversation continuity (only when relevant)
+        if plan.resolved_context.continuity_note:
+            add("continuity", _build_continuity_section(plan.resolved_context.continuity_note))
 
         # 6. Policy warnings
-        add_section("policy", _build_policy_section(context))
+        add("policy", _build_policy_section(context))
 
-        # 7. Domain modules from existing registry
+        # 7. Domain modules (only when relevant to the actual message)
         domain_keys = _select_domain_modules(context)
         for key in domain_keys:
             fragment = _get_domain_registry().get(key, "")
-            add_section(f"domain:{key}", fragment)
+            add(f"domain:{key}", fragment)
 
         # 8. Long-term memory
-        add_section("memory", _build_memory_section(context))
+        add("memory", _build_memory_section(context))
 
         # 9. Code context
-        add_section("code_context", _build_code_context_section(context))
+        add("code_context", _build_code_context_section(context))
 
         # 10. Tool results
-        add_section("tool_results", _build_tool_results_section(context))
+        add("tool_results", _build_tool_results_section(context))
 
         return "\n\n".join(sections), modules_used
 
-    # Satisfy the abstract interface (returns just the prompt string)
     def compose_prompt(self, context: IntelligenceContext) -> str:
         prompt, _ = self.compose(context)
         return prompt

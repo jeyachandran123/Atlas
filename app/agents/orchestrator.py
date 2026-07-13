@@ -444,6 +444,20 @@ class AgentOrchestrator:
                         repo_path = repo.local_path
             except Exception:
                 pass
+
+        # Drop any file/git/command tools if there is no repo_path.
+        # These tools will always fail without it — no point executing them.
+        _REPO_REQUIRED_TOOLS = {"write_file", "read_file", "git_diff", "run_command"}
+        if not repo_path:
+            filtered = [tc for tc in state["tool_calls"] if tc.tool_name not in _REPO_REQUIRED_TOOLS]
+            if len(filtered) < len(state["tool_calls"]):
+                from loguru import logger
+                dropped = [tc.tool_name for tc in state["tool_calls"] if tc.tool_name in _REPO_REQUIRED_TOOLS]
+                logger.warning(f"Dropped tool calls (no repo connected): {dropped}")
+            if not filtered:
+                return {**state, "tool_calls": []}
+            state = {**state, "tool_calls": filtered}
+
         context = {
             "user_id": state["user_id"], "org_id": state["org_id"],
             "repo_id": state.get("repo_id"), "conversation_id": state["conversation_id"],
