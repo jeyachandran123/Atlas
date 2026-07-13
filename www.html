@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Snake Game</title>
+    <style>
+        #game-board {
+            width: 400px;
+            height: 400px;
+            background-color: #f0f0f0;
+            display: grid;
+            grid-template-columns: repeat(20, 20px);
+            grid-template-rows: repeat(20, 20px);
+        }
+    </style>
+</head>
+<body>
+    <div id="game-board"></div>
+    <script>
+        const boardSize = 20;
+        let snake = [{ x: 10, y: 10 }];
+        let direction = { x: 0, y: 0 };
+        let food = { x: 5, y: 5 };
+
+        function setup() {
+            document.getElementById('game-board').addEventListener('click', handleClick);
+        }
+
+        function draw() {
+            const cells = document.querySelectorAll('#game-board div');
+            cells.forEach(cell => cell.style.backgroundColor = '');
+
+            snake.forEach(segment => {
+                const x = segment.x * 20;
+                const y = segment.y * 20;
+                cells[y + (x / 20) * boardSize].style.backgroundColor = 'green';
+            });
+
+            const foodX = food.x * 20;
+            const foodY = food.y * 20;
+            cells[foodY + (foodX / 20) * boardSize].style.backgroundColor = 'red';
+        }
+
+        function handleClick(event) {
+            // Handle direction changes
+        }
+
+        setup();
+    </script>
+</head>
+<body onload="setup()">
+</body>
+</html>

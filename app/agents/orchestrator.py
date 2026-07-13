@@ -1,27 +1,25 @@
 """
-LangGraph orchestrator — V2 Dynamic Prompt Architecture.
+LangGraph orchestrator — V3 Conversation Intelligence Engine.
 
 Graph flow:
   START
     ↓
-  route_intent        detect intent (code/fix/review/explain/test/search/chat)
+  intelligence_prepare  ConversationIntelligenceEngine.prepare()
+                        (intent → complexity → conversation → policy →
+                         persona → strategy → context → tool_plan → prompt)
     ↓
-  detect_context      detect language, framework, database, cloud, business domain
+  load_memory           load session + long-term memory
     ↓
-  compose_prompt      PromptComposer builds system_prompt from detected context
+  retrieve_context      fetch relevant code from ChromaDB
     ↓
-  load_memory         load session + long-term memory
-    ↓
-  retrieve_context    fetch relevant code from ChromaDB (code mode only)
-    ↓
-  plan_tools          decide which tools to call
+  plan_tools            LLM-based tool planning (fallback / refinement)
     ↓
   ┌─────────────────────────────────────────────────┐
   │ Tool Loop (max 5 iterations)                    │
   │   execute_tools → coding_agent → should_continue│
   └─────────────────────────────────────────────────┘
     ↓
-  self_correct        detect contradictions, inject corrections into state
+  self_correct          detect contradictions, inject corrections
     ↓
   should_review?
     ├── yes → review_agent → check_revision
@@ -53,6 +51,8 @@ from app.prompts.composer import PromptComposer, get_composer
 from app.retrieval.context_builder import ContextBuilder
 from app.retrieval.retriever import CodeRetriever
 from app.vector_store.base import VectorStore
+from app.intelligence.context.resolver import ContextResolutionEngine, get_context_resolution_engine
+from app.intelligence.engine import ConversationIntelligenceEngine, get_engine
 
 
 # ── Intent detection ──────────────────────────────────────────────────────────
@@ -184,6 +184,8 @@ class AgentOrchestrator:
         context_builder: Optional[ContextBuilder] = None,
         memory_manager: Optional[MemoryManager] = None,
         composer: Optional[PromptComposer] = None,
+        intelligence_engine: Optional[ConversationIntelligenceEngine] = None,
+        context_resolver: Optional[ContextResolutionEngine] = None,
     ) -> None:
         self._vs = vector_store
         self._coding_agent = coding_agent or CodingAgent()
@@ -194,11 +196,14 @@ class AgentOrchestrator:
         self._tool_planner = get_tool_planner()
         self._tool_executor = get_tool_executor()
         self._composer = composer or get_composer()
+        self._intelligence = intelligence_engine or get_engine()
+        self._context_resolver = context_resolver or get_context_resolution_engine()
         self._graph = self._build_graph()
 
     def _build_graph(self) -> StateGraph:
         graph = StateGraph(AgentState)
 
+        graph.add_node("intelligence_prepare", self._intelligence_prepare_node)
         graph.add_node("route_intent",      self._route_intent_node)
         graph.add_node("detect_context",    self._detect_context_node)
         graph.add_node("compose_prompt",    self._compose_prompt_node)
@@ -213,7 +218,13 @@ class AgentOrchestrator:
         graph.add_node("increment_revision",self._increment_revision_node)
         graph.add_node("finalise",          self._finalise_node)
 
-        graph.add_edge(START,               "route_intent")
+        graph.add_edge(START,               "intelligence_prepare")
+        # V3 success → skip legacy nodes; V3 failure → run legacy fallback pipeline
+        graph.add_conditional_edges(
+            "intelligence_prepare",
+            lambda s: "load_memory" if s.get("intelligence_context") else "route_intent",
+            {"load_memory": "load_memory", "route_intent": "route_intent"},
+        )
         graph.add_edge("route_intent",      "detect_context")
         graph.add_edge("detect_context",    "compose_prompt")
         graph.add_edge("compose_prompt",    "load_memory")
@@ -263,6 +274,61 @@ class AgentOrchestrator:
         return graph.compile()
 
     # ── Nodes ─────────────────────────────────────────────────────────────────
+
+    async def _intelligence_prepare_node(self, state: AgentState) -> AgentState:
+        """
+        V3: Run the full ConversationIntelligenceEngine pre-LLM pipeline.
+        Replaces route_intent + detect_context + compose_prompt in one call.
+        Stores intelligence_trace in state for observability.
+        """
+        from loguru import logger
+        try:
+            result = await self._intelligence.prepare(state)
+
+            if result.is_blocked:
+                return {
+                    **state,
+                    "intent": "chat",
+                    "system_prompt": "",
+                    "draft_output": result.block_response or "I cannot help with that request.",
+                    "refused": True,
+                    "intelligence_trace": result.trace,
+                }
+
+            # Map intelligence intent back to legacy intent string for downstream nodes
+            primary_intent = result.context.intent_analysis.primary.intent.value
+            legacy_intent_map = {
+                "coding": "code", "debugging": "fix", "testing": "test",
+                "refactoring": "code", "repository_question": "search",
+                "documentation": "explain", "learning": "explain",
+                "deep_teaching": "explain", "general_chat": "chat",
+            }
+            legacy_intent = legacy_intent_map.get(primary_intent, "chat")
+
+            return {
+                **state,
+                "intent": legacy_intent,
+                "system_prompt": result.system_prompt,
+                "intelligence_context": result.context,
+                "intelligence_trace": result.trace,
+                "intelligence_reasoning_result": result.reasoning_result,
+                # Populate detected_* fields for backward compat with existing nodes
+                "detected_language": "",
+                "detected_framework": "",
+                "detected_database": "",
+                "detected_cloud": "",
+                "detected_business_domain": "",
+                "detected_architecture": "",
+                "detected_testing": "",
+                "detected_security": False,
+                "detected_ai_domain": False,
+            }
+        except Exception as e:
+            logger.error(f"Intelligence engine prepare failed: {e}")
+            # Graceful degradation: fall back to legacy intent detection
+            intent = _detect_intent(state["user_message"], state.get("agent_mode", "auto"))
+            system_prompt = self._composer.compose(state)
+            return {**state, "intent": intent, "system_prompt": system_prompt}
 
     async def _route_intent_node(self, state: AgentState) -> AgentState:
         intent = _detect_intent(state["user_message"], state.get("agent_mode", "auto"))
@@ -316,7 +382,34 @@ class AgentOrchestrator:
                 conversation_id=state["conversation_id"],
                 limit=10,
             )
-            return {**state, "session_messages": session_messages, "memory_context": memory_context}
+
+            # ── Context Resolution: filter messages by topic relevance ────────
+            resolution = self._context_resolver.resolve(
+                message=state["user_message"],
+                session_messages=session_messages,
+                conversation_id=state["conversation_id"],
+                intent=state.get("intent", ""),
+            )
+            filtered_messages = self._context_resolver.filter_messages(
+                session_messages, resolution
+            )
+
+            from loguru import logger
+            logger.debug(
+                f"Context resolution: {resolution.relation.value} | "
+                f"{len(session_messages)} → {len(filtered_messages)} messages | "
+                f"topic_changed={resolution.topic_changed}"
+            )
+
+            # If topic changed, don't include old memory context either
+            if resolution.topic_changed:
+                memory_context = ""
+
+            return {
+                **state,
+                "session_messages": filtered_messages,
+                "memory_context": memory_context,
+            }
         except Exception as e:
             from loguru import logger
             logger.warning(f"Failed to load memory: {e}")
@@ -568,29 +661,25 @@ class AgentOrchestrator:
         except Exception as e:
             logger.warning(f"Failed to pre-save user message: {e}")
 
-        # Phase 1: pipeline (no streaming)
+        # Phase 1: Intelligence pipeline (no streaming)
         try:
-            state = await self._route_intent_node(state)
+            # V3: Run the full intelligence engine
+            state = await self._intelligence_prepare_node(state)
 
-            # Short-circuit: if refused (e.g. code mode + non-code topic), stream refusal directly
+            # Short-circuit on policy block
             if state.get("refused"):
-                from app.prompts.enhancer import enhance_user_message
-                refusal = enhance_user_message(
-                    state["user_message"], state.get("intent", "chat"), state.get("agent_mode", "auto")
-                )
-                yield refusal
+                block_response = state.get("draft_output", "I cannot help with that request.")
+                yield block_response
                 try:
                     await self._memory.add_message(
                         user_id=state["user_id"], conversation_id=state["conversation_id"],
-                        role="assistant", content=refusal,
+                        role="assistant", content=block_response,
                         agent_mode=state.get("agent_mode", "auto"),
                     )
                 except Exception:
                     pass
                 return
 
-            state = await self._detect_context_node(state)
-            state = await self._compose_prompt_node(state)
             state = await self._load_memory_node(state)
             state = await self._retrieve_context_node(state)
             state = await self._plan_tools_node(state)
@@ -601,7 +690,6 @@ class AgentOrchestrator:
                 state = await self._execute_tools_node(state)
                 state = await self._plan_tools_node(state)
 
-            # Run self-correction before streaming
             state = await self._self_correct_node(state)
 
         except Exception as e:
@@ -625,6 +713,26 @@ class AgentOrchestrator:
             self_corrections=state.get("self_corrections", []),
         )
 
+        # ── DEBUG: print final prompts sent to LLM ────────────────────────────
+        from app.config import get_settings as _gs
+        _cfg = _gs()
+        _sep = "=" * 80
+        _debug_output = (
+            f"\n{_sep}\n"
+            f"[FINAL PROMPT → LLM]\n"
+            f"  provider : {_cfg.llm_provider}\n"
+            f"  model    : {self._coding_agent._get_model(state.get('agent_mode', 'auto'))}\n"
+            f"  intent   : {state.get('intent')}  |  mode: {state.get('agent_mode', 'auto')}\n"
+            f"  temp     : {self._coding_agent._get_temperature(state['intent'], state.get('agent_mode', 'auto'))}\n"
+            f"\n--- SYSTEM PROMPT ({len(system_prompt)} chars) ---\n"
+            f"{system_prompt}\n"
+            f"\n--- USER PROMPT ({len(user_prompt)} chars) ---\n"
+            f"{user_prompt}\n"
+            f"{_sep}"
+        )
+        print(_debug_output, flush=True)
+        logger.debug(_debug_output)
+
         full_response = ""
         try:
             async for chunk in self._coding_agent._ollama.chat_stream(
@@ -641,7 +749,24 @@ class AgentOrchestrator:
             logger.error(f"Stream LLM call failed: {e}")
             yield f"\n\nError generating response: {str(e)}"
 
-        # Phase 3: save assistant response
+        # Phase 3: Post-LLM review + format via intelligence engine
+        intel_context = state.get("intelligence_context")
+        reasoning_result = state.get("intelligence_reasoning_result")
+        if full_response and intel_context:
+            try:
+                reviewed = self._intelligence.review(
+                    full_response, intel_context, reasoning_result
+                )
+                full_response = reviewed.response
+                if reviewed.review_issues:
+                    logger.debug(
+                        f"Response reviewer flagged issues: {reviewed.review_issues}",
+                        extra={"request_id": state.get("request_id", "")},
+                    )
+            except Exception as e:
+                logger.warning(f"Response review failed (non-blocking): {e}")
+
+        # Phase 4: save assistant response
         try:
             if full_response:
                 await self._memory.add_message(

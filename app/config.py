@@ -72,6 +72,17 @@ class Settings(BaseSettings):
     ollama_chat_temperature: float = 0.3   # slightly creative for richer prose
     ollama_code_temperature: float = 0.15  # more deterministic for code blocks
 
+    # ── LLM Provider ─────────────────────────────────────────────────────────────
+    llm_provider: Literal["ollama", "nvidia"] = "ollama"
+
+    # ── NVIDIA ───────────────────────────────────────────────────────────────────
+    nvidia_api_key: SecretStr = SecretStr("")
+    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
+    nvidia_chat_model: str = "deepseek-ai/deepseek-v4-pro"
+    nvidia_temperature: float = 1.0
+    nvidia_top_p: float = 0.95
+    nvidia_max_tokens: int = 16384
+
     @field_validator("ollama_host", mode="before")
     @classmethod
     def normalize_ollama_host(cls, v: str) -> str:

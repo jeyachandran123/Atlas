@@ -6,7 +6,6 @@ build-backend = "setuptools.build_meta"
 name = "atlas"
 authors = [
   { name = "Jeyachandran S" }
-
 ]
 version = "1.0.0"
 description = "Local-first AI Coding Assistant — production-ready"

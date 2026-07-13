@@ -48,6 +48,11 @@ def configure_logging() -> None:
             ),
             level=cfg.log_level,
             serialize=True,
+            filter=lambda r: not (
+                r["level"].name == "DEBUG"
+                and "reasoning" not in r["name"]
+                and "intelligence" not in r["name"]
+            ),
         )
     else:
         logger.add(
@@ -55,6 +60,11 @@ def configure_logging() -> None:
             format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan> — {message}",
             level=cfg.log_level,
             colorize=True,
+            filter=lambda r: not (
+                r["level"].name == "DEBUG"
+                and "reasoning" not in r["name"]
+                and "intelligence" not in r["name"]
+            ),
         )
 
 
