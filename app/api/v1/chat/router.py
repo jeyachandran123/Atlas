@@ -15,14 +15,17 @@ import time
 import uuid
 from typing import AsyncGenerator, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.orchestrator import AgentOrchestrator ,get_orchestrator_dep
+from app.agents.orchestrator import AgentOrchestrator, get_orchestrator_dep
 from app.agents.state import initial_state
 from app.auth import get_current_user, require_developer
+from app.config import get_settings as _get_settings
+
+cfg = _get_settings()
 from app.database import get_db
 from app.db.models import User, Message, AgentExecution
 from app.db.repositories import ConversationRepository, RepositoryRepo
@@ -32,8 +35,13 @@ from app.shared.schemas import (
     ChatRequest,
     ChatResponse,
     ConversationOut,
+    MessageImageOut,
     MessageOut,
 )
+from app.vision.service import get_vision_service
+from app.vision.image_storage import ALLOWED_MIME_TYPES, MAX_IMAGE_SIZE, get_image_storage
+from app.vision.schemas import ImageAttachment
+from app.db.models import MessageImage as MessageImageModel
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -108,6 +116,70 @@ async def list_conversations(
     }
 
 
+def _build_image_url(img: MessageImageModel) -> str:
+    """Build the serving URL for a message image (relative to API prefix)."""
+    return f"/chat/images/{img.id}"
+
+
+def _message_to_out(m: Message) -> MessageOut:
+    """Convert a Message ORM model to MessageOut with images."""
+    images = []
+    if hasattr(m, 'images') and m.images:
+        images = [
+            MessageImageOut(
+                id=img.id,
+                filename=img.filename,
+                mime_type=img.mime_type,
+                size_bytes=img.size_bytes,
+                width=img.width,
+                height=img.height,
+                url=_build_image_url(img),
+            )
+            for img in m.images
+        ]
+    return MessageOut(
+        id=m.id,
+        conversation_id=m.conversation_id,
+        role=m.role,
+        content=m.content,
+        agent_used=m.agent_used,
+        tokens_used=m.tokens_used,
+        images=images,
+        created_at=m.created_at,
+    )
+
+
+@router.get("/images/{image_id}")
+async def serve_image(
+    image_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve a stored image by ID."""
+    from fastapi.responses import FileResponse
+    from sqlalchemy import select as sql_select
+
+    result = await db.execute(
+        sql_select(MessageImageModel).where(MessageImageModel.id == image_id)
+    )
+    img = result.scalar_one_or_none()
+    if not img:
+        raise HTTPException(404, "Image not found")
+
+    # Verify user owns the conversation
+    conv_repo = ConversationRepository(db)
+    conv = await conv_repo.get_by_id(img.conversation_id)
+    if not conv or conv.user_id != current_user.id:
+        raise HTTPException(403, "Access denied")
+
+    storage = get_image_storage()
+    file_path = storage._dir / img.storage_path
+    if not file_path.exists():
+        raise HTTPException(404, "Image file not found")
+
+    return FileResponse(file_path, media_type=img.mime_type)
+
+
 @router.get("/conversations/{conversation_id}/messages", response_model=list[MessageOut])
 async def get_messages(
     conversation_id: str,
@@ -123,18 +195,7 @@ async def get_messages(
     if conv.user_id != current_user.id:
         raise HTTPException(403, "Access denied")
 
-    return [
-        MessageOut(
-            id=m.id,
-            conversation_id=m.conversation_id,
-            role=m.role,
-            content=m.content,
-            agent_used=m.agent_used,
-            tokens_used=m.tokens_used,
-            created_at=m.created_at,
-        )
-        for m in conv.messages
-    ]
+    return [_message_to_out(m) for m in conv.messages]
 
 
 @router.post("/message", response_model=ChatResponse)
@@ -195,6 +256,21 @@ async def send_message(
     tokens_used = result_state.get("tokens_used", 0)
     context_chunks = result_state.get("context_chunks_used", 0)
     latency_ms = int((time.monotonic() - start) * 1000)
+    clarification_asked = result_state.get("should_clarify", False)
+    rewritten_query_used = bool(
+        result_state.get("rewritten_query", "") != req.message
+    )
+
+    # Build trace dict for debug mode
+    trace_data = None
+    if cfg.app_debug:
+        intel_trace = result_state.get("intelligence_trace")
+        if intel_trace:
+            try:
+                from dataclasses import asdict
+                trace_data = asdict(intel_trace)
+            except Exception:
+                trace_data = {"request_id": getattr(intel_trace, "request_id", "")}
 
     # Save assistant message
     assistant_msg = await conv_repo.add_message(
@@ -227,6 +303,9 @@ async def send_message(
         tokens_used=tokens_used,
         latency_ms=latency_ms,
         context_chunks_used=context_chunks,
+        trace=trace_data,
+        clarification_asked=clarification_asked,
+        rewritten_query_used=rewritten_query_used,
     )
 
 
@@ -236,7 +315,7 @@ async def stream_message(
     request: Request,
     current_user: User = Depends(require_developer),
     db: AsyncSession = Depends(get_db),
-) -> StreamingResponse:
+) -> StreamingResponse:  # noqa: C901 — complex but cohesive
     """
     Send a message and receive a streaming response via Server-Sent Events.
 
@@ -336,6 +415,219 @@ async def stream_message(
     )
 
 
+# ── Vision-enabled streaming endpoint (multipart/form-data) ──────────────────
+
+
+@router.post("/stream/vision")
+async def stream_vision_message(
+    request: Request,
+    message: str = Form(...),
+    conversation_id: Optional[str] = Form(None),
+    repo_id: Optional[str] = Form(None),
+    agent_mode: str = Form("auto"),
+    images: list[UploadFile] = File(default=[]),
+    current_user: User = Depends(require_developer),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """
+    Vision-enabled streaming chat via multipart/form-data.
+
+    Accepts images alongside text. When images are present, routes to the
+    vision model. When no images are present but the conversation has prior
+    images, uses those for follow-up questions.
+
+    Falls back to the standard text pipeline when no images are involved.
+    """
+    import json
+
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    conv_repo = ConversationRepository(db)
+    vision_service = get_vision_service()
+
+    # Validate and read uploaded images
+    image_bytes_list: list[bytes] = []
+    for img in images:
+        if img.content_type not in ALLOWED_MIME_TYPES:
+            raise HTTPException(400, f"Unsupported image type: {img.content_type}")
+        data = await img.read()
+        if len(data) > MAX_IMAGE_SIZE:
+            raise HTTPException(400, f"Image too large: {img.filename}")
+        image_bytes_list.append(data)
+
+    # Get or create conversation
+    if conversation_id:
+        conv = await conv_repo.get_by_id(conversation_id)
+        if not conv or conv.user_id != current_user.id:
+            raise HTTPException(404, "Conversation not found")
+    else:
+        conv = await conv_repo.create(user_id=current_user.id, repo_id=repo_id)
+        await conv_repo.auto_generate_title(conv.id, message)
+
+    # Store uploaded images in vision context AND persist metadata to DB
+    stored_attachments: list[ImageAttachment] = []
+    for i, (img, data) in enumerate(zip(images, image_bytes_list)):
+        att = await vision_service.process_upload(
+            file_bytes=data,
+            filename=img.filename or f"image_{i}.png",
+            mime_type=img.content_type or "image/png",
+            conversation_id=conv.id,
+        )
+        stored_attachments.append(att)
+
+    user_msg = await conv_repo.add_message(conv.id, "user", message)
+    await db.commit()
+
+    # Persist image metadata linked to the user message
+    for att in stored_attachments:
+        db_img = MessageImageModel(
+            id=att.id,
+            message_id=user_msg.id,
+            conversation_id=conv.id,
+            filename=att.filename,
+            mime_type=att.mime_type,
+            size_bytes=att.size_bytes,
+            storage_path=att.storage_path,
+            image_hash=att.image_hash,
+            width=att.width,
+            height=att.height,
+        )
+        db.add(db_img)
+    if stored_attachments:
+        await db.commit()
+
+    # Determine routing: vision or text
+    has_new_images = len(image_bytes_list) > 0
+    use_vision = vision_service.should_use_vision(has_new_images, conv.id)
+
+    if not use_vision:
+        # No images at all — delegate to standard text pipeline
+        # Build a ChatRequest and reuse the standard stream logic
+        session_messages = await get_session_messages(current_user.id, conv.id)
+        state = initial_state(
+            user_message=message,
+            conversation_id=conv.id,
+            user_id=current_user.id,
+            org_id=current_user.org_id,
+            request_id=request_id,
+            repo_id=repo_id or conv.repo_id,
+            agent_mode=agent_mode,
+        )
+        state["session_messages"] = session_messages
+        orch = request.app.state.orchestrator
+
+        conv_id = conv.id
+        user_id = current_user.id
+
+        async def text_event_generator() -> AsyncGenerator[str, None]:
+            full_response = ""
+            start = time.monotonic()
+            try:
+                async for chunk in orch.stream(state):
+                    if not chunk:
+                        continue
+                    full_response += chunk
+                    yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
+
+                tokens_used = len(full_response) // 4
+                latency_ms = int((time.monotonic() - start) * 1000)
+                assistant_msg = await conv_repo.add_message(
+                    conversation_id=conv_id, role="assistant",
+                    content=full_response, agent_used="coding_agent",
+                    tokens_used=tokens_used, latency_ms=latency_ms,
+                )
+                await db.commit()
+                await push_session_message(user_id, conv_id, "user", message)
+                await push_session_message(user_id, conv_id, "assistant", full_response)
+                yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv_id, 'message_id': assistant_msg.id, 'tokens_used': tokens_used, 'latency_ms': latency_ms})}\n\n"
+            except Exception as e:
+                from loguru import logger
+                logger.exception(f"Vision text fallback stream error: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+        return StreamingResponse(
+            text_event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+        )
+
+    # ── Vision pipeline ───────────────────────────────────────────────────────
+    session_messages = await get_session_messages(current_user.id, conv.id)
+
+    # Run intelligence engine for system prompt (reuse existing pipeline)
+    system_prompt = ""
+    try:
+        state = initial_state(
+            user_message=message,
+            conversation_id=conv.id,
+            user_id=current_user.id,
+            org_id=current_user.org_id,
+            request_id=request_id,
+            repo_id=repo_id or conv.repo_id,
+            agent_mode=agent_mode,
+        )
+        state["session_messages"] = session_messages
+        from app.intelligence.engine import get_engine
+        engine_result = await get_engine().prepare(state)
+        if not engine_result.is_blocked:
+            system_prompt = engine_result.system_prompt
+    except Exception as e:
+        from loguru import logger
+        logger.warning(f"Intelligence engine failed for vision (non-blocking): {e}")
+
+    conv_id = conv.id
+    user_id = current_user.id
+
+    async def vision_event_generator() -> AsyncGenerator[str, None]:
+        full_response = ""
+        start = time.monotonic()
+        try:
+            async for chunk in vision_service.chat_stream(
+                message=message,
+                conversation_id=conv_id,
+                image_bytes=image_bytes_list if has_new_images else None,
+                system_prompt=system_prompt,
+                session_messages=session_messages,
+            ):
+                if not chunk:
+                    continue
+                full_response += chunk
+                yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
+
+            tokens_used = len(full_response) // 4
+            latency_ms = int((time.monotonic() - start) * 1000)
+
+            assistant_msg = await conv_repo.add_message(
+                conversation_id=conv_id, role="assistant",
+                content=full_response, agent_used="vision_agent",
+                tokens_used=tokens_used, latency_ms=latency_ms,
+            )
+            await db.commit()
+
+            await push_session_message(user_id, conv_id, "user", message)
+            await push_session_message(user_id, conv_id, "assistant", full_response)
+
+            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv_id, 'message_id': assistant_msg.id, 'tokens_used': tokens_used, 'latency_ms': latency_ms})}\n\n"
+
+        except Exception as e:
+            from loguru import logger
+            logger.exception(f"Vision stream error: {e}")
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        vision_event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "X-Request-ID": request_id,
+            "Connection": "keep-alive",
+        },
+    )
+
 
 class UpdateConversationRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
@@ -426,10 +718,13 @@ async def truncate_messages_from(
     if not target:
         raise HTTPException(404, "Message not found")
 
-    # Collect IDs to delete agent_executions first (FK constraint)
+    # Collect IDs to delete agent_executions and images first (FK constraint)
     msg_ids = [m.id for m in conv.messages if m.created_at >= target.created_at]
     await db.execute(
         sql_delete(AgentExecution).where(AgentExecution.message_id.in_(msg_ids))
+    )
+    await db.execute(
+        sql_delete(MessageImageModel).where(MessageImageModel.message_id.in_(msg_ids))
     )
     await db.execute(
         sql_delete(Message).where(
@@ -462,9 +757,12 @@ async def delete_single_message(
     if not target:
         raise HTTPException(404, "Message not found")
 
-    # Delete agent_executions first to satisfy FK constraint
+    # Delete agent_executions and images first to satisfy FK constraint
     await db.execute(
         sql_delete(AgentExecution).where(AgentExecution.message_id == message_id)
+    )
+    await db.execute(
+        sql_delete(MessageImageModel).where(MessageImageModel.message_id == message_id)
     )
     await db.execute(sql_delete(Message).where(Message.id == message_id))
     await db.commit()

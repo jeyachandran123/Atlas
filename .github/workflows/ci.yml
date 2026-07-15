@@ -15,9 +15,9 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_DB: test_db
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ${{ secrets.TEST_DB_NAME || 'test_db' }}
+          POSTGRES_USER: ${{ secrets.TEST_DB_USER || 'postgres' }}
+          POSTGRES_PASSWORD: ${{ secrets.TEST_DB_PASSWORD }}
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -64,12 +64,12 @@ jobs:
         env:
           DB_HOST: localhost
           DB_PORT: 5432
-          DB_NAME: test_db
-          DB_USER: postgres
-          DB_PASSWORD: postgres
+          DB_NAME: ${{ secrets.TEST_DB_NAME || 'test_db' }}
+          DB_USER: ${{ secrets.TEST_DB_USER || 'postgres' }}
+          DB_PASSWORD: ${{ secrets.TEST_DB_PASSWORD }}
           REDIS_HOST: localhost
           REDIS_PORT: 6379
-          SECRET_KEY: test-secret-key-for-ci
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
           APP_ENV: test
         run: pytest --cov=app --cov-report=term-missing --cov-fail-under=75 -v
 

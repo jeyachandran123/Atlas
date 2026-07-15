@@ -1,18 +1,23 @@
 """
-LangGraph agent state — V2 Dynamic Prompt Architecture.
+LangGraph agent state — V3 Execution Pipeline Architecture.
 
 AgentState is the single shared object passed through every node.
 Agents read from it and write to it. They never call each other directly.
 
-V2 additions:
-- system_prompt: composed dynamically by PromptComposer node
-- detected_* fields: populated by context detector nodes
-- Truthfulness fields: confidence, verified_facts, contradictions, self_corrections
+V3 additions:
+- rewritten_query: enriched query from QueryRewriter (replaces raw message to LLM)
+- should_clarify: set by ConfidenceEvaluator — triggers clarification short-circuit
+- clarification_question: pre-built question to return to user
+- execution_plan_summary: human-readable plan from ExecutionPlanner
+- intelligence_context: full IntelligenceContext from the engine
+- intelligence_trace: full IntelligenceTrace for observability
+- intelligence_reasoning_result: ReasoningResult from ReasoningEngine
+- refused: set by PolicyEngine BLOCK — triggers immediate short-circuit
 """
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 from typing_extensions import TypedDict
 
 from app.shared.schemas import SearchResult, ToolCall, ToolResult
@@ -23,12 +28,11 @@ class AgentState(TypedDict):
     State shared across all nodes in the LangGraph graph.
 
     Field lifecycle:
-    - Input:       set at graph entry, never modified
-    - Detection:   populated by detector nodes (intent, context, language, framework)
-    - Composition: system_prompt built by PromptComposer node
-    - Execution:   modified by agents as they work
-    - Truthfulness:populated by fact-verification and self-correction nodes
-    - Output:      set at terminal node, returned to caller
+    - Input:          set at graph entry, never modified
+    - Intelligence:   populated by intelligence_prepare_node
+    - Composition:    system_prompt built by DynamicPromptComposer
+    - Execution:      modified by agents as they work
+    - Output:         set at terminal node, returned to caller
     """
 
     # ── Input (set once at graph entry) ──────────────────────────────────────
@@ -41,29 +45,46 @@ class AgentState(TypedDict):
 
     # ── Mode (set by user in UI) ──────────────────────────────────────────────
     # "auto" | "code" | "business"
-    # Drives persona selection and model routing in PromptComposer + orchestrator
     agent_mode: str
 
-    # ── Intent (detected by route_intent node) ────────────────────────────────
-    # "code" | "fix" | "review" | "explain" | "test" | "search" | "chat"
+    # ── Intent (set by intelligence engine) ───────────────────────────────────
+    # Legacy string: "code" | "fix" | "review" | "explain" | "test" | "search" | "chat"
     intent: str
 
-    # ── Context Detection (populated by detect_context node) ─────────────────
-    # These fields drive PromptComposer module selection.
-    # Detected from user message via keyword analysis.
-    detected_language: str        # e.g. "typescript", "python", ""
-    detected_framework: str       # e.g. "nextjs", "fastapi", ""
-    detected_database: str        # e.g. "postgresql", "mongodb", ""
-    detected_cloud: str           # e.g. "aws", "docker", ""
-    detected_business_domain: str # e.g. "hotel", "erp", "pos", ""
-    detected_architecture: str    # e.g. "clean_architecture", "microservices", ""
-    detected_testing: str         # e.g. "pytest", "unit_testing", ""
-    detected_security: bool       # True if security-related request
-    detected_ai_domain: bool      # True if AI/agent-related request
+    # ── V3: Intelligence Engine Outputs ───────────────────────────────────────
 
-    # ── Composed Prompt (set by compose_prompt node) ──────────────────────────
-    # The dynamically assembled system prompt — replaces static SYSTEM_PROMPTS dict.
-    # Built by PromptComposer from detected_* fields + intent + agent_mode.
+    # Enriched query from QueryRewriter — used as the actual message sent to LLM
+    # Falls back to user_message if rewriter produces no enrichments
+    rewritten_query: str
+
+    # Clarification short-circuit — set by ConfidenceEvaluator
+    should_clarify: bool
+    clarification_question: str
+
+    # Human-readable execution plan from ExecutionPlanner
+    execution_plan_summary: str
+
+    # Full intelligence engine outputs (typed loosely to avoid import chain)
+    intelligence_context: Any   # IntelligenceContext | None
+    intelligence_trace: Any     # IntelligenceTrace | None
+    intelligence_reasoning_result: Any  # ReasoningResult | None
+
+    # Policy block short-circuit
+    refused: bool
+
+    # ── Context Detection (legacy fallback fields) ────────────────────────────
+    # Populated by detect_context node when intelligence engine is unavailable.
+    detected_language: str
+    detected_framework: str
+    detected_database: str
+    detected_cloud: str
+    detected_business_domain: str
+    detected_architecture: str
+    detected_testing: str
+    detected_security: bool
+    detected_ai_domain: bool
+
+    # ── Composed Prompt (set by intelligence engine or compose_prompt node) ───
     system_prompt: str
 
     # ── Memory & Retrieval Context ────────────────────────────────────────────
@@ -84,27 +105,11 @@ class AgentState(TypedDict):
     review_status: str  # "pending" | "approved" | "needs_revision" | "skipped"
 
     # ── Truthfulness & Self-Correction ────────────────────────────────────────
-    # confidence_score: 0.0–1.0, estimated by self_correction node
-    # 1.0 = fully confident, 0.0 = completely uncertain
     confidence_score: float
-
-    # verified_facts: list of claims the agent confirmed as accurate
     verified_facts: list[str]
-
-    # detected_contradictions: inconsistencies found between current response
-    # and previous conversation turns or retrieved context
     detected_contradictions: list[str]
-
-    # truthfulness_warnings: non-blocking warnings injected into the prompt
-    # e.g. "User referenced a potentially non-existent library"
     truthfulness_warnings: list[str]
-
-    # self_corrections: explicit corrections made during this turn
-    # e.g. "My earlier response incorrectly stated X. The correct answer is Y."
     self_corrections: list[str]
-
-    # uncertainty_level: "high" | "medium" | "low" | "none"
-    # Drives whether uncertainty language is injected into the response
     uncertainty_level: str
 
     # ── Output (set at terminal node) ─────────────────────────────────────────
@@ -136,7 +141,16 @@ def initial_state(
         agent_mode=agent_mode,
         # Intent
         intent="chat",
-        # Detection (all empty — populated by detect_context node)
+        # V3 intelligence outputs
+        rewritten_query=user_message,  # default: raw message until rewriter runs
+        should_clarify=False,
+        clarification_question="",
+        execution_plan_summary="",
+        intelligence_context=None,
+        intelligence_trace=None,
+        intelligence_reasoning_result=None,
+        refused=False,
+        # Detection (legacy fallback — all empty)
         detected_language="",
         detected_framework="",
         detected_database="",
@@ -146,7 +160,7 @@ def initial_state(
         detected_testing="",
         detected_security=False,
         detected_ai_domain=False,
-        # Composed prompt (empty — set by compose_prompt node)
+        # Composed prompt
         system_prompt="",
         # Memory & retrieval
         code_context=[],

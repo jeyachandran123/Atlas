@@ -27,13 +27,20 @@ from app.intelligence.models import (
 
 # Intent → tools that are almost always needed
 _INTENT_TOOL_HINTS: dict[Intent, list[str]] = {
-    Intent.REPOSITORY_QUESTION: ["search_code"],
+    Intent.REPOSITORY_QUESTION: ["search_code", "read_file"],
     Intent.DEBUGGING:           ["search_code", "read_file"],
     Intent.REFACTORING:         ["search_code", "read_file"],
     Intent.GIT_OPERATIONS:      ["git_diff"],
     Intent.TOOL_EXECUTION:      ["run_command"],
-    Intent.CODING:              [],   # depends on whether repo context is needed
+    Intent.CODING:              [],
     Intent.TESTING:             ["search_code"],
+}
+
+# Keywords that indicate a directory listing is needed
+_LIST_DIR_KEYWORDS = {
+    "structure", "list files", "list directory", "show files", "show directory",
+    "what files", "folder structure", "directory structure", "file tree",
+    "what's in", "what is in", "show me the repo", "repo structure",
 }
 
 # Tools that can safely run in parallel
@@ -51,6 +58,7 @@ class IntelligenceToolPlanner(AbstractToolPlanner):
         has_repo = bool(context.repo_id)
         has_code_context = bool(context.code_context_block)
         complexity = context.complexity.level
+        message = context.user_message.lower() if context.user_message else ""
 
         # No repo → no file/search tools
         if not has_repo:
@@ -58,6 +66,15 @@ class IntelligenceToolPlanner(AbstractToolPlanner):
                 should_use_tools=False,
                 can_answer_without_tools=True,
                 rationale="No repository selected — tools not applicable",
+            )
+
+        # Directory listing request — always use list_directory
+        if any(kw in message for kw in _LIST_DIR_KEYWORDS):
+            return ToolPlan(
+                should_use_tools=True,
+                tools=["list_directory"],
+                can_answer_without_tools=False,
+                rationale="User wants directory structure",
             )
 
         # Already have sufficient context

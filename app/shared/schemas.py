@@ -247,6 +247,16 @@ class ConversationOut(BaseModel):
     updated_at: datetime
 
 
+class MessageImageOut(BaseModel):
+    id: str
+    filename: str
+    mime_type: str
+    size_bytes: int
+    width: Optional[int] = None
+    height: Optional[int] = None
+    url: str  # served via /chat/images/{id}
+
+
 class MessageOut(BaseModel):
     id: str
     conversation_id: str
@@ -254,6 +264,7 @@ class MessageOut(BaseModel):
     content: str
     agent_used: Optional[str]
     tokens_used: int
+    images: list[MessageImageOut] = []
     created_at: datetime
 
 
@@ -272,6 +283,10 @@ class ChatResponse(BaseModel):
     tokens_used: int
     latency_ms: int
     context_chunks_used: int
+    # V3: execution trace — only populated when DEBUG mode is enabled
+    trace: Optional[dict] = None
+    clarification_asked: bool = False
+    rewritten_query_used: bool = False
 
 
 class SearchRequest(BaseModel):

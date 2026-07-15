@@ -120,7 +120,16 @@ class IndexingPipeline:
         files_to_index = [f for f in all_files if f.is_new]
         total = len(files_to_index)
 
-        await self._job_repo.update_progress(job_id, 0, 0)
+        # ── Deleted file cleanup (incremental only) ───────────────────────
+        if job_type == "incremental" and existing_hashes:
+            current_paths = {f.relative_path for f in all_files}
+            deleted_paths = set(existing_hashes.keys()) - current_paths
+            collection_name_early = VectorStore.code_collection(repo_id)
+            for deleted_path in deleted_paths:
+                await self._vs.delete_by_file(collection_name_early, deleted_path)
+                await self._file_repo.delete(repo_id, deleted_path)
+
+        await self._job_repo.update_progress(job_id, 0, 0, files_total=total)
         await set_index_progress(
             job_id,
             {"status": "indexing", "total": total, "processed": 0, "chunks": 0},

@@ -137,6 +137,11 @@ class FileTool(BaseTool):
             f.write(content)
 
         line_count = content.count("\n") + 1
+
+        # Trigger incremental re-index for this file if repo_id is available
+        if context.repo_id:
+            await self._trigger_file_reindex(context.repo_id, relative_path)
+
         return ToolResult(
             self.name,
             True,
@@ -172,6 +177,10 @@ class FileTool(BaseTool):
         # Write patched content
         with open(abs_path, "w", encoding="utf-8") as f:
             f.write(result.patched_content)
+
+        # Trigger incremental re-index for this file if repo_id is available
+        if context.repo_id:
+            await self._trigger_file_reindex(context.repo_id, relative_path)
 
         original_lines = original.count("\n") + 1
         patched_lines = result.patched_content.count("\n") + 1
@@ -236,6 +245,38 @@ class FileTool(BaseTool):
             output=matches,
             metadata={"path": relative_path, "query": query, "match_count": len(matches)},
         )
+
+    @staticmethod
+    async def _trigger_file_reindex(repo_id: str, file_path: str) -> None:
+        """Enqueue an incremental re-index job after a file write so the vector store stays current."""
+        try:
+            from app.redis_client import enqueue_index_job, get_redis
+            from app.database import get_db_session
+            from app.db.repositories import RepositoryRepo, IndexJobRepository
+            import uuid
+            async with get_db_session() as session:
+                repo_repo = RepositoryRepo(session)
+                repo = await repo_repo.get_by_id(repo_id)
+                if not repo:
+                    return
+                # Mark stale
+                await repo_repo.update_status(repo_id, "stale")
+                # Create and enqueue incremental job
+                job_repo = IndexJobRepository(session)
+                job = await job_repo.create(
+                    repo_id=repo_id,
+                    triggered_by=None,
+                    job_type="incremental",
+                    status="queued",
+                )
+            await enqueue_index_job({
+                "job_id": job.id,
+                "repo_id": repo_id,
+                "repo_path": repo.local_path,
+                "job_type": "incremental",
+            })
+        except Exception:
+            pass  # Never block a file write due to indexing failure
 
     @staticmethod
     def _build_tree(abs_path: str, repo_root: str, max_depth: int, current_depth: int = 0) -> str:

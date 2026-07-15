@@ -14,6 +14,7 @@ from app.agents.tools.tool_impls import (
     FileReadTool,
     FileWriteTool,
     GitDiffTool,
+    ListDirectoryTool,
     RunCommandTool,
     SearchCodeTool,
 )
@@ -35,6 +36,7 @@ class ToolRegistry:
         # File operations
         self.register(FileReadTool())
         self.register(FileWriteTool())
+        self.register(ListDirectoryTool())
         
         # Code search
         self.register(SearchCodeTool())

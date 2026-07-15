@@ -83,6 +83,12 @@ class Settings(BaseSettings):
     nvidia_top_p: float = 0.95
     nvidia_max_tokens: int = 16384
 
+    # ── Vision ───────────────────────────────────────────────────────────────────
+    vision_model: str = "qwen2.5vl:7b"  # Ollama vision model
+    vision_storage_dir: str = "data/vision_uploads"
+    vision_max_image_size_mb: int = 20
+    vision_max_images_per_message: int = 5
+
     @field_validator("ollama_host", mode="before")
     @classmethod
     def normalize_ollama_host(cls, v: str) -> str:
@@ -93,11 +99,9 @@ class Settings(BaseSettings):
         higher priority than .env, so we normalise it here.
         """
         v = str(v).strip()
+        v = v.replace("0.0.0.0", "localhost")
         if v and not v.startswith(("http://", "https://")):
             v = f"http://{v}"
-        # Replace 0.0.0.0 with localhost — 0.0.0.0 is a bind address, not
-        # a valid client target on Windows/macOS.
-        v = v.replace("http://0.0.0.0", "http://localhost")
         return v
 
     # ── Indexing ─────────────────────────────────────────────────────────────
@@ -105,6 +109,14 @@ class Settings(BaseSettings):
     index_embed_batch_size: int = 32
     index_parallel_workers: int = 4
     index_skip_patterns: str = "node_modules,.git,__pycache__,*.pyc,*.min.js,dist,build"
+
+    # ── Multi-tenancy ─────────────────────────────────────────────────────────
+    default_org_id: str = "default"
+    default_org_name: str = "Atlas"
+    default_org_slug: str = "atlas"
+    default_org_plan: str = "free"
+    default_org_max_repos: int = 10
+    default_org_max_users: int = 100
 
     # ── Rate Limiting ─────────────────────────────────────────────────────────
     rate_limit_chat: str = "20/minute"

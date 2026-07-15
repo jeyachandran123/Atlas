@@ -101,6 +101,108 @@ class FirebaseLoginResponse(BaseModel):
     is_new_user: bool  # True if user was just created (first login)
 
 
+# ── Firebase login helpers (reduce coupling in firebase_login) ────────────────
+
+
+def _verify_firebase_token_safe(firebase_token: str) -> dict:
+    """Verify Firebase token and raise appropriate HTTPExceptions."""
+    from firebase_admin import auth as firebase_auth_errors
+    from app.firebase_admin import verify_firebase_token
+    try:
+        return verify_firebase_token(firebase_token)
+    except firebase_auth_errors.ExpiredIdTokenError:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Firebase token expired. Please sign in again.")
+    except firebase_auth_errors.InvalidIdTokenError as e:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"Invalid Firebase token: {e}")
+    except RuntimeError:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Firebase authentication is not available. Contact administrator.")
+    except Exception as e:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"Failed to verify Firebase token: {e}")
+
+
+def _extract_firebase_claims(decoded_token: dict) -> tuple[str, str, str | None, str | None, bool, str]:
+    """Extract and validate claims from a decoded Firebase token."""
+    email = decoded_token.get("email")
+    if not email:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Email not found in Firebase token")
+    firebase_uid = decoded_token.get("uid")
+    name = decoded_token.get("name")
+    picture = decoded_token.get("picture")
+    email_verified = decoded_token.get("email_verified", False)
+    sign_in_provider = decoded_token.get("firebase", {}).get("sign_in_provider", "google")
+    provider_map = {"google.com": "google", "apple.com": "apple", "microsoft.com": "microsoft", "github.com": "github"}
+    auth_provider = provider_map.get(sign_in_provider, "google")
+    return email, firebase_uid, name, picture, email_verified, auth_provider
+
+
+async def _ensure_default_org(db: AsyncSession) -> str:
+    """Ensure the default org exists; return its id."""
+    from loguru import logger
+    from sqlalchemy import select
+    from app.db.models import Organization
+    from app.config import get_settings
+    cfg = get_settings()
+    org_id = cfg.default_org_id
+    result = await db.execute(select(Organization).where(Organization.id == org_id))
+    if result.scalar_one_or_none() is None:
+        logger.info("Creating default organization")
+        db.add(Organization(
+            id=org_id,
+            name=cfg.default_org_name,
+            slug=cfg.default_org_slug,
+            plan=cfg.default_org_plan,
+            max_repos=cfg.default_org_max_repos,
+            max_users=cfg.default_org_max_users,
+        ))
+        await db.flush()
+    return org_id
+
+
+async def _find_or_create_user(
+    db: AsyncSession,
+    org_id: str,
+    email: str,
+    firebase_uid: str,
+    name: str | None,
+    picture: str | None,
+    email_verified: bool,
+    auth_provider: str,
+) -> tuple[User, bool]:
+    """Return (user, is_new_user). Creates user on first login."""
+    from loguru import logger
+    user_repo = UserRepository(db)
+    user = await user_repo.get_by_email(org_id, email)
+    if user is None:
+        user = User(
+            org_id=org_id, email=email, full_name=name, role="developer",
+            hashed_password="", auth_provider=auth_provider,
+            firebase_uid=firebase_uid, profile_picture_url=picture,
+            email_verified=email_verified, is_active=True,
+        )
+        db.add(user)
+        await db.flush()
+        logger.info(f"New user registered via {auth_provider}: {email}")
+        return user, True
+    if user.firebase_uid is None:
+        user.firebase_uid = firebase_uid
+    if user.profile_picture_url is None and picture:
+        user.profile_picture_url = picture
+    if not user.email_verified and email_verified:
+        user.email_verified = email_verified
+    await user_repo.update_last_login(user.id)
+    logger.info(f"Existing user logged in: {email}")
+    return user, False
+
+
+async def _store_refresh_token(user_id: str, refresh_token: str) -> None:
+    """Persist refresh token in Redis."""
+    from app.redis_client import get_redis
+    from app.config import get_settings
+    r = get_redis()
+    cfg = get_settings()
+    await r.setex(f"refresh:{refresh_token}", cfg.jwt_refresh_token_expire_days * 86400, user_id)
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 
@@ -111,183 +213,39 @@ async def firebase_login(
 ) -> FirebaseLoginResponse:
     """
     Authenticate with Firebase ID token (Google Sign-In).
-    
+
     Flow:
     1. Frontend gets Firebase ID token from Google Sign-In
     2. Backend verifies token with Firebase Admin SDK
     3. Find or create user in database
     4. Issue JWT access + refresh tokens
     5. Return tokens + user info
-    
-    This is the primary authentication method for the web app.
     """
     from loguru import logger
-    
     try:
-        from firebase_admin import auth as firebase_auth_errors
-        from app.firebase_admin import verify_firebase_token
-        from sqlalchemy import select
-        from app.db.models import Organization
-        
-        # Step 1: Verify Firebase token
-        try:
-            decoded_token = verify_firebase_token(req.firebase_token)
-        except firebase_auth_errors.ExpiredIdTokenError:
-            logger.warning("Firebase token expired")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Firebase token expired. Please sign in again.",
-            )
-        except firebase_auth_errors.InvalidIdTokenError as e:
-            logger.error(f"Invalid Firebase token: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Invalid Firebase token: {str(e)}",
-            )
-        except RuntimeError as e:
-            logger.error(f"Firebase not initialized: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Firebase authentication is not available. Contact administrator.",
-            )
-        except Exception as e:
-            logger.exception(f"Unexpected error verifying Firebase token: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Failed to verify Firebase token: {str(e)}",
-            )
-        
-        # Step 2: Extract user info from token
-        email = decoded_token.get("email")
-        firebase_uid = decoded_token.get("uid")
-        name = decoded_token.get("name")
-        picture = decoded_token.get("picture")
-        email_verified = decoded_token.get("email_verified", False)
-        
-        # Get sign-in provider (google.com, apple.com, etc.)
-        firebase_info = decoded_token.get("firebase", {})
-        sign_in_provider = firebase_info.get("sign_in_provider", "google")
-        
-        # Map Firebase provider to our auth_provider field
-        provider_map = {
-            "google.com": "google",
-            "apple.com": "apple",
-            "microsoft.com": "microsoft",
-            "github.com": "github",
-        }
-        auth_provider = provider_map.get(sign_in_provider, "google")
-        
-        if not email:
-            logger.error("Email not found in Firebase token")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email not found in Firebase token",
-            )
-        
+        decoded_token = _verify_firebase_token_safe(req.firebase_token)
+        email, firebase_uid, name, picture, email_verified, auth_provider = _extract_firebase_claims(decoded_token)
         logger.info(f"Firebase authentication for: {email}")
-        
-        # For V1: Single organization - all users go to "default" org
-        org_id = "default"
-        
-        # Step 3: Ensure default organization exists
-        result = await db.execute(select(Organization).where(Organization.id == org_id))
-        org = result.scalar_one_or_none()
-        
-        if not org:
-            # Create default organization if it doesn't exist
-            logger.info("Creating default organization")
-            org = Organization(
-                id=org_id,
-                name="Atlas",
-                slug="atlas",
-                plan="free",
-                max_repos=10,
-                max_users=100,
-            )
-            db.add(org)
-            await db.flush()
-        
-        # Step 4: Find or create user
-        user_repo = UserRepository(db)
-        user = await user_repo.get_by_email(org_id, email)
-        
-        is_new_user = False
-        
-        if not user:
-            # First time user - auto-register
-            is_new_user = True
-            logger.info(f"Auto-registering new user: {email}")
-            user = User(
-                org_id=org_id,
-                email=email,
-                full_name=name,
-                role="developer",  # Default role for new users
-                hashed_password="",  # No password for OAuth users
-                auth_provider=auth_provider,
-                firebase_uid=firebase_uid,
-                profile_picture_url=picture,
-                email_verified=email_verified,
-                is_active=True,
-            )
-            db.add(user)
-            await db.flush()
-            
-            logger.info(f"✅ New user registered via {auth_provider}: {email}")
-        else:
-            # Existing user - update Firebase info if needed
-            if not user.firebase_uid:
-                user.firebase_uid = firebase_uid
-            if not user.profile_picture_url and picture:
-                user.profile_picture_url = picture
-            if not user.email_verified and email_verified:
-                user.email_verified = email_verified
-            
-            await user_repo.update_last_login(user.id)
-            logger.info(f"✅ Existing user logged in: {email}")
-        
+        org_id = await _ensure_default_org(db)
+        user, is_new_user = await _find_or_create_user(
+            db, org_id, email, firebase_uid, name, picture, email_verified, auth_provider
+        )
         await db.commit()
-        
-        # Step 5: Issue JWT tokens
         access_token = create_access_token(user.id, user.org_id, user.role)
         refresh_token = create_refresh_token(user.id)
-        
-        # Store refresh token in Redis for validation and revocation
-        from app.redis_client import get_redis
-        from app.config import get_settings
-        
-        r = get_redis()
-        cfg = get_settings()
-        await r.setex(
-            f"refresh:{refresh_token}",
-            cfg.jwt_refresh_token_expire_days * 86400,
-            user.id,
-        )
-        
-        logger.info(f"✅ Firebase login successful for: {email}")
-        
+        await _store_refresh_token(user.id, refresh_token)
+        logger.info(f"Firebase login successful for: {email}")
         return FirebaseLoginResponse(
             access_token=access_token,
             refresh_token=refresh_token,
-            user=UserOut(
-                id=user.id,
-                email=user.email,
-                full_name=user.full_name,
-                role=user.role,
-                created_at=user.created_at,
-            ),
+            user=UserOut(id=user.id, email=user.email, full_name=user.full_name, role=user.role, created_at=user.created_at),
             is_new_user=is_new_user,
         )
-    
     except HTTPException:
-        # Re-raise HTTP exceptions
         raise
     except Exception as e:
-        # Catch any unexpected errors
-        logger.exception(f"Unexpected error in firebase_login: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An unexpected error occurred during login: {str(e)}",
-        )
+        logger.exception(f"Unexpected error in firebase_login: {e}")
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"An unexpected error occurred during login: {e}")
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -302,7 +260,7 @@ async def login(
     # For V1 single-org setups, look up by email directly.
     from sqlalchemy import select
     result = await db.execute(
-        select(User).where(User.email == req.email, User.is_active == True)  # noqa: E712
+        select(User).where(User.email == req.email, User.is_active.is_(True))
     )
     user = result.scalar_one_or_none()
 
@@ -480,7 +438,7 @@ async def list_api_keys(
     from sqlalchemy import select
 
     result = await db.execute(
-        select(APIKey).where(APIKey.user_id == current_user.id, APIKey.is_active == True)  # noqa: E712
+        select(APIKey).where(APIKey.user_id == current_user.id, APIKey.is_active.is_(True))
     )
     keys = list(result.scalars().all())
     return [

@@ -394,9 +394,45 @@ class Message(Base):
     conversation: Mapped[Conversation] = relationship(
         "Conversation", back_populates="messages"
     )
+    images: Mapped[list["MessageImage"]] = relationship(
+        "MessageImage", back_populates="message", lazy="selectin"
+    )
     agent_executions: Mapped[list[AgentExecution]] = relationship(
         "AgentExecution", back_populates="message"
     )
+
+
+class MessageImage(Base):
+    """
+    An image attached to a message.
+    Stored on disk, metadata in DB for persistence across page refreshes.
+    """
+
+    __tablename__ = "message_images"
+    __table_args__ = (
+        Index("ix_message_images_msg", "message_id"),
+        Index("ix_message_images_conv", "conversation_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    message_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("messages.id"), nullable=False
+    )
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("conversations.id"), nullable=False
+    )
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    storage_path: Mapped[str] = mapped_column(String(1000), nullable=False)
+    image_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    width: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    height: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+    message: Mapped[Message] = relationship("Message", back_populates="images")
 
 
 class AgentExecution(Base):

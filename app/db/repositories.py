@@ -20,6 +20,7 @@ from app.db.models import (
     IndexedFile,
     IndexJob,
     Message,
+    MessageImage,
     Organization,
     Repository,
     RepositoryAccess,
@@ -155,11 +156,14 @@ class IndexJobRepository:
         files_processed: int,
         chunks_created: int,
         status: Optional[str] = None,
+        files_total: Optional[int] = None,
     ) -> None:
         values: dict = {
             "files_processed": files_processed,
             "chunks_created": chunks_created,
         }
+        if files_total is not None:
+            values["files_total"] = files_total
         if status:
             values["status"] = status
             if status == "running":
@@ -199,6 +203,23 @@ class IndexedFileRepository:
         """Fast hash lookup — used by incremental indexing."""
         existing = await self.get_by_path(repo_id, file_path)
         return existing.file_hash if existing else None
+
+    async def delete(self, repo_id: str, file_path: str) -> None:
+        """Delete a file record — used when a file is removed from disk."""
+        from sqlalchemy import delete
+        await self.session.execute(
+            delete(IndexedFile).where(
+                IndexedFile.repo_id == repo_id,
+                IndexedFile.file_path == file_path,
+            )
+        )
+
+    async def delete_all_for_repo(self, repo_id: str) -> None:
+        """Delete all file records for a repository — used on repo deletion."""
+        from sqlalchemy import delete
+        await self.session.execute(
+            delete(IndexedFile).where(IndexedFile.repo_id == repo_id)
+        )
 
     async def upsert(
         self,
@@ -256,13 +277,13 @@ class ConversationRepository:
         query = select(Conversation).where(Conversation.user_id == user_id)
         
         if not include_archived:
-            query = query.where(Conversation.is_archived == False)  # noqa: E712
+            query = query.where(Conversation.is_archived.is_(False))  # noqa: E712
         
         # Order: pinned first (by pin_order), then by updated_at DESC
         query = query.order_by(
             case(
-                (Conversation.is_pinned == True, Conversation.pin_order),  # noqa: E712
-                else_=999999  # Put unpinned conversations after pinned
+                (Conversation.is_pinned.is_(True), Conversation.pin_order),
+                else_=999999
             ),
             Conversation.updated_at.desc()
         )
@@ -270,7 +291,7 @@ class ConversationRepository:
         # Get total count
         count_query = select(func.count()).select_from(Conversation).where(Conversation.user_id == user_id)
         if not include_archived:
-            count_query = count_query.where(Conversation.is_archived == False)  # noqa: E712
+            count_query = count_query.where(Conversation.is_archived.is_(False))  # noqa: E712
         
         total = await self.session.execute(count_query)
         total_count = total.scalar() or 0
@@ -352,9 +373,13 @@ class ConversationRepository:
         )
 
     async def delete_conversation(self, conversation_id: str) -> None:
-        """Delete a conversation and all its messages."""
+        """Delete a conversation and all its messages and images."""
         from sqlalchemy import delete
-        # Delete messages first (foreign key constraint)
+        # Delete images first (FK to messages)
+        await self.session.execute(
+            delete(MessageImage).where(MessageImage.conversation_id == conversation_id)
+        )
+        # Delete messages (FK to conversation)
         await self.session.execute(
             delete(Message).where(Message.conversation_id == conversation_id)
         )
@@ -369,7 +394,7 @@ class ConversationRepository:
         from sqlalchemy import func
         result = await self.session.execute(
             select(func.max(Conversation.pin_order))
-            .where(Conversation.user_id == user_id, Conversation.is_pinned == True)  # noqa: E712
+            .where(Conversation.user_id == user_id, Conversation.is_pinned.is_(True))
         )
         max_order = result.scalar() or 0
         

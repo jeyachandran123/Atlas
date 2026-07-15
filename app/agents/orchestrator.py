@@ -1,33 +1,44 @@
 """
-LangGraph orchestrator — V3 Conversation Intelligence Engine.
+LangGraph orchestrator — V3 Execution Pipeline.
 
 Graph flow:
   START
     ↓
-  intelligence_prepare  ConversationIntelligenceEngine.prepare()
-                        (intent → complexity → conversation → policy →
-                         persona → strategy → context → tool_plan → prompt)
+  intelligence_prepare   Full ConversationIntelligenceEngine pipeline:
+                         intent → complexity → conversation → policy →
+                         persona → strategy → context → tool_plan →
+                         reasoning → prompt composition
     ↓
-  load_memory           load session + long-term memory
+  [POLICY BLOCK?]  → finalise (immediate refusal, no LLM)
     ↓
-  retrieve_context      fetch relevant code from ChromaDB
+  [CLARIFY?]       → finalise (return clarification question, no LLM)
     ↓
-  plan_tools            LLM-based tool planning (fallback / refinement)
+  load_memory            load + filter session memory via ContextResolutionEngine
     ↓
-  ┌─────────────────────────────────────────────────┐
-  │ Tool Loop (max 5 iterations)                    │
-  │   execute_tools → coding_agent → should_continue│
-  └─────────────────────────────────────────────────┘
+  retrieve_context       fetch relevant code from ChromaDB (demand-driven)
     ↓
-  self_correct          detect contradictions, inject corrections
+  plan_tools             IntelligenceToolPlanner (heuristic, no LLM call)
     ↓
-  should_review?
-    ├── yes → review_agent → check_revision
-    │           ├── needs_revision → increment_revision → plan_tools
-    │           └── approved → finalise
-    └── no  → finalise
+  ┌──────────────────────────────────────────────────┐
+  │ Tool Loop (max 5 iterations)                     │
+  │   execute_tools → coding_agent → should_continue │
+  └──────────────────────────────────────────────────┘
+    ↓
+  review_agent (optional — complex/code intents only)
+    ↓
+  finalise               ResponseReviewer + ResponseFormatter + memory save
     ↓
   END
+
+Key changes from V2:
+  - Removed _detect_intent(), _LANG_MAP, _FRAMEWORK_MAP and all duplicate keyword maps
+  - Removed _self_correct_node (replaced by ResponseReviewer in finalise)
+  - Removed LLM-based ToolPlanner (replaced by IntelligenceToolPlanner)
+  - Clarification short-circuit: returns question before any LLM call
+  - rewritten_query flows through state and is used by CodingAgent
+  - execution_plan_summary flows through state for observability
+  - IntelligenceTrace returned in final state for API-level observability
+  - Corrections handled by ResponseFormatter, not blockquote injection
 """
 
 from __future__ import annotations
@@ -44,135 +55,31 @@ from app.agents.review_agent import (
 )
 from app.agents.state import AgentState
 from app.agents.tool_executor import get_tool_executor
-from app.agents.tool_planner import get_tool_planner
-from app.memory import MemoryManager, get_memory_manager
-from app.ollama_client import get_ollama_client
-from app.prompts.composer import PromptComposer, get_composer
-from app.retrieval.context_builder import ContextBuilder
-from app.retrieval.retriever import CodeRetriever
-from app.vector_store.base import VectorStore
 from app.intelligence.context.resolver import ContextResolutionEngine, get_context_resolution_engine
 from app.intelligence.engine import ConversationIntelligenceEngine, get_engine
+from app.intelligence.models import ReviewDecision
+from app.intelligence.tools.planner import IntelligenceToolPlanner, get_intelligence_tool_planner
+from app.memory import MemoryManager, get_memory_manager
+from app.ollama_client import get_ollama_client
+from app.retrieval.context_builder import ContextBuilder
+from app.retrieval.retriever import CodeRetriever
+from app.shared.schemas import ToolCall
+from app.vector_store.base import VectorStore
 
 
-# ── Intent detection ──────────────────────────────────────────────────────────
-
-def _detect_intent(message: str, agent_mode: str = "auto") -> str:
-    lower = message.lower()
-
-    if agent_mode == "business":
-        return "chat"
-
-    if agent_mode == "auto":
-        code_kw = ["write code", "implement", "build a", "create a function",
-                   "debug", "fix this code", "refactor", "write a script"]
-        return "code" if any(k in lower for k in code_kw) else "chat"
-
-    # Code mode — if the message is clearly non-code topic, treat as chat
-    # regardless of any incidentally matched keywords in pasted content
-    from app.prompts.enhancer import _is_non_code_topic
-    if _is_non_code_topic(message):
-        return "chat"
-
-    # Code mode — full detection
-    if any(k in lower for k in ["review", "audit", "critique", "analyze code"]):
-        return "review"
-    if any(k in lower for k in ["write test", "add test", "unit test", "test case"]):
-        return "test"
-    if any(k in lower for k in ["fix", "bug", "error", "broken", "failing", "debug", "crash"]):
-        return "fix"
-    if any(k in lower for k in ["explain", "what does", "how does", "what is", "describe"]):
-        return "explain"
-    if any(k in lower for k in ["find", "where", "search", "locate", "which file"]) and "how" not in lower:
-        return "search"
-
-    gen_kw = ["create", "add", "implement", "write", "build", "generate", "refactor", "update"]
-    if len(lower.strip()) < 60 and not any(k in lower for k in gen_kw):
-        return "chat"
-    return "code"
-
-
-# ── Context detection helpers ─────────────────────────────────────────────────
-
-_LANG_MAP = {
-    "typescript": "typescript", ".tsx": "typescript", ".ts ": "typescript",
-    "javascript": "javascript", " js ": "javascript",
-    "python": "python", ".py": "python",
-    "c#": "csharp", "csharp": "csharp",
-    "java ": "java", "kotlin": "kotlin",
-    " go ": "go", "golang": "go",
-    "rust": "rust", "php": "php", "swift": "swift", "dart": "dart",
-}
-
-_FRAMEWORK_MAP = {
-    "react": "react", "next.js": "nextjs", "nextjs": "nextjs",
-    "vue": "vue", "nuxt": "nuxtjs", "angular": "angular", "svelte": "svelte",
-    "react native": "react_native", "flutter": "flutter",
-    "fastapi": "fastapi", "django": "django", "flask": "flask",
-    "express": "express", "nestjs": "nestjs", "nest.js": "nestjs",
-    "asp.net": "aspnet", "spring boot": "spring_boot", "laravel": "laravel",
-}
-
-_DB_MAP = {
-    "postgresql": "postgresql", "postgres": "postgresql",
-    "mysql": "mysql", "sql server": "mssql", "mssql": "mssql",
-    "mongodb": "mongodb", "mongo": "mongodb",
-    "redis": "redis", "elasticsearch": "elasticsearch",
-    "dynamodb": "dynamodb", "firestore": "firebase_db", "firebase": "firebase_db",
-}
-
-_CLOUD_MAP = {
-    "aws": "aws", "amazon web": "aws",
-    "azure": "azure", "google cloud": "gcp", "gcp": "gcp",
-    "docker": "docker", "kubernetes": "kubernetes", "k8s": "kubernetes",
-    "terraform": "terraform", "github actions": "github_actions",
-}
-
-_BUSINESS_MAP = {
-    "hotel": "hotel", "pms": "hotel", "reservation": "hotel",
-    "check-in": "hotel", "revpar": "hotel",
-    "erp": "erp", "procurement": "erp", "purchase order": "erp",
-    "pos": "pos", "point of sale": "pos", "cashier": "pos",
-    "inventory": "inventory", "warehouse": "inventory", "stock": "inventory",
-    "payroll": "hrms", "hrms": "hrms",
-    "crm": "crm", "lead": "crm",
-    "finance": "finance", "accounting": "finance", "invoice": "finance",
-}
-
-_ARCH_MAP = {
-    "clean architecture": "clean_architecture",
-    "domain driven": "ddd", "ddd": "ddd",
-    "microservice": "microservices",
-    "event driven": "event_driven", "event sourcing": "event_driven", "cqrs": "event_driven",
-}
-
-_TEST_MAP = {
-    "unit test": "unit_testing", "integration test": "integration_testing",
-    "e2e": "e2e_testing", "playwright": "e2e_testing", "cypress": "e2e_testing",
-    "pytest": "pytest", "jest": "unit_testing", "vitest": "unit_testing",
-}
-
-_SECURITY_KW = ["security", "owasp", "authentication", "auth", "jwt", "oauth",
-                "injection", "xss", "csrf", "vulnerability", "api key"]
-
-_AI_KW = ["langgraph", "langchain", "rag", "retrieval", "embedding", "vector",
-          "multi-agent", "multi agent", "ollama", "llm", "agent"]
-
-_FACTUAL_KW = ["when was", "what year", "released", "published", "version",
-               "history", "invented", "created", "founded", "launched",
-               "book", "movie", "show", "season", "episode"]
-
-
-def _first_match(lower: str, mapping: dict[str, str]) -> str:
-    for kw, val in mapping.items():
-        if kw in lower:
-            return val
-    return ""
+# ── Minimal safe fallback system prompt ──────────────────────────────────────
+_FALLBACK_SYSTEM_PROMPT = (
+    "You are Atlas, an AI engineering platform. "
+    "Help the user with their software engineering question clearly and accurately."
+)
 
 
 class AgentOrchestrator:
     """
-    V2 LangGraph orchestrator with dynamic prompt composition.
+    V3 LangGraph orchestrator — Execution Pipeline Architecture.
+
+    The backend owns all application-level decisions.
+    The LLM owns only reasoning and generation.
     """
 
     def __init__(
@@ -183,9 +90,9 @@ class AgentOrchestrator:
         retriever: Optional[CodeRetriever] = None,
         context_builder: Optional[ContextBuilder] = None,
         memory_manager: Optional[MemoryManager] = None,
-        composer: Optional[PromptComposer] = None,
         intelligence_engine: Optional[ConversationIntelligenceEngine] = None,
         context_resolver: Optional[ContextResolutionEngine] = None,
+        tool_planner: Optional[IntelligenceToolPlanner] = None,
     ) -> None:
         self._vs = vector_store
         self._coding_agent = coding_agent or CodingAgent()
@@ -193,43 +100,44 @@ class AgentOrchestrator:
         self._retriever = retriever
         self._context_builder = context_builder or ContextBuilder()
         self._memory = memory_manager or get_memory_manager()
-        self._tool_planner = get_tool_planner()
-        self._tool_executor = get_tool_executor()
-        self._composer = composer or get_composer()
         self._intelligence = intelligence_engine or get_engine()
         self._context_resolver = context_resolver or get_context_resolution_engine()
+        # V3: heuristic tool planner — no LLM call required
+        self._tool_planner = tool_planner or get_intelligence_tool_planner()
+        self._tool_executor = get_tool_executor()
         self._graph = self._build_graph()
+
+    # ── Graph construction ────────────────────────────────────────────────────
 
     def _build_graph(self) -> StateGraph:
         graph = StateGraph(AgentState)
 
         graph.add_node("intelligence_prepare", self._intelligence_prepare_node)
-        graph.add_node("route_intent",      self._route_intent_node)
-        graph.add_node("detect_context",    self._detect_context_node)
-        graph.add_node("compose_prompt",    self._compose_prompt_node)
-        graph.add_node("load_memory",       self._load_memory_node)
-        graph.add_node("retrieve_context",  self._retrieve_context_node)
-        graph.add_node("plan_tools",        self._plan_tools_node)
-        graph.add_node("execute_tools",     self._execute_tools_node)
-        graph.add_node("coding_agent",      self._coding_agent_node)
-        graph.add_node("should_continue",   self._should_continue_node)
-        graph.add_node("self_correct",      self._self_correct_node)
-        graph.add_node("review_agent",      self._review_agent_node)
-        graph.add_node("increment_revision",self._increment_revision_node)
-        graph.add_node("finalise",          self._finalise_node)
+        graph.add_node("load_memory",          self._load_memory_node)
+        graph.add_node("retrieve_context",     self._retrieve_context_node)
+        graph.add_node("plan_tools",           self._plan_tools_node)
+        graph.add_node("execute_tools",        self._execute_tools_node)
+        graph.add_node("coding_agent",         self._coding_agent_node)
+        graph.add_node("should_continue",      self._should_continue_node)
+        graph.add_node("review_agent",         self._review_agent_node)
+        graph.add_node("increment_revision",   self._increment_revision_node)
+        graph.add_node("finalise",             self._finalise_node)
+        graph.add_node("post_review_finalise", self._post_review_finalise_node)
 
-        graph.add_edge(START,               "intelligence_prepare")
-        # V3 success → skip legacy nodes; V3 failure → run legacy fallback pipeline
+        graph.add_edge(START, "intelligence_prepare")
+
+        # Short-circuit: policy block or clarification needed → skip LLM entirely
         graph.add_conditional_edges(
             "intelligence_prepare",
-            lambda s: "load_memory" if s.get("intelligence_context") else "route_intent",
-            {"load_memory": "load_memory", "route_intent": "route_intent"},
+            self._after_intelligence,
+            {
+                "finalise":       "finalise",
+                "load_memory":    "load_memory",
+            },
         )
-        graph.add_edge("route_intent",      "detect_context")
-        graph.add_edge("detect_context",    "compose_prompt")
-        graph.add_edge("compose_prompt",    "load_memory")
-        graph.add_edge("load_memory",       "retrieve_context")
-        graph.add_edge("retrieve_context",  "plan_tools")
+
+        graph.add_edge("load_memory",      "retrieve_context")
+        graph.add_edge("retrieve_context", "plan_tools")
 
         graph.add_conditional_edges(
             "plan_tools",
@@ -237,54 +145,74 @@ class AgentOrchestrator:
             {"tools": "execute_tools", "agent": "coding_agent"},
         )
 
-        graph.add_edge("execute_tools",     "coding_agent")
-        graph.add_edge("coding_agent",      "should_continue")
-
-        def _continue_router(s: AgentState) -> str:
-            if s["current_step"] < s["max_steps"] and s.get("tool_calls"):
-                return "plan_tools"
-            return "self_correct"
+        graph.add_edge("execute_tools",  "coding_agent")
+        graph.add_edge("coding_agent",   "should_continue")
 
         graph.add_conditional_edges(
             "should_continue",
-            _continue_router,
-            {"plan_tools": "plan_tools", "self_correct": "self_correct"},
+            self._continue_router,
+            {"plan_tools": "plan_tools", "finalise": "finalise"},
         )
 
-        def _after_self_correct(s: AgentState) -> str:
-            if should_review_decision(s) == "review":
-                return "review"
-            return "finalise"
-
+        # After finalise: optionally run review for complex responses
         graph.add_conditional_edges(
-            "self_correct",
-            _after_self_correct,
-            {"review": "review_agent", "finalise": "finalise"},
+            "finalise",
+            lambda s: "review" if should_review_decision(s) == "review" and not s.get("refused") and not s.get("should_clarify") else "end",
+            {"review": "review_agent", "end": END},
         )
 
         graph.add_conditional_edges(
             "review_agent",
             check_revision_decision,
-            {"revise": "increment_revision", "finalise": "finalise"},
+            {"revise": "increment_revision", "finalise": "post_review_finalise"},
         )
 
+        graph.add_edge("post_review_finalise", END)
         graph.add_edge("increment_revision", "plan_tools")
-        graph.add_edge("finalise",           END)
 
         return graph.compile()
+
+    # ── Routing helpers ───────────────────────────────────────────────────────
+
+    def _after_intelligence(self, state: AgentState) -> str:
+        """Route after intelligence_prepare: short-circuit or proceed."""
+        if state.get("refused"):
+            return "finalise"
+        if state.get("should_clarify"):
+            return "finalise"
+        return "load_memory"
+
+    def _continue_router(self, state: AgentState) -> str:
+        if state["current_step"] < state["max_steps"] and state.get("tool_calls"):
+            return "plan_tools"
+        return "finalise"
 
     # ── Nodes ─────────────────────────────────────────────────────────────────
 
     async def _intelligence_prepare_node(self, state: AgentState) -> AgentState:
         """
-        V3: Run the full ConversationIntelligenceEngine pre-LLM pipeline.
-        Replaces route_intent + detect_context + compose_prompt in one call.
-        Stores intelligence_trace in state for observability.
+        V3: Full pre-LLM intelligence pipeline.
+
+        Runs:
+          IntentDetector → ComplexityAnalyzer → ConversationAnalyzer →
+          PolicyEngine → PersonaEngine → StrategyPlanner →
+          ContextBuilder → IntelligenceToolPlanner →
+          ReasoningEngine (goal, rewrite, decompose, plan, confidence) →
+          DynamicPromptComposer
+
+        Outputs written to state:
+          - intent, system_prompt
+          - rewritten_query (from QueryRewriter)
+          - should_clarify, clarification_question (from ConfidenceEvaluator)
+          - execution_plan_summary (from ExecutionPlanner)
+          - refused (from PolicyEngine BLOCK)
+          - intelligence_context, intelligence_trace, intelligence_reasoning_result
         """
         from loguru import logger
         try:
             result = await self._intelligence.prepare(state)
 
+            # ── Policy BLOCK ──────────────────────────────────────────────────
             if result.is_blocked:
                 return {
                     **state,
@@ -292,27 +220,55 @@ class AgentOrchestrator:
                     "system_prompt": "",
                     "draft_output": result.block_response or "I cannot help with that request.",
                     "refused": True,
+                    "intelligence_context": result.context,
                     "intelligence_trace": result.trace,
                 }
 
-            # Map intelligence intent back to legacy intent string for downstream nodes
+            # ── Extract rewritten query ───────────────────────────────────────
+            rewritten_query = state["user_message"]
+            reasoning = result.reasoning_result
+            if reasoning and reasoning.rewritten_query.enrichments_applied:
+                rewritten_query = reasoning.rewritten_query.rewritten
+
+            # ── Extract clarification decision ────────────────────────────────
+            should_clarify = False
+            clarification_question = ""
+            if reasoning and reasoning.should_clarify:
+                should_clarify = True
+                clarification_question = reasoning.clarification_question
+
+            # ── Extract execution plan summary ────────────────────────────────
+            execution_plan_summary = ""
+            if reasoning and reasoning.execution_plan:
+                execution_plan_summary = reasoning.execution_plan.plan_rationale
+
+            # ── Map intelligence intent to legacy string ───────────────────────
             primary_intent = result.context.intent_analysis.primary.intent.value
-            legacy_intent_map = {
+            _intent_map = {
                 "coding": "code", "debugging": "fix", "testing": "test",
                 "refactoring": "code", "repository_question": "search",
                 "documentation": "explain", "learning": "explain",
                 "deep_teaching": "explain", "general_chat": "chat",
+                "architecture": "code", "git_operations": "search",
+                "tool_execution": "code", "planning": "chat",
+                "brainstorming": "chat", "recommendation": "chat",
+                "comparison": "chat", "research": "chat",
             }
-            legacy_intent = legacy_intent_map.get(primary_intent, "chat")
+            legacy_intent = _intent_map.get(primary_intent, "chat")
 
             return {
                 **state,
                 "intent": legacy_intent,
                 "system_prompt": result.system_prompt,
+                "rewritten_query": rewritten_query,
+                "should_clarify": should_clarify,
+                "clarification_question": clarification_question,
+                "execution_plan_summary": execution_plan_summary,
                 "intelligence_context": result.context,
                 "intelligence_trace": result.trace,
-                "intelligence_reasoning_result": result.reasoning_result,
-                # Populate detected_* fields for backward compat with existing nodes
+                "intelligence_reasoning_result": reasoning,
+                "refused": False,
+                # Clear legacy detection fields — intelligence engine owns these now
                 "detected_language": "",
                 "detected_framework": "",
                 "detected_database": "",
@@ -323,48 +279,20 @@ class AgentOrchestrator:
                 "detected_security": False,
                 "detected_ai_domain": False,
             }
+
         except Exception as e:
-            logger.error(f"Intelligence engine prepare failed: {e}")
-            # Graceful degradation: fall back to legacy intent detection
-            intent = _detect_intent(state["user_message"], state.get("agent_mode", "auto"))
-            system_prompt = self._composer.compose(state)
-            return {**state, "intent": intent, "system_prompt": system_prompt}
-
-    async def _route_intent_node(self, state: AgentState) -> AgentState:
-        intent = _detect_intent(state["user_message"], state.get("agent_mode", "auto"))
-        # If code mode and non-code topic, mark as refused so finalise short-circuits
-        from app.prompts.enhancer import _is_non_code_topic, _is_adult_content
-        agent_mode = state.get("agent_mode", "auto")
-        if agent_mode == "code" and _is_non_code_topic(state["user_message"]):
-            return {**state, "intent": intent, "refused": True}
-        return {**state, "intent": intent}
-
-    async def _detect_context_node(self, state: AgentState) -> AgentState:
-        """
-        Detect language, framework, database, cloud, business domain from message.
-        Populates detected_* fields used by PromptComposer.
-        """
-        lower = state["user_message"].lower()
-        return {
-            **state,
-            "detected_language":        _first_match(lower, _LANG_MAP),
-            "detected_framework":       _first_match(lower, _FRAMEWORK_MAP),
-            "detected_database":        _first_match(lower, _DB_MAP),
-            "detected_cloud":           _first_match(lower, _CLOUD_MAP),
-            "detected_business_domain": _first_match(lower, _BUSINESS_MAP),
-            "detected_architecture":    _first_match(lower, _ARCH_MAP),
-            "detected_testing":         _first_match(lower, _TEST_MAP),
-            "detected_security":        any(k in lower for k in _SECURITY_KW),
-            "detected_ai_domain":       any(k in lower for k in _AI_KW),
-        }
-
-    async def _compose_prompt_node(self, state: AgentState) -> AgentState:
-        """
-        Build the dynamic system prompt using PromptComposer.
-        Stores result in state["system_prompt"].
-        """
-        system_prompt = self._composer.compose(state)
-        return {**state, "system_prompt": system_prompt}
+            logger.error(f"Intelligence engine failed: {e} — using safe fallback")
+            # Minimal safe fallback: no duplicate keyword maps, no LLM call
+            return {
+                **state,
+                "intent": "chat",
+                "system_prompt": _FALLBACK_SYSTEM_PROMPT,
+                "rewritten_query": state["user_message"],
+                "should_clarify": False,
+                "clarification_question": "",
+                "execution_plan_summary": "",
+                "refused": False,
+            }
 
     async def _load_memory_node(self, state: AgentState) -> AgentState:
         try:
@@ -383,7 +311,7 @@ class AgentOrchestrator:
                 limit=10,
             )
 
-            # ── Context Resolution: filter messages by topic relevance ────────
+            # Context Resolution: filter messages by topic relevance
             resolution = self._context_resolver.resolve(
                 message=state["user_message"],
                 session_messages=session_messages,
@@ -401,7 +329,7 @@ class AgentOrchestrator:
                 f"topic_changed={resolution.topic_changed}"
             )
 
-            # If topic changed, don't include old memory context either
+            # Topic changed: discard old memory context entirely
             if resolution.topic_changed:
                 memory_context = ""
 
@@ -412,32 +340,104 @@ class AgentOrchestrator:
             }
         except Exception as e:
             from loguru import logger
-            logger.warning(f"Failed to load memory: {e}")
+            logger.warning(f"Memory load failed: {e}")
             return {**state, "session_messages": [], "memory_context": ""}
 
     async def _retrieve_context_node(self, state: AgentState) -> AgentState:
-        if not state.get("repo_id") or not self._retriever:
+        """
+        Demand-driven repository retrieval.
+        Only executes when a repo is connected AND the intent warrants it.
+        """
+        _NO_RETRIEVAL_INTENTS = {"chat"}
+        if (
+            not state.get("repo_id")
+            or not self._retriever
+            or state.get("intent") in _NO_RETRIEVAL_INTENTS
+        ):
             return {**state, "context_block": "", "code_context": [], "context_chunks_used": 0}
-        results = await self._retriever.retrieve(
-            query=state["user_message"], repo_id=state["repo_id"], top_k=8, fetch_k=20,
-        )
-        context_window = self._context_builder.build(results)
-        context_block = self._context_builder.format_context_block(context_window)
-        return {**state, "code_context": results, "context_block": context_block,
-                "context_chunks_used": len(results)}
+
+        try:
+            results = await self._retriever.retrieve(
+                query=state["rewritten_query"],  # V3: use enriched query
+                repo_id=state["repo_id"],
+                top_k=8,
+                fetch_k=20,
+            )
+            context_window = self._context_builder.build(results)
+            context_block = self._context_builder.format_context_block(context_window)
+            return {
+                **state,
+                "code_context": results,
+                "context_block": context_block,
+                "context_chunks_used": len(results),
+            }
+        except Exception as e:
+            from loguru import logger
+            logger.warning(f"Context retrieval failed: {e}")
+            return {**state, "context_block": "", "code_context": [], "context_chunks_used": 0}
 
     async def _plan_tools_node(self, state: AgentState) -> AgentState:
-        tool_calls = await self._tool_planner.plan(state)
+        """
+        V3: Heuristic tool planning — no LLM call.
+        Uses IntelligenceToolPlanner based on intent + context signals.
+        """
+        intel_context = state.get("intelligence_context")
+        if not intel_context:
+            return {**state, "tool_calls": []}
+
+        tool_plan = self._tool_planner.plan(intel_context)
+
+        if not tool_plan.should_use_tools:
+            return {**state, "tool_calls": []}
+
+        message = state.get("rewritten_query") or state.get("user_message", "")
+        tool_calls = []
+        for name in tool_plan.tools:
+            args = self._extract_tool_args(name, message, state)
+            tool_calls.append(ToolCall(tool_name=name, args=args, rationale=tool_plan.rationale))
         return {**state, "tool_calls": tool_calls}
+
+    @staticmethod
+    def _extract_tool_args(tool_name: str, message: str, state: AgentState) -> dict:
+        """Extract tool arguments from the user message heuristically."""
+        import re
+        if tool_name == "read_file":
+            # Match patterns like: read src/main.py, show me app/auth.py, open utils/helper.js
+            match = re.search(
+                r"(?:read|show|open|display|get|view|cat)\s+(?:the\s+)?(?:file\s+)?([\w./\\-]+\.\w+)",
+                message, re.IGNORECASE
+            )
+            if match:
+                return {"file_path": match.group(1)}
+            # Fallback: any path-like token with extension
+            match = re.search(r"([\w./\\-]+\.(?:py|ts|tsx|js|jsx|java|go|rs|cs|cpp|c|rb|php|yaml|yml|json|md|txt|sh|env))", message)
+            if match:
+                return {"file_path": match.group(1)}
+            return {"file_path": ""}
+        if tool_name == "search_code":
+            return {"query": message}
+        if tool_name == "list_directory":
+            import re
+            match = re.search(r"(?:in|inside|under|of)\s+([\w./\\-]+)", message, re.IGNORECASE)
+            path = match.group(1) if match else "."
+            return {"path": path, "depth": 3}
+        if tool_name == "git_diff":
+            match = re.search(r"([\w./\\-]+\.\w+)", message)
+            return {"file_path": match.group(1)} if match else {}
+        if tool_name == "run_command":
+            match = re.search(r"(?:run|execute)\s+[\`'\"]{0,1}(.+?)[\`'\"]{0,1}$", message, re.IGNORECASE)
+            return {"command": match.group(1)} if match else {"command": message}
+        return {}
 
     async def _execute_tools_node(self, state: AgentState) -> AgentState:
         if not state["tool_calls"]:
             return state
-        from app.db.repositories import RepositoryRepo
-        from app.database import get_db_session
+
         repo_path = None
         if state.get("repo_id"):
             try:
+                from app.db.repositories import RepositoryRepo
+                from app.database import get_db_session
                 async with get_db_session() as session:
                     repo = await RepositoryRepo(session).get_by_id(state["repo_id"])
                     if repo:
@@ -445,23 +445,20 @@ class AgentOrchestrator:
             except Exception:
                 pass
 
-        # Drop any file/git/command tools if there is no repo_path.
-        # These tools will always fail without it — no point executing them.
-        _REPO_REQUIRED_TOOLS = {"write_file", "read_file", "git_diff", "run_command"}
+        _REPO_REQUIRED = {"write_file", "read_file", "git_diff", "run_command"}
         if not repo_path:
-            filtered = [tc for tc in state["tool_calls"] if tc.tool_name not in _REPO_REQUIRED_TOOLS]
-            if len(filtered) < len(state["tool_calls"]):
-                from loguru import logger
-                dropped = [tc.tool_name for tc in state["tool_calls"] if tc.tool_name in _REPO_REQUIRED_TOOLS]
-                logger.warning(f"Dropped tool calls (no repo connected): {dropped}")
+            filtered = [tc for tc in state["tool_calls"] if tc.tool_name not in _REPO_REQUIRED]
             if not filtered:
                 return {**state, "tool_calls": []}
             state = {**state, "tool_calls": filtered}
 
         context = {
-            "user_id": state["user_id"], "org_id": state["org_id"],
-            "repo_id": state.get("repo_id"), "conversation_id": state["conversation_id"],
-            "request_id": state["request_id"], "repo_path": repo_path,
+            "user_id": state["user_id"],
+            "org_id": state["org_id"],
+            "repo_id": state.get("repo_id"),
+            "conversation_id": state["conversation_id"],
+            "request_id": state["request_id"],
+            "repo_path": repo_path,
         }
         tool_results = await self._tool_executor.execute_batch(state["tool_calls"], context)
         files_modified = list(state["files_modified"])
@@ -470,6 +467,7 @@ class AgentOrchestrator:
                 path = result.metadata.get("path")
                 if path and path not in files_modified:
                     files_modified.append(path)
+
         return {
             **state,
             "tool_results": state["tool_results"] + tool_results,
@@ -482,8 +480,10 @@ class AgentOrchestrator:
         return await self._coding_agent.run(state)
 
     async def _should_continue_node(self, state: AgentState) -> AgentState:
+        """Check if the draft output signals a need for more tool calls."""
         if state["current_step"] >= state["max_steps"]:
             return {**state, "tool_calls": []}
+
         draft = state.get("draft_output", "").lower()
         continuation_phrases = [
             "need to see", "need to check", "need to read", "need to search",
@@ -491,115 +491,18 @@ class AgentOrchestrator:
             "i need to", "i should check", "first, let me",
         ]
         if any(p in draft for p in continuation_phrases):
-            tool_calls = await self._tool_planner.plan(state)
-            if tool_calls:
-                return {**state, "tool_calls": tool_calls}
+            intel_context = state.get("intelligence_context")
+            if intel_context:
+                tool_plan = self._tool_planner.plan(intel_context)
+                if tool_plan.should_use_tools:
+                    message = state.get("rewritten_query") or state.get("user_message", "")
+                    tool_calls = [
+                        ToolCall(tool_name=name, args=self._extract_tool_args(name, message, state), rationale=tool_plan.rationale)
+                        for name in tool_plan.tools
+                    ]
+                    return {**state, "tool_calls": tool_calls}
+
         return {**state, "tool_calls": []}
-
-    async def _self_correct_node(self, state: AgentState) -> AgentState:
-        """
-        Truthfulness & self-correction node.
-
-        Scans draft_output for:
-        1. Contradictions with conversation history
-        2. Fabricated entities (non-existent libraries, APIs, books)
-        3. Chronological impossibilities
-
-        Injects corrections into state["self_corrections"] and
-        state["truthfulness_warnings"] so the next revision pass
-        (or the final response) includes explicit corrections.
-
-        Confidence scoring:
-        - 1.0: no issues detected
-        - 0.7: minor uncertainty detected
-        - 0.4: potential contradiction detected
-        - 0.1: likely fabrication detected
-        """
-        draft = state.get("draft_output", "")
-        warnings: list[str] = list(state.get("truthfulness_warnings", []))
-        corrections: list[str] = list(state.get("self_corrections", []))
-        confidence = state.get("confidence_score", 1.0)
-        uncertainty_level = "none"
-
-        if not draft:
-            return state
-
-        draft_lower = draft.lower()
-
-        # ── Check 1: Detect overconfident fabrication signals ─────────────────
-        fabrication_signals = [
-            "definitely released", "was published in", "was released in",
-            "the book states", "according to the official", "as documented in",
-        ]
-        for signal in fabrication_signals:
-            if signal in draft_lower:
-                warnings.append(
-                    f"Response contains potentially unverified factual claim: '{signal}'. "
-                    "Verify before presenting as fact."
-                )
-                confidence = min(confidence, 0.7)
-                uncertainty_level = "medium"
-
-        # ── Check 2: Detect contradiction with session history ────────────────
-        session = state.get("session_messages", [])
-        if session and len(session) >= 2:
-            # Look for direct contradictions in last assistant message
-            last_assistant = next(
-                (m["content"] for m in reversed(session) if m.get("role") == "assistant"),
-                ""
-            )
-            if last_assistant:
-                # Simple heuristic: if draft says "X is Y" but history said "X is Z"
-                # This is a lightweight check — full NLI would require a classifier
-                contradiction_pairs = [
-                    ("not released", "was released"),
-                    ("does not exist", "exists"),
-                    ("deprecated", "is current"),
-                    ("was removed", "is available"),
-                ]
-                for neg, pos in contradiction_pairs:
-                    if neg in draft_lower and pos in last_assistant.lower():
-                        corrections.append(
-                            f"Note: This response may contradict a previous statement. "
-                            f"Previous response mentioned '{pos}' but current draft says '{neg}'. "
-                            f"Please verify which is correct."
-                        )
-                        confidence = min(confidence, 0.4)
-                        uncertainty_level = "high"
-
-        # ── Check 3: Detect unreleased/non-existent entity claims ─────────────
-        # Known unreleased items as of training data
-        known_unreleased = [
-            "winds of winter",
-            "a dream of spring",
-            "half-life 3",
-        ]
-        for item in known_unreleased:
-            if item in draft_lower and any(
-                word in draft_lower for word in ["released", "published", "available", "out now"]
-            ):
-                corrections.append(
-                    f"CORRECTION NEEDED: '{item}' has not been officially released. "
-                    f"Do not state it as released."
-                )
-                confidence = min(confidence, 0.1)
-                uncertainty_level = "high"
-
-        # ── Determine final uncertainty level ─────────────────────────────────
-        if confidence < 0.3:
-            uncertainty_level = "high"
-        elif confidence < 0.6:
-            uncertainty_level = "medium"
-        elif confidence < 0.85:
-            uncertainty_level = "low"
-
-        return {
-            **state,
-            "truthfulness_warnings": warnings,
-            "self_corrections": corrections,
-            "confidence_score": confidence,
-            "uncertainty_level": uncertainty_level,
-        }
 
     async def _review_agent_node(self, state: AgentState) -> AgentState:
         return await self._review_agent.run(state)
@@ -613,43 +516,118 @@ class AgentOrchestrator:
             "tool_calls": [],
         }
 
+    async def _post_review_finalise_node(self, state: AgentState) -> AgentState:
+        """
+        Lightweight finalise after review approval.
+        Applies ResponseReviewer + ResponseFormatter to the reviewed draft,
+        then saves to memory. Does NOT re-enter the review loop.
+        """
+        from loguru import logger
+        final = state.get("draft_output", "") or state.get("final_response", "")
+
+        intel_context = state.get("intelligence_context")
+        reasoning_result = state.get("intelligence_reasoning_result")
+        if final and intel_context:
+            try:
+                reviewed = self._intelligence.review(final, intel_context, reasoning_result)
+                final = reviewed.response
+            except Exception as e:
+                logger.warning(f"Post-review format failed (non-blocking): {e}")
+
+        try:
+            if final:
+                await self._memory.add_message(
+                    user_id=state["user_id"],
+                    conversation_id=state["conversation_id"],
+                    role="assistant",
+                    content=final,
+                    agent_mode=state.get("agent_mode", "auto"),
+                )
+        except Exception as e:
+            logger.warning(f"Post-review memory save failed: {e}")
+
+        return {**state, "final_response": final}
+
     async def _finalise_node(self, state: AgentState) -> AgentState:
+        """
+        V3 finalise node.
+
+        Handles three cases:
+        1. Policy block / refusal → return block_response directly
+        2. Clarification needed → return clarification_question directly
+        3. Normal response → run ResponseReviewer + ResponseFormatter, save memory
+        """
+        from loguru import logger
+
+        # ── Case 1: Policy block ──────────────────────────────────────────────
+        if state.get("refused"):
+            final = state.get("draft_output") or "I cannot help with that request."
+            return {**state, "final_response": final}
+
+        # ── Case 2: Clarification needed ──────────────────────────────────────
+        if state.get("should_clarify") and state.get("clarification_question"):
+            final = state["clarification_question"]
+            try:
+                await self._memory.add_message(
+                    user_id=state["user_id"],
+                    conversation_id=state["conversation_id"],
+                    role="user",
+                    content=state["user_message"],
+                    agent_mode=state.get("agent_mode", "auto"),
+                )
+                await self._memory.add_message(
+                    user_id=state["user_id"],
+                    conversation_id=state["conversation_id"],
+                    role="assistant",
+                    content=final,
+                    agent_mode=state.get("agent_mode", "auto"),
+                )
+            except Exception as e:
+                logger.warning(f"Memory save failed (clarification): {e}")
+            return {**state, "final_response": final}
+
+        # ── Case 3: Normal response ───────────────────────────────────────────
         final = state.get("draft_output", "")
         if not final and state.get("error"):
             final = f"I encountered an error: {state['error']}"
 
-        # Only prepend corrections if they are genuine and response is non-empty
-        corrections = state.get("self_corrections", [])
-        if corrections and final:
-            # Filter out corrections that reference empty/missing prior context
-            real_corrections = [
-                c for c in corrections
-                if not c.startswith("Note: This response may contradict")
-                or len(state.get("session_messages", [])) >= 2
-            ]
-            if real_corrections:
-                correction_block = "\n".join(f"> {c}" for c in real_corrections)
-                final = f"{correction_block}\n\n{final}"
+        # Run ResponseReviewer + ResponseFormatter via intelligence engine
+        intel_context = state.get("intelligence_context")
+        reasoning_result = state.get("intelligence_reasoning_result")
+        if final and intel_context:
+            try:
+                reviewed = self._intelligence.review(final, intel_context, reasoning_result)
+                final = reviewed.response
+                if reviewed.review_issues:
+                    logger.debug(f"Response reviewer flagged: {reviewed.review_issues}")
+            except Exception as e:
+                logger.warning(f"Response review failed (non-blocking): {e}")
 
+        # Save to memory
         try:
             await self._memory.add_message(
-                user_id=state["user_id"], conversation_id=state["conversation_id"],
-                role="user", content=state["user_message"],
+                user_id=state["user_id"],
+                conversation_id=state["conversation_id"],
+                role="user",
+                content=state["user_message"],
                 agent_mode=state.get("agent_mode", "auto"),
             )
             if final:
                 await self._memory.add_message(
-                    user_id=state["user_id"], conversation_id=state["conversation_id"],
-                    role="assistant", content=final,
+                    user_id=state["user_id"],
+                    conversation_id=state["conversation_id"],
+                    role="assistant",
+                    content=final,
                     agent_mode=state.get("agent_mode", "auto"),
                 )
             await self._memory.consolidate_async(
-                user_id=state["user_id"], org_id=state["org_id"],
-                conversation_id=state["conversation_id"], repo_id=state.get("repo_id"),
+                user_id=state["user_id"],
+                org_id=state["org_id"],
+                conversation_id=state["conversation_id"],
+                repo_id=state.get("repo_id"),
             )
         except Exception as e:
-            from loguru import logger
-            logger.warning(f"Failed to save memory: {e}")
+            logger.warning(f"Memory save failed: {e}")
 
         return {**state, "final_response": final}
 
@@ -660,34 +638,59 @@ class AgentOrchestrator:
 
     async def stream(self, state: AgentState):
         """
-        Streaming: runs detect_context + compose_prompt + memory + retrieval
-        pipeline first, then streams the LLM response token-by-token.
+        Streaming pipeline.
+
+        Phase 1: Full intelligence pipeline (no streaming) — produces system_prompt,
+                 rewritten_query, clarification decision, tool plan.
+        Phase 2: Tool execution (if needed).
+        Phase 3: Stream LLM response token-by-token.
+        Phase 4: Post-LLM review + format via intelligence engine.
+        Phase 5: Save to memory.
         """
         from loguru import logger
 
-        # Phase 0: pre-save user message
+        # Pre-save user message
         try:
             await self._memory.add_message(
-                user_id=state["user_id"], conversation_id=state["conversation_id"],
-                role="user", content=state["user_message"],
+                user_id=state["user_id"],
+                conversation_id=state["conversation_id"],
+                role="user",
+                content=state["user_message"],
                 agent_mode=state.get("agent_mode", "auto"),
             )
         except Exception as e:
-            logger.warning(f"Failed to pre-save user message: {e}")
+            logger.warning(f"Pre-save user message failed: {e}")
 
-        # Phase 1: Intelligence pipeline (no streaming)
+        # Phase 1: Intelligence pipeline
         try:
-            # V3: Run the full intelligence engine
             state = await self._intelligence_prepare_node(state)
 
-            # Short-circuit on policy block
+            # Short-circuit: policy block
             if state.get("refused"):
                 block_response = state.get("draft_output", "I cannot help with that request.")
                 yield block_response
                 try:
                     await self._memory.add_message(
-                        user_id=state["user_id"], conversation_id=state["conversation_id"],
-                        role="assistant", content=block_response,
+                        user_id=state["user_id"],
+                        conversation_id=state["conversation_id"],
+                        role="assistant",
+                        content=block_response,
+                        agent_mode=state.get("agent_mode", "auto"),
+                    )
+                except Exception:
+                    pass
+                return
+
+            # Short-circuit: clarification needed
+            if state.get("should_clarify") and state.get("clarification_question"):
+                clarification = state["clarification_question"]
+                yield clarification
+                try:
+                    await self._memory.add_message(
+                        user_id=state["user_id"],
+                        conversation_id=state["conversation_id"],
+                        role="assistant",
+                        content=clarification,
                         agent_mode=state.get("agent_mode", "auto"),
                     )
                 except Exception:
@@ -698,54 +701,74 @@ class AgentOrchestrator:
             state = await self._retrieve_context_node(state)
             state = await self._plan_tools_node(state)
 
+            # Tool execution loop
             for _ in range(state["max_steps"]):
                 if not state.get("tool_calls"):
                     break
                 state = await self._execute_tools_node(state)
                 state = await self._plan_tools_node(state)
 
-            state = await self._self_correct_node(state)
-
         except Exception as e:
-            logger.error(f"Stream pipeline failed: {e}")
+            logger.error(f"Stream pipeline setup failed: {e}")
             yield f"I encountered an error setting up the response: {str(e)}"
             return
 
-        # Phase 2: stream LLM response
+        # Phase 2: Stream LLM response
         from app.prompts.coding import build_user_prompt
 
-        system_prompt = state.get("system_prompt") or ""
+        # Build repo file tree for context (accurate structure, no hallucination)
+        repo_file_tree = ""
+        if state.get("repo_id") and state.get("tool_results") is not None:
+            try:
+                from app.db.repositories import RepositoryRepo
+                from app.database import get_db_session
+                from app.agents.tools.file_tool import FileTool
+                from app.agents.tools.base import ToolContext
+                async with get_db_session() as session:
+                    repo = await RepositoryRepo(session).get_by_id(state["repo_id"])
+                    if repo and repo.local_path:
+                        ft = FileTool()
+                        tc = ToolContext(
+                            user_id=state["user_id"], org_id=state["org_id"],
+                            repo_id=state["repo_id"], conversation_id=state["conversation_id"],
+                            request_id=state["request_id"], repo_path=repo.local_path,
+                        )
+                        result = await ft._execute(tc, operation="list_directory", path=".", depth=4)
+                        if result.success:
+                            repo_file_tree = str(result.output)
+            except Exception:
+                pass
+
+        system_prompt = state.get("system_prompt") or _FALLBACK_SYSTEM_PROMPT
         user_prompt = build_user_prompt(
-            message=state["user_message"],
+            message=state["rewritten_query"],
+            raw_message=state["user_message"],
             context_block=state["context_block"],
             session_messages=state["session_messages"],
             tool_results=state["tool_results"],
             review_feedback=state["review_feedback"],
             intent=state["intent"],
             agent_mode=state.get("agent_mode", "auto"),
-            truthfulness_warnings=state.get("truthfulness_warnings", []),
-            self_corrections=state.get("self_corrections", []),
+            repo_file_tree=repo_file_tree,
         )
 
-        # ── DEBUG: print final prompts sent to LLM ────────────────────────────
+        # Debug trace
         from app.config import get_settings as _gs
         _cfg = _gs()
         _sep = "=" * 80
-        _debug_output = (
-            f"\n{_sep}\n"
-            f"[FINAL PROMPT → LLM]\n"
+        _debug = (
+            f"\n{_sep}\n[FINAL PROMPT → LLM]\n"
             f"  provider : {_cfg.llm_provider}\n"
             f"  model    : {self._coding_agent._get_model(state.get('agent_mode', 'auto'))}\n"
             f"  intent   : {state.get('intent')}  |  mode: {state.get('agent_mode', 'auto')}\n"
-            f"  temp     : {self._coding_agent._get_temperature(state['intent'], state.get('agent_mode', 'auto'))}\n"
-            f"\n--- SYSTEM PROMPT ({len(system_prompt)} chars) ---\n"
-            f"{system_prompt}\n"
-            f"\n--- USER PROMPT ({len(user_prompt)} chars) ---\n"
-            f"{user_prompt}\n"
+            f"  rewritten: {state.get('rewritten_query', '')[:80]}\n"
+            f"  clarify  : {state.get('should_clarify')}  |  plan: {state.get('execution_plan_summary', '')[:60]}\n"
+            f"\n--- SYSTEM PROMPT ({len(system_prompt)} chars) ---\n{system_prompt}\n"
+            f"\n--- USER PROMPT ({len(user_prompt)} chars) ---\n{user_prompt}\n"
             f"{_sep}"
         )
-        print(_debug_output, flush=True)
-        logger.debug(_debug_output)
+        import sys
+        print(_debug, flush=True)
 
         full_response = ""
         try:
@@ -761,35 +784,32 @@ class AgentOrchestrator:
                 yield chunk
         except Exception as e:
             logger.error(f"Stream LLM call failed: {e}")
-            yield f"\n\nError generating response: {str(e)}"
+            raise
 
-        # Phase 3: Post-LLM review + format via intelligence engine
+        # Phase 3: Post-LLM review + format
         intel_context = state.get("intelligence_context")
         reasoning_result = state.get("intelligence_reasoning_result")
         if full_response and intel_context:
             try:
-                reviewed = self._intelligence.review(
-                    full_response, intel_context, reasoning_result
-                )
+                reviewed = self._intelligence.review(full_response, intel_context, reasoning_result)
                 full_response = reviewed.response
                 if reviewed.review_issues:
-                    logger.debug(
-                        f"Response reviewer flagged issues: {reviewed.review_issues}",
-                        extra={"request_id": state.get("request_id", "")},
-                    )
+                    logger.debug(f"Stream response reviewer flagged: {reviewed.review_issues}")
             except Exception as e:
-                logger.warning(f"Response review failed (non-blocking): {e}")
+                logger.warning(f"Stream response review failed (non-blocking): {e}")
 
-        # Phase 4: save assistant response
+        # Phase 4: Save to memory
         try:
             if full_response:
                 await self._memory.add_message(
-                    user_id=state["user_id"], conversation_id=state["conversation_id"],
-                    role="assistant", content=full_response,
+                    user_id=state["user_id"],
+                    conversation_id=state["conversation_id"],
+                    role="assistant",
+                    content=full_response,
                     agent_mode=state.get("agent_mode", "auto"),
                 )
         except Exception as e:
-            logger.warning(f"Failed to save stream memory: {e}")
+            logger.warning(f"Stream memory save failed: {e}")
 
 
 # ── Singleton factory ─────────────────────────────────────────────────────────

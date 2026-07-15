@@ -1,9 +1,13 @@
 """
-CodingAgent — V2 Dynamic Prompt Architecture.
+CodingAgent — V3 Execution Pipeline.
 
-Uses state["system_prompt"] (composed by PromptComposer node) instead of
-the old static SYSTEM_PROMPTS dict. This makes the agent prompt-agnostic:
-it executes whatever system prompt the composer assembled.
+Uses:
+  - state["system_prompt"]         composed by DynamicPromptComposer
+  - state["rewritten_query"]       enriched by QueryRewriter (V3)
+  - state["execution_plan_summary"] from ExecutionPlanner (V3)
+
+The agent is prompt-agnostic: it executes whatever the intelligence
+pipeline assembled. It does not make application-level decisions.
 """
 
 from __future__ import annotations
@@ -29,10 +33,8 @@ def _temperature_for_intent(intent: str, agent_mode: str = "auto") -> float:
 
 class CodingAgent:
     """
-    Primary agent node. Executes the LLM call using the composed system prompt.
-
-    Called as a LangGraph node:
-        state = await coding_agent.run(state)
+    Primary agent node. Executes the LLM call using the composed system prompt
+    and the enriched query from the intelligence pipeline.
     """
 
     def __init__(self, ollama: Optional[OllamaClient] = None) -> None:
@@ -53,25 +55,27 @@ class CodingAgent:
         """
         Execute the coding agent.
 
-        Reads:  system_prompt (from PromptComposer), user_message,
-                context_block, session_messages, intent, tool_results
+        Reads:
+          system_prompt          (from DynamicPromptComposer)
+          rewritten_query        (from QueryRewriter — V3)
+          execution_plan_summary (from ExecutionPlanner — V3)
+          context_block, session_messages, tool_results, review_feedback
+
         Writes: draft_output, tokens_used
         """
-        start = time.monotonic()
         agent_mode = state.get("agent_mode", "auto")
-
-        # Use the dynamically composed system prompt from state
         system_prompt = state.get("system_prompt") or ""
+
         user_prompt = build_user_prompt(
-            message=state["user_message"],
+            message=state.get("rewritten_query") or state["user_message"],
+            raw_message=state["user_message"],
             context_block=state["context_block"],
             session_messages=state["session_messages"],
             tool_results=state["tool_results"],
             review_feedback=state["review_feedback"],
             intent=state["intent"],
             agent_mode=agent_mode,
-            truthfulness_warnings=state.get("truthfulness_warnings", []),
-            self_corrections=state.get("self_corrections", []),
+            execution_plan_summary=state.get("execution_plan_summary", ""),
         )
 
         try:
@@ -98,17 +102,19 @@ class CodingAgent:
         """Streaming version — yields text chunks."""
         agent_mode = state.get("agent_mode", "auto")
         system_prompt = state.get("system_prompt") or ""
+
         user_prompt = build_user_prompt(
-            message=state["user_message"],
+            message=state.get("rewritten_query") or state["user_message"],
+            raw_message=state["user_message"],
             context_block=state["context_block"],
             session_messages=state["session_messages"],
             tool_results=state["tool_results"],
             review_feedback=state["review_feedback"],
             intent=state["intent"],
             agent_mode=agent_mode,
-            truthfulness_warnings=state.get("truthfulness_warnings", []),
-            self_corrections=state.get("self_corrections", []),
+            execution_plan_summary=state.get("execution_plan_summary", ""),
         )
+
         async for chunk in self._ollama.chat_stream(
             prompt=user_prompt,
             system_prompt=system_prompt,

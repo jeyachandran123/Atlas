@@ -22,12 +22,9 @@ from __future__ import annotations
 from app.intelligence.interfaces import AbstractPromptComposer
 from app.intelligence.models import (
     IntelligenceContext,
-    Intent,
-    Persona,
     PolicyDecision,
     ResponseStrategy,
 )
-from app.intelligence.persona.engine import _PERSONAS
 from app.intelligence.prompting.engine import PromptIntelligenceEngine, get_prompt_intelligence_engine
 from app.intelligence.strategy.planner import STRATEGY_REGISTRY
 
@@ -103,6 +100,10 @@ def _build_tool_results_section(context: IntelligenceContext) -> str:
 
 def _select_domain_modules(context: IntelligenceContext) -> list[str]:
     """Select domain modules only when genuinely relevant."""
+    from app.intelligence.context.keywords import (
+        LANG_MAP, FRAMEWORK_MAP, DB_MAP, CLOUD_MAP,
+        SECURITY_MAP, AI_MAP, ARCH_MAP, TEST_MAP,
+    )
     registry = _get_domain_registry()
     message = context.user_message.lower()
     selected: list[str] = []
@@ -113,58 +114,38 @@ def _select_domain_modules(context: IntelligenceContext) -> list[str]:
             seen.add(key)
             selected.append(key)
 
-    lang_map = {
-        "typescript": "typescript", ".ts": "typescript", ".tsx": "typescript",
-        "javascript": "javascript", " js ": "javascript",
-        "python": "python", ".py": "python",
-        "c#": "csharp", "csharp": "csharp",
-        "java ": "java", "kotlin": "kotlin",
-        " go ": "go", "golang": "go",
-        "rust": "rust", "php": "php",
-    }
-    for kw, key in lang_map.items():
+    for kw, key in LANG_MAP.items():
         if kw in message:
             add(key)
-            break
+            break  # one language per request
 
-    fw_map = {
-        "react": "react", "next.js": "nextjs", "nextjs": "nextjs",
-        "vue": "vue", "fastapi": "fastapi", "django": "django",
-        "flask": "flask", "express": "express", "nestjs": "nestjs",
-    }
-    for kw, key in fw_map.items():
+    for kw, key in FRAMEWORK_MAP.items():
         if kw in message:
             add(key)
 
-    db_map = {
-        "postgresql": "postgresql", "postgres": "postgresql",
-        "mysql": "mysql", "mongodb": "mongodb", "redis": "redis",
-    }
-    for kw, key in db_map.items():
+    for kw, key in DB_MAP.items():
         if kw in message:
             add(key)
 
-    cloud_map = {
-        "aws": "aws", "azure": "azure", "gcp": "gcp",
-        "docker": "docker", "kubernetes": "kubernetes",
-    }
-    for kw, key in cloud_map.items():
+    for kw, key in CLOUD_MAP.items():
         if kw in message:
             add(key)
 
-    if any(k in message for k in ["security", "auth", "jwt", "oauth", "owasp"]):
-        add("owasp")
-        add("auth_security")
+    for kw, key in SECURITY_MAP.items():
+        if kw in message:
+            add(key)
 
-    if any(k in message for k in ["langgraph", "langchain", "rag", "embedding", "agent"]):
-        add("langgraph")
-        add("rag")
+    for kw, key in AI_MAP.items():
+        if kw in message:
+            add(key)
 
-    if any(k in message for k in ["clean architecture", "ddd", "microservice", "solid"]):
-        add("clean_architecture")
+    for kw, key in ARCH_MAP.items():
+        if kw in message:
+            add(key)
 
-    if any(k in message for k in ["pytest", "unit test", "jest", "vitest"]):
-        add("unit_testing")
+    for kw, key in TEST_MAP.items():
+        if kw in message:
+            add(key)
 
     # Always include truthfulness and output standards
     add("truthfulness_core")

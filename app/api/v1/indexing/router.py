@@ -66,15 +66,14 @@ async def get_job_progress(
     # Convert string values from Redis to proper types
     parsed_progress = {
         "status": progress.get("status", "unknown"),
-        "total": int(progress.get("total", 0)),
-        "processed": int(progress.get("processed", 0)),
-        "chunks": int(progress.get("chunks", 0)),
+        "files_total": int(progress.get("files_total", progress.get("total", 0))),
+        "files_processed": int(progress.get("files_processed", progress.get("processed", 0))),
+        "chunks_created": int(progress.get("chunks_created", progress.get("chunks", 0))),
     }
-    
-    # Add current_file if present
+
     if "current_file" in progress:
         parsed_progress["current_file"] = progress["current_file"]
-    
+
     return parsed_progress
 
 

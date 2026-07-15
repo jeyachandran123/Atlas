@@ -361,7 +361,11 @@ class OllamaClient:
             )
             response.raise_for_status()
             data = response.json()
-            return str(data["message"]["content"])
+            content = str(data["message"]["content"])
+            # Strip <think>...</think> blocks from thinking models
+            import re as _re
+            content = _re.sub(r"<think>.*?</think>", "", content, flags=_re.DOTALL).strip()
+            return content
         except httpx.ConnectError as e:
             raise OllamaUnavailableError() from e
         except httpx.TimeoutException as e:
@@ -414,6 +418,7 @@ class OllamaClient:
                     },
                 ) as response:
                     response.raise_for_status()
+                    in_think = False
                     async for line in response.aiter_lines():
                         if not line:
                             continue
@@ -421,8 +426,22 @@ class OllamaClient:
                             chunk = _json.loads(line)
                         except _json.JSONDecodeError:
                             continue
-                        if content := chunk.get("message", {}).get("content"):
-                            yield content
+                        content = chunk.get("message", {}).get("content", "")
+                        if not content:
+                            if chunk.get("done"):
+                                break
+                            continue
+                        # Strip <think>...</think> blocks from thinking models (qwen3, deepseek-r1)
+                        if "<think>" in content:
+                            in_think = True
+                        if in_think:
+                            if "</think>" in content:
+                                in_think = False
+                                after = content.split("</think>", 1)[1]
+                                if after:
+                                    yield after
+                            continue
+                        yield content
                         if chunk.get("done"):
                             break
         except httpx.ConnectError as e:

@@ -34,6 +34,7 @@ class Intent(str, Enum):
     TESTING = "testing"
     GIT_OPERATIONS = "git_operations"
     TOOL_EXECUTION = "tool_execution"
+    VISION = "vision"  # Image analysis — routes to vision model
     UNKNOWN = "unknown"
 
 

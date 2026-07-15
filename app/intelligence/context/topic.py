@@ -41,11 +41,14 @@ _FOLLOWUP_PATTERNS = [
     r"^(what|how)\s+about\s+",
     r"^can\s+i\s+use\s+",
     r"^(explain|tell)\s+(me\s+)?more",
+    r"^can\s+(you\s+)?(explain|tell|describe|elaborate)",  # "can explain more..."
     r"^what\s+(is|are)\s+(it|they|that|this)\??$",
     r"^(and|but)\s+",
     r"^is\s+(it|that|this)\s+",
     r"^(really|seriously)\??$",
     r"^(example|examples)\??$",
+    r"^(more|tell)\s+(me\s+)?(about|more)",
+    r"\b(they|it|that|this|there|those|these)\b.*\?",  # pronoun-referencing questions
 ]
 
 
@@ -87,6 +90,18 @@ def compute_topic_similarity(keywords_a: list[str], keywords_b: list[str]) -> fl
     return len(intersection) / len(union)
 
 
+# Pronouns that signal the message refers to the active topic
+_REFERENTIAL_PRONOUNS = frozenset(
+    ["they", "it", "that", "this", "there", "those", "these", "their", "its"]
+)
+
+
+def _has_referential_pronoun(message: str) -> bool:
+    """Return True if the message uses a pronoun that refers to prior context."""
+    words = set(re.findall(r"[a-z]+", message.lower()))
+    return bool(words & _REFERENTIAL_PRONOUNS)
+
+
 def classify_topic_relation(
     new_message: str,
     current_topic_keywords: list[str],
@@ -109,6 +124,12 @@ def classify_topic_relation(
         return TopicRelation.NEW_TOPIC, 0.5
 
     new_keywords = extract_topic_keywords(new_message)
+
+    # Pronoun-referencing messages ("they have...", "can explain more about that")
+    # always continue the active topic when one exists
+    if _has_referential_pronoun(new_message) and current_topic_keywords:
+        return TopicRelation.CONTINUATION, 0.85
+
     if not new_keywords:
         # Very short non-followup, non-reset → treat as continuation if topic exists
         if current_topic_keywords:

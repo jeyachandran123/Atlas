@@ -19,175 +19,24 @@ CodingAgent instead of the old static SYSTEM_PROMPTS dict.
 
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING
 
+from app.intelligence.context.keywords import (
+    LANG_MAP as _LANGUAGE_KEYWORDS,
+    FRAMEWORK_MAP as _FRAMEWORK_KEYWORDS,
+    DB_MAP as _DATABASE_KEYWORDS,
+    CLOUD_MAP as _CLOUD_KEYWORDS,
+    BUSINESS_MAP as _BUSINESS_KEYWORDS,
+    SECURITY_MAP as _SECURITY_KEYWORDS,
+    AI_MAP as _AI_KEYWORDS,
+    ARCH_MAP as _ARCHITECTURE_KEYWORDS,
+    TEST_MAP as _TESTING_KEYWORDS,
+    FACTUAL_KW as _FACTUAL_TRIGGERS,
+)
 from app.prompts.registry import REGISTRY
 
 if TYPE_CHECKING:
     from app.agents.state import AgentState
-
-
-# ── Keyword → module key mappings ─────────────────────────────────────────────
-# These drive automatic detection from the user message.
-
-_FRAMEWORK_KEYWORDS: dict[str, str] = {
-    # Frontend
-    "react":         "react",
-    "next.js":       "nextjs",
-    "nextjs":        "nextjs",
-    "vue":           "vue",
-    "nuxt":          "nuxtjs",
-    "angular":       "angular",
-    "svelte":        "svelte",
-    "react native":  "react_native",
-    "flutter":       "flutter",
-    # Backend
-    "fastapi":       "fastapi",
-    "django":        "django",
-    "flask":         "flask",
-    "express":       "express",
-    "nestjs":        "nestjs",
-    "nest.js":       "nestjs",
-    "asp.net":       "aspnet",
-    "spring boot":   "spring_boot",
-    "laravel":       "laravel",
-}
-
-_LANGUAGE_KEYWORDS: dict[str, str] = {
-    "typescript":    "typescript",
-    " ts ":          "typescript",
-    ".tsx":          "typescript",
-    ".ts":           "typescript",
-    "javascript":    "javascript",
-    " js ":          "javascript",
-    "python":        "python",
-    " py ":          "python",
-    ".py":           "python",
-    "c#":            "csharp",
-    "csharp":        "csharp",
-    "java ":         "java",
-    "kotlin":        "kotlin",
-    " go ":          "go",
-    "golang":        "go",
-    "rust":          "rust",
-    "php":           "php",
-    "swift":         "swift",
-    "dart":          "dart",
-}
-
-_DATABASE_KEYWORDS: dict[str, str] = {
-    "postgresql":    "postgresql",
-    "postgres":      "postgresql",
-    "mysql":         "mysql",
-    "sql server":    "mssql",
-    "mssql":         "mssql",
-    "mongodb":       "mongodb",
-    "mongo":         "mongodb",
-    "redis":         "redis",
-    "elasticsearch": "elasticsearch",
-    "dynamodb":      "dynamodb",
-    "firestore":     "firebase_db",
-    "firebase":      "firebase_db",
-    "sql":           "sql",
-}
-
-_CLOUD_KEYWORDS: dict[str, str] = {
-    "aws":           "aws",
-    "amazon":        "aws",
-    "azure":         "azure",
-    "google cloud":  "gcp",
-    "gcp":           "gcp",
-    "docker":        "docker",
-    "kubernetes":    "kubernetes",
-    "k8s":           "kubernetes",
-    "terraform":     "terraform",
-    "github actions":"github_actions",
-    "ci/cd":         "cicd",
-    "cicd":          "cicd",
-}
-
-_BUSINESS_KEYWORDS: dict[str, str] = {
-    "hotel":         "hotel",
-    "pms":           "hotel",
-    "reservation":   "hotel",
-    "check-in":      "hotel",
-    "checkout":      "hotel",
-    "revpar":        "hotel",
-    "erp":           "erp",
-    "procurement":   "erp",
-    "purchase order":"erp",
-    "grn":           "erp",
-    "pos":           "pos",
-    "point of sale": "pos",
-    "cashier":       "pos",
-    "inventory":     "inventory",
-    "warehouse":     "inventory",
-    "stock":         "inventory",
-    "sku":           "inventory",
-    "payroll":       "hrms",
-    "hrms":          "hrms",
-    "leave":         "hrms",
-    "crm":           "crm",
-    "lead":          "crm",
-    "finance":       "finance",
-    "accounting":    "finance",
-    "ledger":        "finance",
-    "invoice":       "finance",
-}
-
-_SECURITY_KEYWORDS: dict[str, str] = {
-    "security":      "owasp",
-    "owasp":         "owasp",
-    "authentication":"auth_security",
-    "auth":          "auth_security",
-    "jwt":           "auth_security",
-    "oauth":         "auth_security",
-    "injection":     "secure_coding",
-    "xss":           "secure_coding",
-    "csrf":          "secure_coding",
-    "vulnerability": "owasp",
-    "api key":       "api_security",
-    "rate limit":    "api_security",
-}
-
-_AI_KEYWORDS: dict[str, str] = {
-    "langgraph":     "langgraph",
-    "langchain":     "langchain",
-    "rag":           "rag",
-    "retrieval":     "rag",
-    "embedding":     "vector_db",
-    "vector":        "vector_db",
-    "chroma":        "vector_db",
-    "multi-agent":   "multi_agent",
-    "multi agent":   "multi_agent",
-    "ollama":        "ollama",
-    "llm":           "prompt_engineering",
-    "prompt":        "prompt_engineering",
-    "agent":         "langgraph",
-}
-
-_ARCHITECTURE_KEYWORDS: dict[str, str] = {
-    "clean architecture": "clean_architecture",
-    "ddd":                "ddd",
-    "domain driven":      "ddd",
-    "microservice":       "microservices",
-    "event driven":       "event_driven",
-    "event sourcing":     "event_driven",
-    "cqrs":               "event_driven",
-    "solid":              "solid",
-}
-
-_TESTING_KEYWORDS: dict[str, str] = {
-    "unit test":     "unit_testing",
-    "integration test": "integration_testing",
-    "e2e":           "e2e_testing",
-    "playwright":    "e2e_testing",
-    "cypress":       "e2e_testing",
-    "pytest":        "pytest",
-    "jest":          "unit_testing",
-    "vitest":        "unit_testing",
-}
 
 # ── Intent → base persona mapping ─────────────────────────────────────────────
 
@@ -217,13 +66,6 @@ _ALWAYS_INCLUDE = [
     "base_truthfulness",
 ]
 
-# ── Truthfulness modules for factual/general topics ───────────────────────────
-
-_FACTUAL_TRIGGERS = [
-    "when was", "what year", "released", "published", "version",
-    "history", "invented", "created", "founded", "launched",
-    "book", "movie", "show", "season", "episode",
-]
 
 
 class PromptComposer:

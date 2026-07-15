@@ -85,6 +85,50 @@ class FileReadTool(BaseTool):
         return str(result.output)
 
 
+class ListDirectoryTool(BaseTool):
+    """List directory structure of the repository."""
+
+    name = "list_directory"
+    description = "List the directory structure of the repository or a subdirectory"
+    parameters = {
+        "path": {
+            "type": "string",
+            "description": "Relative path to list (default: repo root)",
+            "required": False,
+        },
+        "depth": {
+            "type": "integer",
+            "description": "How deep to traverse (default: 3)",
+            "required": False,
+        },
+    }
+
+    async def execute(self, context: dict, **kwargs: Any) -> str:
+        repo_path = context.get("repo_path")
+        if not repo_path:
+            raise ToolExecutionError("No repository path in context")
+
+        from app.agents.tools.base import ToolContext as OldContext
+        old_context = OldContext(
+            user_id=context["user_id"],
+            org_id=context["org_id"],
+            repo_id=context.get("repo_id"),
+            conversation_id=context.get("conversation_id", ""),
+            request_id=context.get("request_id", ""),
+            repo_path=repo_path,
+        )
+        old_tool = OldFileTool()
+        result = await old_tool._execute(
+            old_context,
+            operation="list_directory",
+            path=kwargs.get("path", "."),
+            depth=kwargs.get("depth", 3),
+        )
+        if not result.success:
+            raise ToolExecutionError(result.error or "Directory listing failed")
+        return str(result.output)
+
+
 class FileWriteTool(BaseTool):
     """Write content to a file in the repository."""
 

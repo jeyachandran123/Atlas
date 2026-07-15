@@ -120,8 +120,16 @@ def _build_default_registry() -> IntentRuleRegistry:
             "in this repo", "in my codebase", "in this project", "find in code",
             "where is", "which file", "show me the", "how does this project",
             "in our code", "this codebase",
+            "read the file", "read file", "show the file", "open the file",
+            "show me the code", "show me the full code", "show full code",
+            "what's in", "what is in", "contents of", "content of",
+            "list files", "list directory", "show directory",
         ],
-        patterns=[r"\bwhere\b.{0,20}\bcode\b", r"\bfind\b.{0,20}\bfile\b"],
+        patterns=[
+            r"\bwhere\b.{0,20}\bcode\b", r"\bfind\b.{0,20}\bfile\b",
+            r"\bread\b.{0,30}\bfile\b", r"\bshow\b.{0,30}\bfile\b",
+            r"\bopen\b.{0,20}\bfile\b", r"\bcontents?\s+of\b",
+        ],
     ))
 
     registry.register(IntentRule(

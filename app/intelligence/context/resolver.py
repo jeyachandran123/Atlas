@@ -173,15 +173,20 @@ class ContextResolutionEngine:
     def _handle_reset(
         self, state: ConversationState, conversation_id: str
     ) -> ContextResolution:
-        """Handle reset messages (greetings, acknowledgments)."""
+        """
+        Handle reset messages (greetings, acknowledgments).
+        Marks goal as done but preserves topic state so the NEXT message
+        can still be classified as a continuation if it references prior context.
+        """
         state.goal_completed = True
-        # Don't shift topic yet — just mark goal as done and return empty context
+        # Preserve current_topic so the next message can still match it.
+        # Only return empty context for this greeting turn itself.
         return ContextResolution(
             relation=TopicRelation.NEW_TOPIC,
             relevant_message_indices=[],
             should_include_history=False,
             context_window_size=0,
-            topic_changed=False,  # Not a real topic change, just a reset
+            topic_changed=False,
             new_state=state,
         )
 

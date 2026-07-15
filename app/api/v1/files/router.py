@@ -366,9 +366,12 @@ async def write_file(
             f.write(req.content)
     except Exception as e:
         raise HTTPException(500, f"Failed to write file: {str(e)}")
-    
+
     file_size = os.path.getsize(file_path)
-    
+
+    # Mark repo as stale — content changed, index is now out of date
+    await repo_repo.update_status(repo_id, "stale")
+
     return WriteFileResponse(
         path=req.path,
         size=file_size,
@@ -413,7 +416,10 @@ async def delete_file(
         os.remove(file_path)
     except Exception as e:
         raise HTTPException(500, f"Failed to delete file: {str(e)}")
-    
+
+    # Mark repo as stale — file removed, index is now out of date
+    await repo_repo.update_status(repo_id, "stale")
+
     return {"status": "success", "message": f"File deleted: {path}"}
 
 
