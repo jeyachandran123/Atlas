@@ -173,7 +173,7 @@ class VisionService:
         image_bytes = []
         for att in recent:
             try:
-                data = self._storage.get_bytes(att)
+                data = await self._storage.get_bytes(att)
                 image_bytes.append(data)
             except Exception as e:
                 logger.warning(f"Failed to load image {att.id}: {e}")

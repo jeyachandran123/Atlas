@@ -167,7 +167,7 @@ class CurrentUser:
 
         # We need a session — get it from user_repo
         result = await user_repo.session.execute(
-            select(APIKey).where(APIKey.key_hash == key_hash, APIKey.is_active == True)  # noqa: E712
+            select(APIKey).where(APIKey.key_hash == key_hash, APIKey.is_active.is_(True))
         )
         api_key = result.scalar_one_or_none()
 

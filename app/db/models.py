@@ -397,6 +397,9 @@ class Message(Base):
     images: Mapped[list["MessageImage"]] = relationship(
         "MessageImage", back_populates="message", lazy="selectin"
     )
+    documents: Mapped[list["MessageDocument"]] = relationship(
+        "MessageDocument", back_populates="message", lazy="selectin"
+    )
     agent_executions: Mapped[list[AgentExecution]] = relationship(
         "AgentExecution", back_populates="message"
     )
@@ -433,6 +436,42 @@ class MessageImage(Base):
     )
 
     message: Mapped[Message] = relationship("Message", back_populates="images")
+
+
+class MessageDocument(Base):
+    """
+    A document (PDF / Word / text) attached to a message.
+    Original file + extracted text stored on disk, metadata in DB so
+    attachments persist across page refreshes and follow-up Q&A can
+    rebuild conversation document context after the Redis TTL expires.
+    """
+
+    __tablename__ = "message_documents"
+    __table_args__ = (
+        Index("ix_message_documents_msg", "message_id"),
+        Index("ix_message_documents_conv", "conversation_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    message_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("messages.id"), nullable=False
+    )
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("conversations.id"), nullable=False
+    )
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    storage_path: Mapped[str] = mapped_column(String(1000), nullable=False)
+    text_path: Mapped[str] = mapped_column(String(1000), nullable=False)
+    doc_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    page_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    char_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+    message: Mapped[Message] = relationship("Message", back_populates="documents")
 
 
 class AgentExecution(Base):

@@ -89,6 +89,27 @@ class Settings(BaseSettings):
     vision_max_image_size_mb: int = 20
     vision_max_images_per_message: int = 5
 
+    # ── Attachment Storage ───────────────────────────────────────────────────────
+    # local    → files under data/ on this machine (default)
+    # s3       → AWS S3 bucket (requires aws_s3_bucket + credentials)
+    # firebase → Firebase Storage bucket (requires firebase_storage_bucket)
+    storage_backend: Literal["local", "s3", "firebase"] = "local"
+    firebase_storage_bucket: str = ""  # e.g. atlas-ai-assistant-1ae91.firebasestorage.app
+
+    # ── AWS S3 ───────────────────────────────────────────────────────────────────
+    aws_s3_bucket: str = ""
+    aws_region: str = "us-east-1"
+    aws_access_key_id: SecretStr = SecretStr("")
+    aws_secret_access_key: SecretStr = SecretStr("")
+
+    # ── Documents (PDF / Word / text uploads) ────────────────────────────────────
+    document_storage_dir: str = "data/document_uploads"
+    document_max_file_size_mb: int = 20
+    document_max_per_message: int = 5
+    # Max characters of extracted document text injected into the LLM prompt.
+    # ~4 chars/token → 24000 chars ≈ 6000 tokens, leaving room in num_ctx=16384.
+    document_context_max_chars: int = 24000
+
     @field_validator("ollama_host", mode="before")
     @classmethod
     def normalize_ollama_host(cls, v: str) -> str:

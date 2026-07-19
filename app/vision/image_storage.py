@@ -1,8 +1,13 @@
 """
 Image Storage — handles upload, persistence, and retrieval of images.
 
-Images are stored on the local filesystem under VISION_STORAGE_DIR.
-Each image is identified by a SHA256 hash for deduplication.
+Storage is delegated to the pluggable blob backend (app/storage):
+  STORAGE_BACKEND=local    → data/vision_uploads/{conversation_id}/{id}{ext}
+  STORAGE_BACKEND=firebase → gs://<bucket>/vision_uploads/{conversation_id}/{id}{ext}
+
+Keys stored in MessageImage.storage_path are identical across backends, so
+switching requires no DB migration. Each image is identified by a SHA256 hash
+for deduplication.
 """
 from __future__ import annotations
 
@@ -12,9 +17,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from app.storage import BlobNotFoundError, BlobStorage, get_blob_storage
 from app.vision.schemas import ImageAttachment
 
-# Storage root — relative to backend working directory
+# Storage root — local backend root AND cloud key prefix
 VISION_STORAGE_DIR = Path("data/vision_uploads")
 
 # Allowed MIME types
@@ -30,11 +36,10 @@ class ImageStorageError(Exception):
 
 
 class ImageStorage:
-    """Manages image file persistence and metadata."""
+    """Manages image persistence and metadata via the blob storage backend."""
 
-    def __init__(self, storage_dir: Path = VISION_STORAGE_DIR) -> None:
-        self._dir = storage_dir
-        self._dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self, blobs: Optional[BlobStorage] = None) -> None:
+        self._blobs = blobs or get_blob_storage("vision_uploads", local_root=VISION_STORAGE_DIR)
 
     async def store(
         self,
@@ -52,14 +57,11 @@ class ImageStorage:
         image_hash = hashlib.sha256(file_bytes).hexdigest()
         image_id = str(uuid.uuid4())
 
-        # Organize by conversation
-        conv_dir = self._dir / conversation_id
-        conv_dir.mkdir(parents=True, exist_ok=True)
-
         ext = Path(filename).suffix or ".png"
-        storage_filename = f"{image_id}{ext}"
-        storage_path = conv_dir / storage_filename
-        storage_path.write_bytes(file_bytes)
+        # Key layout mirrors the historical disk layout: {conversation_id}/{id}{ext}
+        storage_key = f"{conversation_id}/{image_id}{ext}"
+
+        await self._blobs.put(storage_key, file_bytes, content_type=mime_type)
 
         # Get dimensions if possible
         width, height = self._get_dimensions(file_bytes)
@@ -70,29 +72,27 @@ class ImageStorage:
             filename=filename,
             mime_type=mime_type,
             size_bytes=len(file_bytes),
-            storage_path=str(storage_path.relative_to(self._dir)),
+            storage_path=storage_key,
             image_hash=image_hash,
             width=width,
             height=height,
             created_at=datetime.utcnow(),
         )
 
-    def get_path(self, attachment: ImageAttachment) -> Path:
-        """Get the absolute filesystem path for an image."""
-        return self._dir / attachment.storage_path
-
-    def get_bytes(self, attachment: ImageAttachment) -> bytes:
+    async def get_bytes(self, attachment: ImageAttachment) -> bytes:
         """Read image bytes from storage."""
-        path = self.get_path(attachment)
-        if not path.exists():
-            raise ImageStorageError(f"Image not found: {attachment.id}")
-        return path.read_bytes()
+        return await self.get_bytes_by_key(attachment.storage_path)
 
-    def delete(self, attachment: ImageAttachment) -> None:
+    async def get_bytes_by_key(self, storage_key: str) -> bytes:
+        """Read image bytes by raw storage key (as stored in MessageImage.storage_path)."""
+        try:
+            return await self._blobs.get(storage_key)
+        except BlobNotFoundError as e:
+            raise ImageStorageError(f"Image not found: {storage_key}") from e
+
+    async def delete(self, attachment: ImageAttachment) -> None:
         """Delete an image from storage."""
-        path = self.get_path(attachment)
-        if path.exists():
-            path.unlink()
+        await self._blobs.delete(attachment.storage_path)
 
     @staticmethod
     def _get_dimensions(data: bytes) -> tuple[Optional[int], Optional[int]]:

@@ -50,6 +50,13 @@ opentelemetry-instrumentation-fastapi==0.50b0
 opentelemetry-exporter-otlp==1.29.0
 loguru==0.7.3
 
+# ── Document Extraction ───────────────────────────────────────────────────────
+pypdf==5.1.0               # PDF text extraction
+python-docx==1.1.2         # Word (.docx) text extraction
+
+# ── Cloud Storage ─────────────────────────────────────────────────────────────
+boto3==1.35.90             # AWS S3 attachment storage
+
 # ── Utilities ─────────────────────────────────────────────────────────────────
 python-dotenv==1.0.1
 orjson==3.10.12

@@ -1,0 +1,177 @@
+UnityWorks Vision AI
+
+Product & Technical Design Overview (Version 1.0)
+
+Page 1 — Product Vision
+
+UnityWorks Vision AI is a real-time Restaurant Monitoring Platform that transforms CCTV video into structured operational intelligence. Rather than functioning as a chatbot, the platform continuously observes restaurant activities and generates business events that integrate directly with the POS.
+
+Business capabilities include:
+• Employee Monitoring: PPE compliance (mask, gloves, hairnet, apron), hygiene violations and safety alerts.
+• Customer Monitoring: Detection, tracking, seating status, waiting, eating, occupancy and analytics.
+• Food Monitoring: Food recognition, menu mapping, portion estimation and finished plate detection.
+• Table Monitoring: Occupied, empty, dirty, clean and ready-for-cleaning status.
+• Restaurant Analytics: Occupancy trends, peak hours, hygiene score and employee compliance.
+
+Engineering Philosophy:
+The product never tries to solve everything with one AI model. Instead, each layer has one responsibility, producing reliable, explainable and scalable outputs.
+
+Page 2 — End-to-End Technical Flow
+
+Architecture
+
+Restaurant CCTV
+   ↓
+RTSP Stream
+   ↓
+OpenCV Frame Scheduler (1 FPS)
+   ↓
+YOLO (Object Detection)
+   ↓
+ByteTrack (Persistent Tracking)
+   ↓
+Object Cropper
+   ↓
+Object Classification
+   ↓
+Specialized Vision Engines
+(Employee / Customer / Food / Table)
+   ↓
+Business Rules Engine
+   ↓
+Restaurant State Manager
+   ↓
+FastAPI
+   ↓
+PostgreSQL + Redis
+   ↓
+POS Dashboard
+
+Layer Summary
+
+OpenCV – Reads RTSP streams and extracts frames. We intentionally analyse around 1 FPS initially because restaurant scenes change relatively slowly, reducing GPU cost dramatically.
+
+YOLO – Detects objects and produces bounding boxes with confidence scores. It localizes people, plates, tables and other objects before any reasoning occurs.
+
+ByteTrack – Maintains persistent identities across frames. Employee #4 remains Employee #4 rather than becoming a new person every second.
+
+Object Cropper – Crops only the detected object and sends that crop to Vision AI. This improves accuracy while reducing latency and token usage.
+
+Object Classification – Uses multiple signals (location, attire, kitchen zone, badge, repeated appearance, etc.) to classify Employee, Customer, Plate or Table.
+
+Page 3 — AI Reasoning & Business Intelligence
+
+Vision AI (Qwen2.5-VL) is responsible only for understanding cropped objects. Separate prompts are used for each domain.
+
+Employee Engine
+• Mask
+• Hairnet
+• Gloves
+• Apron
+
+Food Engine
+• Food Name
+• Confidence
+• Portion Remaining
+
+Customer Engine
+• Sitting
+• Standing
+• Waiting
+• Eating (supporting observations only)
+
+Table Engine
+• Occupied
+• Empty
+• Dirty
+• Ready for Cleaning
+
+Business Rules Engine is the heart of the platform.
+
+The AI should never directly claim 'Customer is eating Chicken Biryani.'
+
+Instead the system combines:
+Customer Tracking
++
+Table Mapping
++
+Plate Detection
++
+Food Recognition
++
+Temporal Tracking
+=
+Business Inference
+
+Example:
+Customer #12 sits at Table 8.
+Plate #22 is recognised as Chicken Biryani.
+The tracked customer repeatedly interacts with Plate #22 and the food quantity decreases.
+Business Rule → 'Customer #12 is likely eating Chicken Biryani.'
+
+This separation makes every decision explainable and reduces hallucinations.
+
+Page 4 — Restaurant State, Deployment & Learning
+
+Instead of treating every frame independently, UnityWorks Vision AI maintains a live Restaurant State.
+
+Restaurant State
+• Employee States
+• Customer States
+• Table States
+• Food States
+
+Every new frame updates this state. Only meaningful state changes create events such as:
+• Employee removed mask.
+• Table became occupied.
+• Food finished.
+• Table ready for cleaning.
+
+Deployment Today
+
+Restaurant
+↓
+Backend (CPU Server)
+↓
+Vision API
+↓
+Cloud GPU (RunPod/Vast)
+↓
+Ubuntu + CUDA + Ollama + Qwen2.5-VL
+
+Future deployment replaces the cloud GPU with a company-owned GPU server while keeping the same Vision API, allowing the backend to remain unchanged.
+
+Continuous Learning
+
+Image
+↓
+Vision Prediction
+↓
+Cashier / Manager Correction
+↓
+Verified Dataset
+↓
+LoRA Fine-tuning
+↓
+Merge with Base Model
+↓
+Deploy Updated Model
+
+This creates a continuously improving AI system trained on real restaurant data.
+
+Page 5 — Engineering Principles
+
+Core Engineering Principles
+
+1. Detect first, reason later.
+2. Never send the whole frame to the Vision LLM.
+3. Every architectural layer has exactly one responsibility.
+4. Track objects before making business decisions.
+5. Business Rules convert AI observations into operational facts.
+6. Maintain a Restaurant State instead of analysing isolated frames.
+7. Generate events, not conversations.
+8. Use confidence thresholds and sustained validation before raising alerts.
+9. Build independent modules that can evolve without affecting the entire system.
+10. Human feedback is part of the product, enabling continuous learning and future fine-tuning.
+
+This architecture provides a scalable foundation that starts with a single restaurant and naturally expands to multi-branch deployments without redesigning the core platform.

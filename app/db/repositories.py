@@ -373,11 +373,15 @@ class ConversationRepository:
         )
 
     async def delete_conversation(self, conversation_id: str) -> None:
-        """Delete a conversation and all its messages and images."""
+        """Delete a conversation and all its messages, images, and documents."""
         from sqlalchemy import delete
-        # Delete images first (FK to messages)
+        from app.db.models import MessageDocument
+        # Delete images and documents first (FK to messages)
         await self.session.execute(
             delete(MessageImage).where(MessageImage.conversation_id == conversation_id)
+        )
+        await self.session.execute(
+            delete(MessageDocument).where(MessageDocument.conversation_id == conversation_id)
         )
         # Delete messages (FK to conversation)
         await self.session.execute(

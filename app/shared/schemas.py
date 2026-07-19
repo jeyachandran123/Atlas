@@ -257,6 +257,16 @@ class MessageImageOut(BaseModel):
     url: str  # served via /chat/images/{id}
 
 
+class MessageDocumentOut(BaseModel):
+    id: str
+    filename: str
+    mime_type: str
+    size_bytes: int
+    page_count: Optional[int] = None
+    char_count: int = 0
+    url: str  # served via /chat/documents/{id}
+
+
 class MessageOut(BaseModel):
     id: str
     conversation_id: str
@@ -265,6 +275,7 @@ class MessageOut(BaseModel):
     agent_used: Optional[str]
     tokens_used: int
     images: list[MessageImageOut] = []
+    documents: list[MessageDocumentOut] = []
     created_at: datetime
 
 

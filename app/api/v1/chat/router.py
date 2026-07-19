@@ -35,6 +35,7 @@ from app.shared.schemas import (
     ChatRequest,
     ChatResponse,
     ConversationOut,
+    MessageDocumentOut,
     MessageImageOut,
     MessageOut,
 )
@@ -42,6 +43,11 @@ from app.vision.service import get_vision_service
 from app.vision.image_storage import ALLOWED_MIME_TYPES, MAX_IMAGE_SIZE, get_image_storage
 from app.vision.schemas import ImageAttachment
 from app.db.models import MessageImage as MessageImageModel
+from app.db.models import MessageDocument as MessageDocumentModel
+from app.documents.service import get_document_service
+from app.documents.schemas import DocumentAttachment
+from app.documents.extractor import DocumentExtractionError, is_supported_document
+from app.documents.storage import DocumentStorageError, get_document_storage
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -121,8 +127,13 @@ def _build_image_url(img: MessageImageModel) -> str:
     return f"/chat/images/{img.id}"
 
 
+def _build_document_url(doc: MessageDocumentModel) -> str:
+    """Build the serving URL for a message document (relative to API prefix)."""
+    return f"/chat/documents/{doc.id}"
+
+
 def _message_to_out(m: Message) -> MessageOut:
-    """Convert a Message ORM model to MessageOut with images."""
+    """Convert a Message ORM model to MessageOut with images and documents."""
     images = []
     if hasattr(m, 'images') and m.images:
         images = [
@@ -137,6 +148,20 @@ def _message_to_out(m: Message) -> MessageOut:
             )
             for img in m.images
         ]
+    documents = []
+    if hasattr(m, 'documents') and m.documents:
+        documents = [
+            MessageDocumentOut(
+                id=doc.id,
+                filename=doc.filename,
+                mime_type=doc.mime_type,
+                size_bytes=doc.size_bytes,
+                page_count=doc.page_count,
+                char_count=doc.char_count,
+                url=_build_document_url(doc),
+            )
+            for doc in m.documents
+        ]
     return MessageOut(
         id=m.id,
         conversation_id=m.conversation_id,
@@ -145,8 +170,51 @@ def _message_to_out(m: Message) -> MessageOut:
         agent_used=m.agent_used,
         tokens_used=m.tokens_used,
         images=images,
+        documents=documents,
         created_at=m.created_at,
     )
+
+
+async def _ensure_document_context(db: AsyncSession, conversation_id: str) -> bool:
+    """
+    Check whether this conversation has uploaded documents.
+
+    Fast path: Redis/memory context. Fallback: rebuild the context from
+    message_documents rows in the DB (Redis TTL is 24h; DB is durable).
+    """
+    doc_service = get_document_service()
+    if await doc_service.has_documents(conversation_id):
+        return True
+
+    from sqlalchemy import select as sql_select
+    result = await db.execute(
+        sql_select(MessageDocumentModel)
+        .where(MessageDocumentModel.conversation_id == conversation_id)
+        .order_by(MessageDocumentModel.created_at)
+    )
+    rows = list(result.scalars().all())
+    if not rows:
+        return False
+
+    attachments = [
+        DocumentAttachment(
+            id=r.id,
+            conversation_id=r.conversation_id,
+            message_id=r.message_id,
+            filename=r.filename,
+            mime_type=r.mime_type,
+            size_bytes=r.size_bytes,
+            storage_path=r.storage_path,
+            text_path=r.text_path,
+            doc_hash=r.doc_hash,
+            page_count=r.page_count,
+            char_count=r.char_count,
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
+    await doc_service.rehydrate(conversation_id, attachments)
+    return True
 
 
 @router.get("/images/{image_id}")
@@ -155,8 +223,8 @@ async def serve_image(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Serve a stored image by ID."""
-    from fastapi.responses import FileResponse
+    """Serve a stored image by ID (from local disk or cloud storage)."""
+    from fastapi.responses import Response
     from sqlalchemy import select as sql_select
 
     result = await db.execute(
@@ -172,12 +240,48 @@ async def serve_image(
     if not conv or conv.user_id != current_user.id:
         raise HTTPException(403, "Access denied")
 
-    storage = get_image_storage()
-    file_path = storage._dir / img.storage_path
-    if not file_path.exists():
+    from app.vision.image_storage import ImageStorageError
+    try:
+        data = await get_image_storage().get_bytes_by_key(img.storage_path)
+    except ImageStorageError:
         raise HTTPException(404, "Image file not found")
 
-    return FileResponse(file_path, media_type=img.mime_type)
+    return Response(content=data, media_type=img.mime_type)
+
+
+@router.get("/documents/{document_id}")
+async def serve_document(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve (download) a stored document by ID (from local disk or cloud storage)."""
+    from fastapi.responses import Response
+    from sqlalchemy import select as sql_select
+
+    result = await db.execute(
+        sql_select(MessageDocumentModel).where(MessageDocumentModel.id == document_id)
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(404, "Document not found")
+
+    # Verify user owns the conversation
+    conv_repo = ConversationRepository(db)
+    conv = await conv_repo.get_by_id(doc.conversation_id)
+    if not conv or conv.user_id != current_user.id:
+        raise HTTPException(403, "Access denied")
+
+    try:
+        data = await get_document_storage().get_bytes(doc.storage_path)
+    except DocumentStorageError:
+        raise HTTPException(404, "Document file not found")
+
+    return Response(
+        content=data,
+        media_type=doc.mime_type,
+        headers={"Content-Disposition": f'attachment; filename="{doc.filename}"'},
+    )
 
 
 @router.get("/conversations/{conversation_id}/messages", response_model=list[MessageOut])
@@ -309,6 +413,103 @@ async def send_message(
     )
 
 
+async def _stream_document_response(
+    request: Request,
+    db: AsyncSession,
+    conv_repo: ConversationRepository,
+    conv_id: str,
+    user_id: str,
+    org_id: str,
+    message: str,
+    repo_id: Optional[str],
+    agent_mode: str,
+    request_id: str,
+    session_messages: list[dict],
+) -> StreamingResponse:
+    """
+    Stream a document-grounded answer via SSE.
+
+    Mirrors the vision pipeline: run the intelligence engine for the base
+    system prompt, then stream the LLM answer with extracted document text
+    injected into the prompt. Persists the assistant message afterwards.
+    """
+    import json
+
+    doc_service = get_document_service()
+
+    # Reuse the intelligence engine for the base system prompt (non-blocking)
+    system_prompt = ""
+    try:
+        state = initial_state(
+            user_message=message,
+            conversation_id=conv_id,
+            user_id=user_id,
+            org_id=org_id,
+            request_id=request_id,
+            repo_id=repo_id,
+            agent_mode=agent_mode,
+        )
+        state["session_messages"] = session_messages
+        from app.intelligence.engine import get_engine
+        engine_result = await get_engine().prepare(state)
+        if not engine_result.is_blocked:
+            system_prompt = engine_result.system_prompt
+    except Exception as e:
+        from loguru import logger
+        logger.warning(f"Intelligence engine failed for documents (non-blocking): {e}")
+
+    async def document_event_generator() -> AsyncGenerator[str, None]:
+        full_response = ""
+        start = time.monotonic()
+        try:
+            async for chunk in doc_service.chat_stream(
+                message=message,
+                conversation_id=conv_id,
+                system_prompt=system_prompt,
+                session_messages=session_messages,
+                agent_mode=agent_mode,
+            ):
+                if not chunk:
+                    continue
+                full_response += chunk
+                yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
+
+            tokens_used = len(full_response) // 4
+            latency_ms = int((time.monotonic() - start) * 1000)
+
+            assistant_msg = await conv_repo.add_message(
+                conversation_id=conv_id, role="assistant",
+                content=full_response, agent_used="document_agent",
+                tokens_used=tokens_used, latency_ms=latency_ms,
+            )
+            await db.commit()
+
+            await push_session_message(user_id, conv_id, "user", message)
+            await push_session_message(user_id, conv_id, "assistant", full_response)
+
+            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv_id, 'message_id': assistant_msg.id, 'tokens_used': tokens_used, 'latency_ms': latency_ms})}\n\n"
+
+        except Exception as e:
+            from loguru import logger
+            logger.exception(f"Document stream error: {e}")
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e), 'conversation_id': conv_id})}\n\n"
+
+    return StreamingResponse(
+        document_event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "X-Request-ID": request_id,
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @router.post("/stream")
 async def stream_message(
     req: ChatRequest,
@@ -346,6 +547,25 @@ async def stream_message(
     await db.commit()
 
     session_messages = await get_session_messages(current_user.id, conv.id)
+
+    # ── Document follow-up routing ────────────────────────────────────────────
+    # If this conversation has uploaded documents (PDF/Word/text), answer with
+    # the document pipeline so questions about the files keep working across
+    # turns and page refreshes.
+    if await _ensure_document_context(db, conv.id):
+        return await _stream_document_response(
+            request=request,
+            db=db,
+            conv_repo=conv_repo,
+            conv_id=conv.id,
+            user_id=current_user.id,
+            org_id=current_user.org_id,
+            message=req.message,
+            repo_id=req.repo_id or conv.repo_id,
+            agent_mode=req.agent_mode,
+            request_id=request_id,
+            session_messages=session_messages,
+        )
 
     state = initial_state(
         user_message=req.message,
@@ -401,7 +621,7 @@ async def stream_message(
                 await db.rollback()
             except Exception:
                 pass
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e), 'conversation_id': conv_id})}\n\n"
 
     return StreamingResponse(
         event_generator(),
@@ -426,23 +646,25 @@ async def stream_vision_message(
     repo_id: Optional[str] = Form(None),
     agent_mode: str = Form("auto"),
     images: list[UploadFile] = File(default=[]),
+    documents: list[UploadFile] = File(default=[]),
     current_user: User = Depends(require_developer),
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     """
-    Vision-enabled streaming chat via multipart/form-data.
+    Vision/document-enabled streaming chat via multipart/form-data.
 
-    Accepts images alongside text. When images are present, routes to the
-    vision model. When no images are present but the conversation has prior
-    images, uses those for follow-up questions.
-
-    Falls back to the standard text pipeline when no images are involved.
+    Accepts images and/or documents (PDF, Word, text) alongside text.
+    - Images present → vision model (with document context appended if any)
+    - Documents only → document Q&A pipeline (text LLM + extracted text)
+    - Neither, but conversation has prior images/documents → follow-up routing
+    - Otherwise → standard text pipeline
     """
     import json
 
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     conv_repo = ConversationRepository(db)
     vision_service = get_vision_service()
+    doc_service = get_document_service()
 
     # Validate and read uploaded images
     image_bytes_list: list[bytes] = []
@@ -453,6 +675,31 @@ async def stream_vision_message(
         if len(data) > MAX_IMAGE_SIZE:
             raise HTTPException(400, f"Image too large: {img.filename}")
         image_bytes_list.append(data)
+
+    # Validate and read uploaded documents
+    max_doc_bytes = cfg.document_max_file_size_mb * 1024 * 1024
+    if len(documents) > cfg.document_max_per_message:
+        raise HTTPException(
+            400, f"Too many documents: max {cfg.document_max_per_message} per message"
+        )
+    document_uploads: list[tuple[str, str, bytes]] = []  # (filename, mime, bytes)
+    for doc in documents:
+        filename = doc.filename or "document.txt"
+        if not is_supported_document(filename):
+            raise HTTPException(
+                400,
+                f"Unsupported document type: {filename}. "
+                "Supported: PDF, Word (.docx), and text files.",
+            )
+        data = await doc.read()
+        if len(data) > max_doc_bytes:
+            raise HTTPException(
+                400,
+                f"Document too large: {filename} (max {cfg.document_max_file_size_mb}MB)",
+            )
+        document_uploads.append(
+            (filename, doc.content_type or "application/octet-stream", data)
+        )
 
     # Get or create conversation
     if conversation_id:
@@ -473,6 +720,21 @@ async def stream_vision_message(
             conversation_id=conv.id,
         )
         stored_attachments.append(att)
+
+    # Extract + store uploaded documents (before the user message is created,
+    # so extraction failures return a clean 400 with no stray message)
+    stored_docs: list[DocumentAttachment] = []
+    for filename, mime_type, data in document_uploads:
+        try:
+            doc_att = await doc_service.process_upload(
+                file_bytes=data,
+                filename=filename,
+                mime_type=mime_type,
+                conversation_id=conv.id,
+            )
+        except (DocumentExtractionError, DocumentStorageError) as e:
+            raise HTTPException(400, str(e))
+        stored_docs.append(doc_att)
 
     user_msg = await conv_repo.add_message(conv.id, "user", message)
     await db.commit()
@@ -495,11 +757,48 @@ async def stream_vision_message(
     if stored_attachments:
         await db.commit()
 
-    # Determine routing: vision or text
+    # Persist document metadata linked to the user message
+    for doc_att in stored_docs:
+        db_doc = MessageDocumentModel(
+            id=doc_att.id,
+            message_id=user_msg.id,
+            conversation_id=conv.id,
+            filename=doc_att.filename,
+            mime_type=doc_att.mime_type,
+            size_bytes=doc_att.size_bytes,
+            storage_path=doc_att.storage_path,
+            text_path=doc_att.text_path,
+            doc_hash=doc_att.doc_hash,
+            page_count=doc_att.page_count,
+            char_count=doc_att.char_count,
+        )
+        db.add(db_doc)
+    if stored_docs:
+        await db.commit()
+
+    # Determine routing: vision, documents, or text
     has_new_images = len(image_bytes_list) > 0
     use_vision = vision_service.should_use_vision(has_new_images, conv.id)
+    has_docs = bool(stored_docs) or await _ensure_document_context(db, conv.id)
 
     if not use_vision:
+        # Documents present (new or from earlier turns) → document Q&A pipeline
+        if has_docs:
+            session_messages = await get_session_messages(current_user.id, conv.id)
+            return await _stream_document_response(
+                request=request,
+                db=db,
+                conv_repo=conv_repo,
+                conv_id=conv.id,
+                user_id=current_user.id,
+                org_id=current_user.org_id,
+                message=message,
+                repo_id=repo_id or conv.repo_id,
+                agent_mode=agent_mode,
+                request_id=request_id,
+                session_messages=session_messages,
+            )
+
         # No images at all — delegate to standard text pipeline
         # Build a ChatRequest and reuse the standard stream logic
         session_messages = await get_session_messages(current_user.id, conv.id)
@@ -542,7 +841,7 @@ async def stream_vision_message(
             except Exception as e:
                 from loguru import logger
                 logger.exception(f"Vision text fallback stream error: {e}")
-                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e), 'conversation_id': conv_id})}\n\n"
 
         return StreamingResponse(
             text_event_generator(),
@@ -573,6 +872,19 @@ async def stream_vision_message(
     except Exception as e:
         from loguru import logger
         logger.warning(f"Intelligence engine failed for vision (non-blocking): {e}")
+
+    # Mixed upload (images + documents): give the vision model the extracted
+    # document text too, so questions can span both.
+    if has_docs:
+        try:
+            doc_block = await doc_service.build_document_block(conv.id, max_chars=8000)
+            if doc_block:
+                system_prompt = (
+                    (system_prompt + "\n\n") if system_prompt else ""
+                ) + doc_block
+        except Exception as e:
+            from loguru import logger
+            logger.warning(f"Document block build failed for vision (non-blocking): {e}")
 
     conv_id = conv.id
     user_id = current_user.id
@@ -615,7 +927,7 @@ async def stream_vision_message(
                 await db.rollback()
             except Exception:
                 pass
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e), 'conversation_id': conv_id})}\n\n"
 
     return StreamingResponse(
         vision_event_generator(),
@@ -718,13 +1030,16 @@ async def truncate_messages_from(
     if not target:
         raise HTTPException(404, "Message not found")
 
-    # Collect IDs to delete agent_executions and images first (FK constraint)
+    # Collect IDs to delete agent_executions, images, and documents first (FK constraint)
     msg_ids = [m.id for m in conv.messages if m.created_at >= target.created_at]
     await db.execute(
         sql_delete(AgentExecution).where(AgentExecution.message_id.in_(msg_ids))
     )
     await db.execute(
         sql_delete(MessageImageModel).where(MessageImageModel.message_id.in_(msg_ids))
+    )
+    await db.execute(
+        sql_delete(MessageDocumentModel).where(MessageDocumentModel.message_id.in_(msg_ids))
     )
     await db.execute(
         sql_delete(Message).where(
@@ -757,12 +1072,15 @@ async def delete_single_message(
     if not target:
         raise HTTPException(404, "Message not found")
 
-    # Delete agent_executions and images first to satisfy FK constraint
+    # Delete agent_executions, images, and documents first to satisfy FK constraint
     await db.execute(
         sql_delete(AgentExecution).where(AgentExecution.message_id == message_id)
     )
     await db.execute(
         sql_delete(MessageImageModel).where(MessageImageModel.message_id == message_id)
+    )
+    await db.execute(
+        sql_delete(MessageDocumentModel).where(MessageDocumentModel.message_id == message_id)
     )
     await db.execute(sql_delete(Message).where(Message.id == message_id))
     await db.commit()

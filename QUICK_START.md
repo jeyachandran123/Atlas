@@ -1,4 +1,37 @@
-# Quick Start — Testing P0/P1 Fixes
+# Quick Start
+
+## ⚡ Daily Local Development (the commands you actually need)
+
+All from the `backend/` folder, each in its own terminal:
+
+```powershell
+# Terminal 1 — Backend API (local dev server, hot reload)
+.\venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
+
+# Terminal 2 — REPO INDEX WORKER (required for repo indexing to work!)
+# Without this, connected repos stay stuck in "pending/indexing" forever.
+.\venv\Scripts\python.exe -m app.workers.index_worker
+
+# Terminal 3 — Frontend (from the frontend/ folder)
+pnpm dev
+```
+
+Infrastructure (Postgres, Redis, ChromaDB) runs in Docker:
+
+```powershell
+docker compose up -d postgres redis chromadb
+```
+
+> **Note**: the Docker `worker` container can NOT index repos registered with
+> Windows paths (`C:\Users\...` doesn't exist inside the container). Always use
+> the local index worker command above for locally-connected repos.
+
+> **Attachments** (images/PDFs/Word) are stored per `STORAGE_BACKEND` in `.env`
+> (`local` | `s3` | `firebase`). Currently: AWS S3.
+
+---
+
+# Testing P0/P1 Fixes (historical)
 
 ## What Changed
 
