@@ -37,6 +37,19 @@ class BlobStorage(ABC):
     async def exists(self, key: str) -> bool:
         """Check whether a blob exists."""
 
+    async def signed_url(
+        self,
+        key: str,
+        expires_in: int = 300,
+        download_filename: str | None = None,
+    ) -> str | None:
+        """
+        Return a time-limited, pre-authenticated download URL for the blob,
+        or None when the backend cannot mint one (e.g. local disk). Callers
+        must fall back to proxying bytes through the API when None.
+        """
+        return None
+
     @staticmethod
     def normalize_key(key: str) -> str:
         """Normalise Windows-style separators to POSIX for cloud keys."""

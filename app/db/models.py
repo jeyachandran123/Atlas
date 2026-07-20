@@ -569,3 +569,67 @@ class ModelConfig(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DOCUMENT INTELLIGENCE PLATFORM (Phase 1 — storage foundation)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class Document(Base):
+    """
+    A document in the Document Intelligence Platform.
+
+    Phase 1: metadata for a binary stored in blob storage (S3). The binary
+    NEVER lives in this table. Later phases (parsing, chunking, embeddings,
+    RAG, generation) reference this row by id — this schema is the platform's
+    root entity and must stay storage-provider-agnostic.
+
+    Client-facing identifiers are the UUID `id` only; storage_bucket and
+    storage_key are internal and never serialized to API responses.
+    """
+
+    __tablename__ = "documents"
+    __table_args__ = (
+        Index("ix_documents_owner_created", "uploaded_by", "created_at"),
+        Index("ix_documents_owner_checksum", "uploaded_by", "checksum_sha256"),
+        Index("ix_documents_filename", "original_filename"),
+        Index("ix_documents_status", "upload_status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.id"), nullable=False
+    )
+    uploaded_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=False
+    )
+
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    stored_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    extension: Mapped[str] = mapped_column(String(20), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    storage_provider: Mapped[str] = mapped_column(String(20), nullable=False)
+    storage_bucket: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    storage_key: Mapped[str] = mapped_column(String(1000), nullable=False)
+
+    upload_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="uploading"
+    )  # uploading|completed|failed
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    tags_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    meta_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
+    )

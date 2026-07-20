@@ -25,6 +25,7 @@ from app.agents.orchestrator import AgentOrchestrator, get_orchestrator
 from app.api.v1.admin.router import router as admin_router
 from app.api.v1.auth.router import router as auth_router
 from app.api.v1.chat.router import router as chat_router
+from app.api.v1.documents.router import router as documents_router
 from app.api.v1.files.router import router as files_router
 from app.api.v1.git.router import router as git_router
 from app.api.v1.indexing.router import router as indexing_router
@@ -179,6 +180,7 @@ def create_app() -> FastAPI:
     app.include_router(repos_router, prefix=API_PREFIX)
     app.include_router(indexing_router, prefix=API_PREFIX)
     app.include_router(chat_router, prefix=API_PREFIX)
+    app.include_router(documents_router, prefix=API_PREFIX)
     app.include_router(files_router, prefix=API_PREFIX)
     app.include_router(git_router, prefix=API_PREFIX)
 

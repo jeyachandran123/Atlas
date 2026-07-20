@@ -110,6 +110,10 @@ class Settings(BaseSettings):
     # ~4 chars/token → 24000 chars ≈ 6000 tokens, leaving room in num_ctx=16384.
     document_context_max_chars: int = 24000
 
+    # ── Document Intelligence Platform (Phase 1) ─────────────────────────────────
+    dip_max_file_size_mb: int = 50
+    dip_signed_url_ttl_seconds: int = 300
+
     @field_validator("ollama_host", mode="before")
     @classmethod
     def normalize_ollama_host(cls, v: str) -> str:

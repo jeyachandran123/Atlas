@@ -134,3 +134,27 @@ class S3BlobStorage(BlobStorage):
             return await asyncio.to_thread(self._exists_sync, key)
         except Exception as e:
             raise BlobStorageError(f"S3 exists-check failed for {key}: {e}") from e
+
+    def _signed_url_sync(self, key: str, expires_in: int, download_filename: str | None) -> str:
+        params: dict = {"Bucket": self._bucket_name, "Key": self._object_key(key)}
+        if download_filename:
+            # RFC 6266 — force a save-as with the original filename
+            safe = download_filename.replace('"', "")
+            params["ResponseContentDisposition"] = f'attachment; filename="{safe}"'
+        return self._get_client().generate_presigned_url(
+            "get_object", Params=params, ExpiresIn=expires_in
+        )
+
+    async def signed_url(
+        self,
+        key: str,
+        expires_in: int = 300,
+        download_filename: str | None = None,
+    ) -> str | None:
+        try:
+            return await asyncio.to_thread(
+                self._signed_url_sync, key, expires_in, download_filename
+            )
+        except Exception as e:
+            logger.warning(f"S3 presign failed for {key}: {e}")
+            return None
