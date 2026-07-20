@@ -19,6 +19,11 @@ class DocumentRepository:
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
 
+    @property
+    def db(self) -> AsyncSession:
+        """The underlying session — shared with sibling repositories."""
+        return self._db
+
     async def create(self, doc: Document) -> Document:
         self._db.add(doc)
         await self._db.flush()

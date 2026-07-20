@@ -146,7 +146,61 @@ class DocumentPlatformService:
             },
             request_id,
         )
+
+        # Phase 2 hook: every completed upload enters the processing pipeline.
+        # Best-effort — a queue outage must never fail the upload itself.
+        try:
+            await self._enqueue_processing(doc)
+        except Exception as e:
+            logger.warning(f"Processing enqueue failed for {document_id} (upload still OK): {e}")
+
         return doc, duplicate_of
+
+    # ── Phase 2: processing pipeline integration ──────────────────────────────
+
+    async def _enqueue_processing(self, doc: Document, attempt: int = 1) -> str:
+        from app.document_platform.processing.persistence import ProcessingRepository
+        from app.document_platform.processing.queue import enqueue_processing_job
+
+        proc = ProcessingRepository(self._repo.db)  # same session/transaction
+        job = await proc.create_job(doc.id, attempt=attempt)
+        await proc.set_processing_status(doc, "queued")
+        await enqueue_processing_job(doc.id, job.id, attempt)
+        return job.id
+
+    async def reprocess(self, user_id: str, document_id: str) -> str:
+        """Re-enqueue a document through the pipeline (idempotent)."""
+        doc = await self.get(user_id, document_id)
+        from app.document_platform.processing.persistence import ProcessingRepository
+        prior = await ProcessingRepository(self._repo.db).latest_job_for(doc.id)
+        attempt = (prior.attempt + 1) if prior else 1
+        return await self._enqueue_processing(doc, attempt=attempt)
+
+    async def processing_state(self, user_id: str, document_id: str):
+        """(document, latest job | None, events) — ownership enforced."""
+        doc = await self.get(user_id, document_id)
+        from app.document_platform.processing.persistence import ProcessingRepository
+        proc = ProcessingRepository(self._repo.db)
+        job = await proc.latest_job_for(doc.id)
+        events = await proc.events_for_job(job.id) if job else []
+        return doc, job, events
+
+    async def knowledge(self, user_id: str, document_id: str):
+        """(document, knowledge object | None, metadata | None, images)."""
+        doc = await self.get(user_id, document_id)
+        from app.document_platform.processing.persistence import ProcessingRepository
+        proc = ProcessingRepository(self._repo.db)
+        return (
+            doc,
+            await proc.knowledge_for(doc.id),
+            await proc.metadata_for(doc.id),
+            await proc.images_for(doc.id),
+        )
+
+    async def chunks(self, user_id: str, document_id: str, limit: int, offset: int):
+        doc = await self.get(user_id, document_id)
+        from app.document_platform.processing.persistence import ProcessingRepository
+        return await ProcessingRepository(self._repo.db).chunks_for(doc.id, limit, offset)
 
     # ── Read ──────────────────────────────────────────────────────────────────
 

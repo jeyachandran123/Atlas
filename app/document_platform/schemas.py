@@ -24,6 +24,7 @@ class DocumentOut(BaseModel):
     size_bytes: int
     checksum_sha256: str
     upload_status: str
+    processing_status: str = "none"
     version: int
     tags: list[str] = Field(default_factory=list)
     created_at: datetime
@@ -47,6 +48,7 @@ class DocumentOut(BaseModel):
             size_bytes=doc.size_bytes,
             checksum_sha256=doc.checksum_sha256,
             upload_status=doc.upload_status,
+            processing_status=getattr(doc, "processing_status", "none"),
             version=doc.version,
             tags=tags,
             created_at=doc.created_at,
@@ -82,3 +84,91 @@ class ErrorDetail(BaseModel):
     """Stable machine-readable error body for validation failures."""
     code: str
     message: str
+
+
+# ── Phase 2: processing & knowledge shapes ───────────────────────────────────
+
+
+class ProcessingEventOut(BaseModel):
+    stage: str
+    status: str
+    duration_ms: Optional[int] = None
+    detail: Optional[dict] = None
+    created_at: datetime
+
+
+class ProcessingStateOut(BaseModel):
+    document_id: str
+    processing_status: str
+    job_status: Optional[str] = None
+    current_stage: Optional[str] = None
+    attempt: Optional[int] = None
+    error: Optional[str] = None
+    events: list[ProcessingEventOut] = Field(default_factory=list)
+
+
+class DocumentImageOut(BaseModel):
+    id: str
+    name: str
+    format: str
+    page: Optional[int] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    size_bytes: int
+
+
+class KnowledgeMetadataOut(BaseModel):
+    title: str = ""
+    author: str = ""
+    language: str = "unknown"
+    page_count: Optional[int] = None
+    sheet_count: Optional[int] = None
+    slide_count: Optional[int] = None
+    word_count: int = 0
+    char_count: int = 0
+    encoding: str = "utf-8"
+    custom: Optional[dict] = None
+
+
+class KnowledgeObjectOut(BaseModel):
+    id: str
+    document_id: str
+    title: str
+    doc_type: str
+    language: str
+    confidence: float
+    word_count: int
+    char_count: int
+    chunk_count: int
+    table_count: int
+    image_count: int
+    section_count: int
+    structure: Optional[dict] = None
+    metadata: Optional[KnowledgeMetadataOut] = None
+    images: list[DocumentImageOut] = Field(default_factory=list)
+    created_at: datetime
+
+
+class ChunkOut(BaseModel):
+    id: str
+    seq: int
+    content: str
+    token_count: int
+    node_type: str
+    section_path: str
+    page: Optional[int] = None
+    meta: Optional[dict] = None
+
+
+class ChunkListOut(BaseModel):
+    document_id: str
+    items: list[ChunkOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class ReprocessResponse(BaseModel):
+    document_id: str
+    job_id: str
+    queued: bool = True

@@ -627,9 +627,169 @@ class Document(Base):
     deleted_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Phase 2: knowledge-pipeline state, mirrored here for cheap listing.
+    # none|queued|processing|parsed|normalized|knowledge_ready|failed
+    processing_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="none"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
+    )
+
+
+class KnowledgeObject(Base):
+    """
+    Phase 2 head entity: the structured knowledge representation of one
+    document. Structure is the serialized DocumentNode tree; chunks reference
+    this row. Future phases consume KnowledgeObjects, never raw files.
+    """
+
+    __tablename__ = "knowledge_objects"
+    __table_args__ = (
+        Index("ix_knowledge_objects_doc", "document_id", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("documents.id"), nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    doc_type: Mapped[str] = mapped_column(String(20), nullable=False)  # extension
+    language: Mapped[str] = mapped_column(String(10), nullable=False, default="unknown")
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    word_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    char_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    table_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    image_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    section_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    structure_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+
+class DocumentChunk(Base):
+    """A retrieval-ready semantic chunk (structure-aware, not string-split)."""
+
+    __tablename__ = "document_chunks"
+    __table_args__ = (
+        Index("ix_document_chunks_doc_seq", "document_id", "seq"),
+        Index("ix_document_chunks_ko", "knowledge_object_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("documents.id"), nullable=False
+    )
+    knowledge_object_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_objects.id"), nullable=False
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    node_type: Mapped[str] = mapped_column(String(20), nullable=False, default="paragraph")
+    section_path: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    page: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    meta_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+
+class DocumentMetadataRow(Base):
+    """Extracted + enriched metadata for one document (1:1)."""
+
+    __tablename__ = "document_metadata"
+
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("documents.id"), primary_key=True
+    )
+    title: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    author: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    source_created: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    source_modified: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    language: Mapped[str] = mapped_column(String(10), nullable=False, default="unknown")
+    page_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    sheet_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    slide_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    word_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    char_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    encoding: Mapped[str] = mapped_column(String(30), nullable=False, default="utf-8")
+    custom_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+
+class DocumentImage(Base):
+    """An image extracted from a document — binary in blob storage."""
+
+    __tablename__ = "document_images"
+    __table_args__ = (Index("ix_document_images_doc", "document_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("documents.id"), nullable=False
+    )
+    storage_key: Mapped[str] = mapped_column(String(1000), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    format: Mapped[str] = mapped_column(String(10), nullable=False, default="")
+    page: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    width: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    height: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+
+class DocumentProcessingJob(Base):
+    """One processing run for one document (retries create new attempts)."""
+
+    __tablename__ = "document_processing_jobs"
+    __table_args__ = (Index("ix_doc_processing_jobs_doc", "document_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("documents.id"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    current_stage: Mapped[str] = mapped_column(String(30), nullable=False, default="")
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+
+class DocumentProcessingEvent(Base):
+    """
+    Append-only per-stage event log — serves as both parser log and
+    processing history (an event stream subsumes both).
+    """
+
+    __tablename__ = "document_processing_events"
+    __table_args__ = (Index("ix_doc_processing_events_job", "job_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("document_processing_jobs.id"), nullable=False
+    )
+    document_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    stage: Mapped[str] = mapped_column(String(30), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)  # started|completed|failed|skipped
+    duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    detail_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
     )

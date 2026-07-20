@@ -26,10 +26,18 @@ from app.db.models import User
 from app.document_platform.audit import DocumentAuditLogger
 from app.document_platform.repository import DocumentRepository
 from app.document_platform.schemas import (
+    ChunkListOut,
+    ChunkOut,
     DeleteResponse,
+    DocumentImageOut,
     DocumentListOut,
     DocumentOut,
     DownloadLinkOut,
+    KnowledgeMetadataOut,
+    KnowledgeObjectOut,
+    ProcessingEventOut,
+    ProcessingStateOut,
+    ReprocessResponse,
     UploadResponse,
 )
 from app.document_platform.service import (
@@ -181,6 +189,132 @@ async def download_document(
             "Content-Length": str(len(data)),
         },
     )
+
+
+@router.get("/{document_id}/processing", response_model=ProcessingStateOut)
+async def get_processing_state(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+    service: DocumentPlatformService = Depends(get_document_platform_service),
+):
+    """Pipeline status + the full per-stage event timeline for a document."""
+    try:
+        doc, job, events = await service.processing_state(current_user.id, document_id)
+    except DocumentNotFoundError:
+        raise HTTPException(404, detail={"code": "not_found", "message": "Document not found."})
+    return ProcessingStateOut(
+        document_id=doc.id,
+        processing_status=doc.processing_status,
+        job_status=job.status if job else None,
+        current_stage=job.current_stage if job else None,
+        attempt=job.attempt if job else None,
+        error=job.error if job else None,
+        events=[
+            ProcessingEventOut(
+                stage=e.stage,
+                status=e.status,
+                duration_ms=e.duration_ms,
+                detail=json.loads(e.detail_json) if e.detail_json else None,
+                created_at=e.created_at,
+            )
+            for e in events
+        ],
+    )
+
+
+@router.get("/{document_id}/knowledge", response_model=KnowledgeObjectOut)
+async def get_knowledge_object(
+    document_id: str,
+    include_structure: bool = Query(False, description="Include the full node tree"),
+    current_user: User = Depends(get_current_user),
+    service: DocumentPlatformService = Depends(get_document_platform_service),
+):
+    """The Knowledge Object built from this document."""
+    try:
+        doc, ko, meta, images = await service.knowledge(current_user.id, document_id)
+    except DocumentNotFoundError:
+        raise HTTPException(404, detail={"code": "not_found", "message": "Document not found."})
+    if ko is None:
+        raise HTTPException(
+            409,
+            detail={
+                "code": "not_ready",
+                "message": f"Knowledge object not built yet (processing status: {doc.processing_status}).",
+            },
+        )
+    return KnowledgeObjectOut(
+        id=ko.id,
+        document_id=doc.id,
+        title=ko.title,
+        doc_type=ko.doc_type,
+        language=ko.language,
+        confidence=ko.confidence,
+        word_count=ko.word_count,
+        char_count=ko.char_count,
+        chunk_count=ko.chunk_count,
+        table_count=ko.table_count,
+        image_count=ko.image_count,
+        section_count=ko.section_count,
+        structure=json.loads(ko.structure_json) if include_structure and ko.structure_json else None,
+        metadata=KnowledgeMetadataOut(
+            title=meta.title, author=meta.author, language=meta.language,
+            page_count=meta.page_count, sheet_count=meta.sheet_count,
+            slide_count=meta.slide_count, word_count=meta.word_count,
+            char_count=meta.char_count, encoding=meta.encoding,
+            custom=json.loads(meta.custom_json) if meta.custom_json else None,
+        ) if meta else None,
+        images=[
+            DocumentImageOut(
+                id=i.id, name=i.name, format=i.format, page=i.page,
+                width=i.width, height=i.height, size_bytes=i.size_bytes,
+            )
+            for i in images
+        ],
+        created_at=ko.created_at,
+    )
+
+
+@router.get("/{document_id}/chunks", response_model=ChunkListOut)
+async def list_chunks(
+    document_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    current_user: User = Depends(get_current_user),
+    service: DocumentPlatformService = Depends(get_document_platform_service),
+):
+    """The semantic chunks built from this document, in order."""
+    try:
+        chunks, total = await service.chunks(current_user.id, document_id, limit, offset)
+    except DocumentNotFoundError:
+        raise HTTPException(404, detail={"code": "not_found", "message": "Document not found."})
+    return ChunkListOut(
+        document_id=document_id,
+        items=[
+            ChunkOut(
+                id=c.id, seq=c.seq, content=c.content, token_count=c.token_count,
+                node_type=c.node_type, section_path=c.section_path, page=c.page,
+                meta=json.loads(c.meta_json) if c.meta_json else None,
+            )
+            for c in chunks
+        ],
+        total=total, limit=limit, offset=offset,
+    )
+
+
+@router.post("/{document_id}/process", response_model=ReprocessResponse)
+async def reprocess_document(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    service: DocumentPlatformService = Depends(get_document_platform_service),
+):
+    """Re-enqueue a document through the processing pipeline (idempotent)."""
+    try:
+        job_id = await service.reprocess(current_user.id, document_id)
+    except DocumentNotFoundError:
+        raise HTTPException(404, detail={"code": "not_found", "message": "Document not found."})
+    await db.commit()
+    return ReprocessResponse(document_id=document_id, job_id=job_id)
 
 
 @router.delete("/{document_id}", response_model=DeleteResponse)
