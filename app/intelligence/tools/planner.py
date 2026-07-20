@@ -17,6 +17,7 @@ The LLM-based planner is used as a fallback for ambiguous cases.
 from __future__ import annotations
 
 from app.intelligence.interfaces import AbstractToolPlanner
+from app.intelligence.intent.detector import file_reference, repo_read_requested
 from app.intelligence.models import (
     Complexity,
     ComplexityAnalysis,
@@ -77,6 +78,25 @@ class IntelligenceToolPlanner(AbstractToolPlanner):
                 rationale="User wants directory structure",
             )
 
+        # ── Repository Mode plans ─────────────────────────────────────────────
+        # "Read/explain/summarize the repository" → map the tree, then search.
+        if repo_read_requested(context.user_message or ""):
+            return ToolPlan(
+                should_use_tools=True,
+                tools=["list_directory", "search_code"],
+                can_answer_without_tools=False,
+                rationale="Repository Mode: full-repo read — map structure, then retrieve key code",
+            )
+
+        # A concrete file reference → locate and read it. Never ask "which file?".
+        if file_reference(context.user_message or ""):
+            return ToolPlan(
+                should_use_tools=True,
+                tools=["search_code", "read_file"],
+                can_answer_without_tools=False,
+                rationale="Repository Mode: file referenced — locate and read it",
+            )
+
         # Already have sufficient context
         if has_code_context and complexity in (Complexity.SIMPLE, Complexity.MEDIUM):
             return ToolPlan(
@@ -91,6 +111,19 @@ class IntelligenceToolPlanner(AbstractToolPlanner):
         # For coding intents without context, add search
         if intent == Intent.CODING and not has_code_context and has_repo:
             tools = ["search_code"]
+
+        # Repository Mode search-first default: with a repo active, ambiguous
+        # or learning-style questions consult the codebase before the LLM
+        # speculates. Only pure smalltalk skips tools.
+        if not tools and intent not in (Intent.GENERAL_CHAT, Intent.VISION) and not has_code_context:
+            tools = ["search_code"]
+            return ToolPlan(
+                should_use_tools=True,
+                tools=tools,
+                parallel_groups=[["search_code"]],
+                can_answer_without_tools=False,
+                rationale="Repository Mode: search-first default — consult the codebase before answering",
+            )
 
         if not tools:
             return ToolPlan(

@@ -21,6 +21,57 @@ from typing import Callable
 from app.intelligence.interfaces import AbstractIntentDetector
 from app.intelligence.models import DetectedIntent, Intent, IntentAnalysis
 
+# ── Repository Mode signals ───────────────────────────────────────────────────
+# A concrete file reference ("main.py", "src/auth/router.ts") is the strongest
+# possible repository signal — when a repo is active, the file is assumed to
+# live in it. Never ask "which file?".
+FILE_REF_RE = re.compile(
+    r"\b[\w./\\-]+\.(?:py|ts|tsx|js|jsx|mjs|go|rs|java|kt|rb|php|c|cc|cpp|h|hpp|"
+    r"cs|swift|scala|sql|sh|ps1|bat|json|ya?ml|toml|ini|cfg|env|md|rst|txt|css|"
+    r"scss|html|vue|svelte|proto|tf|dockerfile)\b",
+    re.IGNORECASE,
+)
+
+# "the repo / this codebase / the project …" — corpus nouns
+_REPO_NOUN_RE = re.compile(
+    r"\b(?:repo|repository|codebase|code\s*base|project|source\s+code)\b",
+    re.IGNORECASE,
+)
+
+# Verbs that, combined with a corpus noun, mean "operate on the repository"
+_REPO_VERB_RE = re.compile(
+    r"\b(?:read|explain|summari[sz]e|analy[sz]e|understand|describe|walk\s*(?:me\s*)?through|"
+    r"review|audit|explore|scan|map|document|tour|overview)\b",
+    re.IGNORECASE,
+)
+
+# Verbs that mean "change this file/code"
+_EDIT_VERB_RE = re.compile(
+    r"\b(?:edit|modify|change|update|patch|rewrite|refactor|fix|improve|rename|"
+    r"add\s+to|remove\s+from|delete\s+from)\b",
+    re.IGNORECASE,
+)
+
+# Verbs that mean "make a NEW file" — a file mention next to these is a
+# creation request, not a reference into the existing repository.
+_CREATION_VERB_RE = re.compile(
+    r"\b(?:write|create|generate|make|scaffold|new)\b",
+    re.IGNORECASE,
+)
+
+
+def repo_read_requested(message: str) -> bool:
+    """True for 'read the full repository'-class requests."""
+    return bool(_REPO_NOUN_RE.search(message) and _REPO_VERB_RE.search(message)) or bool(
+        re.search(r"\b(?:full|entire|whole|complete)\s+(?:repo|repository|codebase|project)\b", message, re.IGNORECASE)
+    )
+
+
+def file_reference(message: str) -> str | None:
+    """Return the first concrete file reference in the message, if any."""
+    m = FILE_REF_RE.search(message)
+    return m.group(0) if m else None
+
 
 # ── Intent Rule ───────────────────────────────────────────────────────────────
 
@@ -124,12 +175,30 @@ def _build_default_registry() -> IntentRuleRegistry:
             "show me the code", "show me the full code", "show full code",
             "what's in", "what is in", "contents of", "content of",
             "list files", "list directory", "show directory",
+            # Repository-corpus requests ("read the repo" ≠ "read the file")
+            "read the repo", "read the repository", "read the codebase",
+            "read the project", "read full repo", "read full repository",
+            "explain the repo", "explain the repository", "explain the codebase",
+            "explain this project", "summarize the repo", "summarize the codebase",
+            "understand the codebase", "walk me through", "architecture of",
+            "how does this codebase", "how is this project", "explore the repo",
         ],
         patterns=[
             r"\bwhere\b.{0,20}\bcode\b", r"\bfind\b.{0,20}\bfile\b",
             r"\bread\b.{0,30}\bfile\b", r"\bshow\b.{0,30}\bfile\b",
             r"\bopen\b.{0,20}\bfile\b", r"\bcontents?\s+of\b",
+            r"\b(?:read|explain|summari[sz]e|analy[sz]e|understand|describe|review|audit|explore|map)\b"
+            r".{0,40}\b(?:repo|repository|codebase|project|source\s+code)\b",
+            r"\b(?:full|entire|whole|complete)\s+(?:repo|repository|codebase|project)\b",
+            r"\bwhere\s+is\b.{0,40}\b(?:implement|defin|handl|configur|declar)\w*",
         ],
+        # A concrete file mention (that isn't a "create me a new file" request)
+        # is a moderate repo signal even without an active repo.
+        scorer=lambda msg, hist: (
+            0.5
+            if file_reference(msg) and not _CREATION_VERB_RE.search(msg)
+            else 0.0
+        ),
     ))
 
     registry.register(IntentRule(
@@ -271,11 +340,26 @@ class IntentDetector(AbstractIntentDetector):
     def __init__(self, registry: IntentRuleRegistry | None = None) -> None:
         self._registry = registry or _build_default_registry()
 
+    # Intents that already route through the repository/tool pipeline —
+    # a Repository Mode override must not displace them.
+    _REPO_NATIVE_INTENTS = {
+        Intent.REPOSITORY_QUESTION,
+        Intent.DEBUGGING,
+        Intent.REFACTORING,
+        Intent.CODING,
+        Intent.TESTING,
+        Intent.GIT_OPERATIONS,
+        Intent.TOOL_EXECUTION,
+        Intent.ARCHITECTURE,
+        Intent.DOCUMENTATION,
+    }
+
     def detect(
         self,
         message: str,
         session_messages: list[dict],
         agent_mode: str = "auto",
+        repo_active: bool = False,
     ) -> IntentAnalysis:
         scored: list[tuple[float, IntentRule, list[str]]] = []
 
@@ -295,10 +379,11 @@ class IntentDetector(AbstractIntentDetector):
             )
 
         if not scored or scored[0][0] < self.PRIMARY_THRESHOLD:
-            return IntentAnalysis(
+            analysis = IntentAnalysis(
                 primary=DetectedIntent(Intent.UNKNOWN, 0.0, []),
                 raw_message=message,
             )
+            return self._apply_repo_mode(analysis, message) if repo_active else analysis
 
         primary_score, primary_rule, primary_signals = scored[0]
         primary = DetectedIntent(primary_rule.intent, primary_score, primary_signals)
@@ -309,7 +394,56 @@ class IntentDetector(AbstractIntentDetector):
             if conf >= self.SECONDARY_THRESHOLD and rule.intent != primary_rule.intent
         ]
 
-        return IntentAnalysis(primary=primary, secondary=secondary, raw_message=message)
+        analysis = IntentAnalysis(primary=primary, secondary=secondary, raw_message=message)
+        return self._apply_repo_mode(analysis, message) if repo_active else analysis
+
+    def _apply_repo_mode(self, analysis: IntentAnalysis, message: str) -> IntentAnalysis:
+        """
+        Repository Mode override: with an active repo, repository signals win.
+
+        - A concrete file reference (non-creation) → REPOSITORY_QUESTION
+        - A repo-corpus request ("read the repository") → REPOSITORY_QUESTION
+        - An edit verb + file reference → stays repo-native (never general chat)
+
+        Repo-native primaries (debugging, refactoring, …) are left untouched —
+        they already route through the repository pipeline.
+        """
+        if analysis.primary.intent in self._REPO_NATIVE_INTENTS:
+            # Already repo-native — just attach the located file as a signal
+            # so downstream stages (tool args, observability) can use it.
+            native_fref = file_reference(message)
+            if native_fref and f"file:{native_fref}" not in analysis.primary.signals:
+                analysis.primary.signals.append(f"file:{native_fref}")
+            return analysis
+
+        fref = file_reference(message)
+        is_creation = bool(_CREATION_VERB_RE.search(message))
+        repoish = repo_read_requested(message) or (fref is not None and not is_creation)
+        # An edit verb with a file reference is repo work even with a creation verb nearby
+        if fref is not None and _EDIT_VERB_RE.search(message):
+            repoish = True
+
+        if not repoish:
+            return analysis
+
+        signals = list(analysis.primary.signals) + ["repo_mode_override"]
+        if fref:
+            signals.append(f"file:{fref}")
+
+        demoted = analysis.primary
+        secondary = [s for s in analysis.secondary if s.intent != Intent.REPOSITORY_QUESTION]
+        if demoted.intent not in (Intent.UNKNOWN, Intent.REPOSITORY_QUESTION):
+            secondary = [demoted, *secondary]
+
+        return IntentAnalysis(
+            primary=DetectedIntent(
+                Intent.REPOSITORY_QUESTION,
+                max(analysis.primary.confidence, 0.85),
+                signals,
+            ),
+            secondary=secondary,
+            raw_message=message,
+        )
 
 
 # ── Singleton ─────────────────────────────────────────────────────────────────

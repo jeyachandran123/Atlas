@@ -37,6 +37,7 @@ class AbstractIntentDetector(ABC):
         message: str,
         session_messages: list[dict],
         agent_mode: str = "auto",
+        repo_active: bool = False,
     ) -> "IntentAnalysis":
         ...
 

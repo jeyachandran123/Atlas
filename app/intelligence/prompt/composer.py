@@ -154,6 +154,34 @@ def _select_domain_modules(context: IntelligenceContext) -> list[str]:
     return selected
 
 
+def _build_repo_mode_section(context: IntelligenceContext) -> str:
+    """
+    Repository Mode doctrine — injected whenever a repository is active.
+    Turns the assistant from a chatbot that sometimes uses repo tools into
+    an engineer whose default working context IS the repository.
+    """
+    return (
+        "## REPOSITORY MODE — ACTIVE\n"
+        "A repository is connected and indexed. It is your default working context.\n"
+        "- Every file name, path, module, or symbol the user mentions refers to THIS "
+        "repository unless they explicitly say otherwise.\n"
+        "- Ground every answer in the retrieved code context and tool results provided "
+        "below. Never speculate about code when evidence is present; never invent "
+        "files or APIs that are not in the context.\n"
+        "- NEVER ask which project, repository, or file the user means, and never ask "
+        "a clarifying question that a code search could answer. If something was not "
+        "found, say exactly what you looked for and answer from the closest evidence.\n"
+        "- Asked to read, explain, or summarize the repository: produce an engineer's "
+        "architecture overview from the provided files — purpose, key modules, entry "
+        "points, data flow, and how the pieces connect.\n"
+        "- Asked to edit, fix, improve, or refactor code: locate the relevant code in "
+        "the provided context and produce the exact change — the complete updated "
+        "function/section or a unified diff, ready to apply.\n"
+        "- Follow the working order: search → read → reason → answer → edit.\n"
+        "You are an engineer working inside this repository, not a general chatbot."
+    )
+
+
 # ── Composer ──────────────────────────────────────────────────────────────────
 
 class DynamicPromptComposer(AbstractPromptComposer):
@@ -182,6 +210,10 @@ class DynamicPromptComposer(AbstractPromptComposer):
 
         # 1. Identity
         add("identity", _build_identity())
+
+        # 1b. Repository Mode — active repo changes the assistant's stance entirely
+        if context.repo_id:
+            add("repo_mode", _build_repo_mode_section(context))
 
         # 2. Personality principles (behavioural, not scripted)
         add("personality", _build_personality_section(plan.personality_principles))

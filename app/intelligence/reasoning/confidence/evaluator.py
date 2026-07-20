@@ -88,11 +88,15 @@ def _score_repo_match(context) -> ConfidenceScore:
             reason="No repository — repo match not applicable",
         )
     if context.retrieved_chunks_count == 0:
+        # Reasoning runs BEFORE the retrieval node, so zero chunks here is the
+        # normal pre-retrieval state — not evidence of a mismatch. Penalising
+        # it made an active repository *lower* overall confidence and trigger
+        # spurious clarification questions (the anti-Repository-Mode bug).
         return ConfidenceScore(
             dimension="repo_match",
-            score=0.20,
-            level=ConfidenceLevel.VERY_LOW,
-            reason="Repository selected but no chunks retrieved",
+            score=0.60,
+            level=ConfidenceLevel.MEDIUM,
+            reason="Repository active — retrieval pending (runs after reasoning)",
         )
     # More chunks = higher confidence (capped at 8)
     score = min(0.4 + context.retrieved_chunks_count * 0.075, 1.0)
@@ -177,13 +181,26 @@ class ConfidenceEvaluator(AbstractConfidenceEvaluator):
         overall = sum(s.score for s in scores) / len(scores)
         overall_level = _level(overall)
 
-        repo_score = next(s for s in scores if s.dimension == "repo_match")
         should_clarify = overall < _CLARIFY_THRESHOLD
         should_retrieve = (
-            repo_score.score < _RETRIEVAL_THRESHOLD
-            and bool(context.repo_id)
+            bool(context.repo_id)
             and context.retrieved_chunks_count == 0
         )
+
+        # ── Repository Mode doctrine ──────────────────────────────────────────
+        # Never ask a clarification question that a repository search could
+        # answer. With an active repo and any tool/retrieval path available,
+        # the correct behaviour is: search first, read second, answer — the
+        # assistant is an engineer inside the repo, not a chatbot asking
+        # "which file do you mean?".
+        if should_clarify and context.repo_id:
+            can_search = (
+                context.retrieved_chunks_count > 0
+                or bool(context.tool_plan and context.tool_plan.should_use_tools)
+                or should_retrieve
+            )
+            if can_search:
+                should_clarify = False
 
         clarification_question = ""
         if should_clarify:

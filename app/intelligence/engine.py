@@ -162,8 +162,14 @@ class ConversationIntelligenceEngine:
         agent_mode = state.get("agent_mode", "auto")
 
         # ── 1. Intent Detection ───────────────────────────────────────────────
+        # Repository Mode: an active repo changes how ambiguous messages route.
         with observer.measure("intent"):
-            intent_analysis = self._intent.detect(message, session_messages, agent_mode)
+            intent_analysis = self._intent.detect(
+                message,
+                session_messages,
+                agent_mode,
+                repo_active=bool(state.get("repo_id")),
+            )
 
         observer.record_intent(
             [i.value for i in intent_analysis.all_intents],
