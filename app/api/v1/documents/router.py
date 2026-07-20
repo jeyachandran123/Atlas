@@ -270,7 +270,18 @@ async def get_knowledge_object(
             )
             for i in images
         ],
+        parser_version=ko.parser_version,
+        chunk_version=ko.chunk_version,
+        processing_version=ko.processing_version,
+        schema_version=ko.schema_version,
+        status=ko.status,
+        embedding_status=ko.embedding_status,
+        index_status=ko.index_status,
+        retrieval_status=ko.retrieval_status,
+        generation_status=ko.generation_status,
+        parent_knowledge_id=ko.parent_knowledge_id,
         created_at=ko.created_at,
+        updated_at=ko.updated_at,
     )
 
 

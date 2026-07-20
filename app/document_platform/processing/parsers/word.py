@@ -6,6 +6,7 @@ import re
 
 from loguru import logger
 
+from app.document_platform.processing.capabilities import ParserCapabilities
 from app.document_platform.processing.models import (
     DocumentNode, ImageRef, NodeType, ParsedDocument, RawMetadata,
 )
@@ -17,6 +18,12 @@ _HEADING_STYLE = re.compile(r"heading\s*(\d)", re.IGNORECASE)
 class WordParser(AbstractDocumentParser):
     name = "word"
     extensions = (".docx",)
+    version = "1.0.0"
+    capabilities = ParserCapabilities(
+        supports_tables=True,
+        supports_images=True,
+        supports_structure=True,
+    )
 
     def parse(self, content: bytes, filename: str) -> ParsedDocument:
         import docx

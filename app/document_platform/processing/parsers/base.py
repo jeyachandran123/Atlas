@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from app.document_platform.processing.capabilities import ParserCapabilities
 from app.document_platform.processing.models import ParsedDocument
+from app.document_platform.processing.versioning import DEFAULT_PARSER_VERSION
 
 
 class ParserError(Exception):
@@ -19,6 +21,8 @@ class ParserError(Exception):
 class AbstractDocumentParser(ABC):
     name: str = "abstract"
     extensions: tuple[str, ...] = ()
+    version: str = DEFAULT_PARSER_VERSION
+    capabilities: ParserCapabilities = ParserCapabilities()
 
     @abstractmethod
     def parse(self, content: bytes, filename: str) -> ParsedDocument:

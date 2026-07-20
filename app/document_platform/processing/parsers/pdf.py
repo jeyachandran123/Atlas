@@ -9,6 +9,7 @@ import re
 
 from loguru import logger
 
+from app.document_platform.processing.capabilities import ParserCapabilities
 from app.document_platform.processing.models import (
     DocumentNode, ImageRef, NodeType, ParsedDocument, RawMetadata,
 )
@@ -22,6 +23,13 @@ _HEADING_LIKE = re.compile(r"^[A-Z0-9][^.!?]{0,79}$")
 class PdfParser(AbstractDocumentParser):
     name = "pdf"
     extensions = (".pdf",)
+    version = "1.0.0"
+    capabilities = ParserCapabilities(
+        supports_tables=False,   # pypdf does not expose table structure
+        supports_images=True,
+        supports_ocr_trigger=True,
+        supports_structure=True,  # heading heuristic
+    )
 
     def parse(self, content: bytes, filename: str) -> ParsedDocument:
         from pypdf import PdfReader

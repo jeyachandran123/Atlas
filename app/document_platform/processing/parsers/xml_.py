@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 
+from app.document_platform.processing.capabilities import ParserCapabilities
 from app.document_platform.processing.models import (
     DocumentNode, NodeType, ParsedDocument, RawMetadata,
 )
@@ -16,6 +17,8 @@ _MAX_NODES = 20_000
 class XmlParser(AbstractDocumentParser):
     name = "xml"
     extensions = (".xml",)
+    version = "1.0.0"
+    capabilities = ParserCapabilities(supports_tables=False, supports_structure=True)
 
     def parse(self, content: bytes, filename: str) -> ParsedDocument:
         text, encoding = decode_text(content)

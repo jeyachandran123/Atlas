@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import struct
 
+from app.document_platform.processing.capabilities import ParserCapabilities
 from app.document_platform.processing.models import (
     DocumentNode, ImageRef, NodeType, ParsedDocument, RawMetadata,
 )
@@ -44,6 +45,14 @@ def _image_dimensions(content: bytes, ext: str) -> tuple[int | None, int | None]
 class ImageParser(AbstractDocumentParser):
     name = "image"
     extensions = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+    version = "1.0.0"
+    capabilities = ParserCapabilities(
+        supports_tables=False,
+        supports_images=True,
+        supports_ocr_trigger=True,
+        supports_structure=False,
+        supports_language_detection=False,  # no text exists until OCR runs
+    )
 
     def parse(self, content: bytes, filename: str) -> ParsedDocument:
         ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ".png"

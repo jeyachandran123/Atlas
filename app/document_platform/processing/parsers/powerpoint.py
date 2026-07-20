@@ -5,6 +5,7 @@ import io
 
 from loguru import logger
 
+from app.document_platform.processing.capabilities import ParserCapabilities
 from app.document_platform.processing.models import (
     DocumentNode, ImageRef, NodeType, ParsedDocument, RawMetadata,
 )
@@ -14,6 +15,12 @@ from app.document_platform.processing.parsers.base import AbstractDocumentParser
 class PowerPointParser(AbstractDocumentParser):
     name = "powerpoint"
     extensions = (".pptx",)
+    version = "1.0.0"
+    capabilities = ParserCapabilities(
+        supports_tables=False,
+        supports_images=True,
+        supports_structure=True,  # title + slide sequence
+    )
 
     def parse(self, content: bytes, filename: str) -> ParsedDocument:
         from pptx import Presentation

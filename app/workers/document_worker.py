@@ -2,7 +2,7 @@
 Document processing worker — background process for the DIP pipeline.
 
 Reads jobs from the Redis queue (queue:dip_processing) and runs the
-DocumentProcessingPipeline. Mirrors the repo index worker's lifecycle.
+ProcessingOrchestrator. Mirrors the repo index worker's lifecycle.
 
 Usage:
   python -m app.workers.document_worker
@@ -16,7 +16,7 @@ import signal
 from loguru import logger
 
 from app.database import get_db_session
-from app.document_platform.processing.pipeline import DocumentProcessingPipeline
+from app.document_platform.processing.orchestrator import ProcessingOrchestrator
 from app.document_platform.processing.queue import dequeue_processing_job
 from app.observability import configure_logging
 
@@ -35,8 +35,8 @@ async def process_job(job: dict) -> None:
     logger.info(f"Processing document {document_id} (job {job_id}, attempt {job.get('attempt', 1)})")
     try:
         async with get_db_session() as session:
-            pipeline = DocumentProcessingPipeline(session)
-            await pipeline.run(document_id, job_id)
+            orchestrator = ProcessingOrchestrator(session)
+            await orchestrator.run(document_id, job_id)
             await session.commit()
     except Exception as e:
         logger.exception(f"Document job {job_id} crashed: {e}")

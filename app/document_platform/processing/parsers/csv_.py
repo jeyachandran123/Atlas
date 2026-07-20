@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import io
 
+from app.document_platform.processing.capabilities import ParserCapabilities
 from app.document_platform.processing.models import (
     DocumentNode, NodeType, ParsedDocument, RawMetadata,
 )
@@ -16,6 +17,8 @@ _MAX_ROWS = 50_000
 class CsvParser(AbstractDocumentParser):
     name = "csv"
     extensions = (".csv",)
+    version = "1.0.0"
+    capabilities = ParserCapabilities(supports_tables=True, supports_structure=False)
 
     def parse(self, content: bytes, filename: str) -> ParsedDocument:
         text, encoding = decode_text(content)

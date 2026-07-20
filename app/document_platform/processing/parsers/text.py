@@ -1,6 +1,7 @@
 """Plain-text parser — paragraphs split on blank lines."""
 from __future__ import annotations
 
+from app.document_platform.processing.capabilities import ParserCapabilities
 from app.document_platform.processing.models import (
     DocumentNode, NodeType, ParsedDocument, RawMetadata,
 )
@@ -20,6 +21,8 @@ def decode_text(content: bytes) -> tuple[str, str]:
 class TextParser(AbstractDocumentParser):
     name = "text"
     extensions = (".txt",)
+    version = "1.0.0"
+    capabilities = ParserCapabilities(supports_tables=False, supports_structure=False)
 
     def parse(self, content: bytes, filename: str) -> ParsedDocument:
         text, encoding = decode_text(content)

@@ -667,8 +667,30 @@ class KnowledgeObject(Base):
     image_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     section_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     structure_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Architecture Hardening — versioning (Objective 5)
+    parser_version: Mapped[str] = mapped_column(String(20), nullable=False, default="1.0.0")
+    chunk_version: Mapped[str] = mapped_column(String(20), nullable=False, default="1.0.0")
+    processing_version: Mapped[str] = mapped_column(String(20), nullable=False, default="1.0.0")
+    schema_version: Mapped[str] = mapped_column(String(20), nullable=False, default="1.0.0")
+
+    # Architecture Hardening — Knowledge Registry (Objective 10). Status
+    # columns are placeholders future phases flip; nothing writes non-default
+    # values to them yet.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="ready")
+    embedding_status: Mapped[str] = mapped_column(String(20), nullable=False, default="not_started")
+    index_status: Mapped[str] = mapped_column(String(20), nullable=False, default="not_started")
+    retrieval_status: Mapped[str] = mapped_column(String(20), nullable=False, default="not_started")
+    generation_status: Mapped[str] = mapped_column(String(20), nullable=False, default="not_started")
+    parent_knowledge_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("knowledge_objects.id"), nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
     )
 
 
@@ -761,6 +783,11 @@ class DocumentProcessingJob(Base):
     current_stage: Mapped[str] = mapped_column(String(30), nullable=False, default="")
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Architecture Hardening — profiles (Objective 6) + retry/DLQ (Objective 7)
+    profile: Mapped[str] = mapped_column(String(30), nullable=False, default="standard")
+    dead_lettered: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
     started_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

@@ -35,6 +35,11 @@ class ProcessingRepository:
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
 
+    @property
+    def db(self) -> AsyncSession:
+        """The underlying session — shared with sibling services (e.g. KnowledgeRegistry)."""
+        return self._db
+
     # ── Documents (worker scope — unscoped by user) ──────────────────────────
 
     async def get_document(self, document_id: str) -> Optional[Document]:
@@ -48,8 +53,10 @@ class ProcessingRepository:
 
     # ── Jobs ─────────────────────────────────────────────────────────────────
 
-    async def create_job(self, document_id: str, attempt: int = 1) -> DocumentProcessingJob:
-        job = DocumentProcessingJob(document_id=document_id, attempt=attempt)
+    async def create_job(
+        self, document_id: str, attempt: int = 1, profile: str = "standard"
+    ) -> DocumentProcessingJob:
+        job = DocumentProcessingJob(document_id=document_id, attempt=attempt, profile=profile)
         self._db.add(job)
         await self._db.flush()
         return job
@@ -80,9 +87,16 @@ class ProcessingRepository:
         job.current_stage = stage
         await self._db.flush()
 
-    async def job_finished(self, job: DocumentProcessingJob, status: str, error: str | None = None) -> None:
+    async def job_finished(
+        self,
+        job: DocumentProcessingJob,
+        status: str,
+        error: str | None = None,
+        dead_lettered: bool = False,
+    ) -> None:
         job.status = status
         job.error = error
+        job.dead_lettered = dead_lettered
         job.finished_at = _now()
         await self._db.flush()
 
@@ -145,6 +159,11 @@ class ProcessingRepository:
         language: str,
         stored_images: list[StoredImage],
         chunks: list[Chunk],
+        *,
+        parser_version: str = "1.0.0",
+        chunk_version: str = "1.0.0",
+        processing_version: str = "1.0.0",
+        schema_version: str = "1.0.0",
     ) -> KnowledgeObject:
         ko = KnowledgeObject(
             document_id=document_id,
@@ -159,6 +178,10 @@ class ProcessingRepository:
             image_count=built.image_count,
             section_count=built.section_count,
             structure_json=json.dumps(built.structure),
+            parser_version=parser_version,
+            chunk_version=chunk_version,
+            processing_version=processing_version,
+            schema_version=schema_version,
         )
         self._db.add(ko)
         await self._db.flush()

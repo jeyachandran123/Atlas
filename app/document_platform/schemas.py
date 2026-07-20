@@ -146,7 +146,21 @@ class KnowledgeObjectOut(BaseModel):
     structure: Optional[dict] = None
     metadata: Optional[KnowledgeMetadataOut] = None
     images: list[DocumentImageOut] = Field(default_factory=list)
+
+    # Architecture Hardening: versioning (Objective 5) + registry (Objective 10)
+    parser_version: str = "1.0.0"
+    chunk_version: str = "1.0.0"
+    processing_version: str = "1.0.0"
+    schema_version: str = "1.0.0"
+    status: str = "ready"
+    embedding_status: str = "not_started"
+    index_status: str = "not_started"
+    retrieval_status: str = "not_started"
+    generation_status: str = "not_started"
+    parent_knowledge_id: Optional[str] = None
+
     created_at: datetime
+    updated_at: Optional[datetime] = None
 
 
 class ChunkOut(BaseModel):

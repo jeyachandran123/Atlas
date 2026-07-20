@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 
+from app.document_platform.processing.capabilities import ParserCapabilities
 from app.document_platform.processing.models import (
     DocumentNode, NodeType, ParsedDocument, RawMetadata,
 )
@@ -18,6 +19,11 @@ _MAX_COLS = 200
 class ExcelParser(AbstractDocumentParser):
     name = "excel"
     extensions = (".xlsx",)
+    version = "1.0.0"
+    capabilities = ParserCapabilities(
+        supports_tables=True,
+        supports_structure=False,  # sheets are flat tables, not heading hierarchies
+    )
 
     def parse(self, content: bytes, filename: str) -> ParsedDocument:
         import openpyxl

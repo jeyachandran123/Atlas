@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 
+from app.document_platform.processing.capabilities import ParserCapabilities
 from app.document_platform.processing.models import (
     DocumentNode, ImageRef, NodeType, ParsedDocument, RawMetadata,
 )
@@ -19,6 +20,13 @@ _IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 class MarkdownParser(AbstractDocumentParser):
     name = "markdown"
     extensions = (".md",)
+    version = "1.0.0"
+    capabilities = ParserCapabilities(
+        supports_tables=True,
+        supports_images=False,        # images are referenced (![]()), not extracted
+        supports_structure=True,
+        supports_embedded_images=True,
+    )
 
     def parse(self, content: bytes, filename: str) -> ParsedDocument:
         text, encoding = decode_text(content)
