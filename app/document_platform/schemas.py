@@ -104,6 +104,7 @@ class ProcessingStateOut(BaseModel):
     current_stage: Optional[str] = None
     attempt: Optional[int] = None
     error: Optional[str] = None
+    correlation_id: Optional[str] = None
     events: list[ProcessingEventOut] = Field(default_factory=list)
 
 
@@ -186,3 +187,80 @@ class ReprocessResponse(BaseModel):
     document_id: str
     job_id: str
     queued: bool = True
+
+
+# ── Phase 2.6: Knowledge Platform shapes ─────────────────────────────────────
+
+
+class ContentIdentityOut(BaseModel):
+    structure_signature: Optional[str] = None
+    language_signature: Optional[str] = None
+    semantic_fingerprint: Optional[str] = None
+    content_signature: Optional[str] = None
+    metadata_signature: Optional[str] = None
+
+
+class ManifestOut(BaseModel):
+    document_id: str
+    knowledge_id: str
+    correlation_id: str
+    lifecycle_state: str
+    parser_name: str
+    parser_version: str
+    chunk_version: str
+    embedding_version: str
+    knowledge_version: int
+    relationship_version: str
+    schema_version: str
+    processing_version: str
+    validation_status: str
+    current_stage: str
+    capabilities: Optional[dict] = None
+    warnings: list[str] = Field(default_factory=list)
+    failures: list[str] = Field(default_factory=list)
+    retry_count: int
+    content_identity: Optional[ContentIdentityOut] = None
+    workspace_id: Optional[str] = None
+    visibility: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeEventOut(BaseModel):
+    event_type: str
+    previous_state: Optional[str] = None
+    current_state: Optional[str] = None
+    source: str
+    metadata: Optional[dict] = None
+    created_at: datetime
+
+
+class HealthOut(BaseModel):
+    document_id: str
+    status: str
+    reasons: list[str] = Field(default_factory=list)
+
+
+class LineageStepOut(BaseModel):
+    node_type: str
+    node_id: str
+    parent_type: Optional[str] = None
+    parent_id: Optional[str] = None
+
+
+class LineageOut(BaseModel):
+    document_id: str
+    chain: list[LineageStepOut] = Field(default_factory=list)
+
+
+class PlatformCapabilityOut(BaseModel):
+    name: str
+    category: str
+    version: str
+    supported_features: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    status: str
+
+
+class PlatformCapabilitiesOut(BaseModel):
+    items: list[PlatformCapabilityOut]

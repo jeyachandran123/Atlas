@@ -28,13 +28,18 @@ from app.document_platform.repository import DocumentRepository
 from app.document_platform.schemas import (
     ChunkListOut,
     ChunkOut,
+    ContentIdentityOut,
     DeleteResponse,
     DocumentImageOut,
     DocumentListOut,
     DocumentOut,
     DownloadLinkOut,
+    HealthOut,
     KnowledgeMetadataOut,
     KnowledgeObjectOut,
+    LineageOut,
+    LineageStepOut,
+    ManifestOut,
     ProcessingEventOut,
     ProcessingStateOut,
     ReprocessResponse,
@@ -209,6 +214,7 @@ async def get_processing_state(
         current_stage=job.current_stage if job else None,
         attempt=job.attempt if job else None,
         error=job.error if job else None,
+        correlation_id=job.correlation_id if job else None,
         events=[
             ProcessingEventOut(
                 stage=e.stage,
@@ -309,6 +315,120 @@ async def list_chunks(
             for c in chunks
         ],
         total=total, limit=limit, offset=offset,
+    )
+
+
+@router.get("/{document_id}/manifest", response_model=ManifestOut)
+async def get_manifest(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    service: DocumentPlatformService = Depends(get_document_platform_service),
+):
+    """The operational dashboard model for this document's Knowledge Object."""
+    from app.document_platform.knowledge.repository import KnowledgeManifestRepository
+
+    try:
+        await service.get(current_user.id, document_id)  # ownership check
+    except DocumentNotFoundError:
+        raise HTTPException(404, detail={"code": "not_found", "message": "Document not found."})
+
+    manifest = await KnowledgeManifestRepository(db).get_by_document_id(document_id)
+    if manifest is None:
+        raise HTTPException(
+            409, detail={"code": "not_ready", "message": "No manifest yet — processing may still be running."},
+        )
+    return ManifestOut(
+        document_id=document_id,
+        knowledge_id=manifest.knowledge_object_id,
+        correlation_id=manifest.correlation_id,
+        lifecycle_state=manifest.lifecycle_state,
+        parser_name=manifest.parser_name,
+        parser_version=manifest.parser_version,
+        chunk_version=manifest.chunk_version,
+        embedding_version=manifest.embedding_version,
+        knowledge_version=manifest.knowledge_version,
+        relationship_version=manifest.relationship_version,
+        schema_version=manifest.schema_version,
+        processing_version=manifest.processing_version,
+        validation_status=manifest.validation_status,
+        current_stage=manifest.current_stage,
+        capabilities=json.loads(manifest.capabilities_json) if manifest.capabilities_json else None,
+        warnings=json.loads(manifest.warnings_json) if manifest.warnings_json else [],
+        failures=json.loads(manifest.failures_json) if manifest.failures_json else [],
+        retry_count=manifest.retry_count,
+        content_identity=ContentIdentityOut(**json.loads(manifest.content_identity_json))
+        if manifest.content_identity_json else None,
+        workspace_id=manifest.workspace_id,
+        visibility=manifest.visibility,
+        created_at=manifest.created_at,
+        updated_at=manifest.updated_at,
+    )
+
+
+@router.get("/{document_id}/health", response_model=HealthOut)
+async def get_health(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    service: DocumentPlatformService = Depends(get_document_platform_service),
+):
+    """Computed operational health — never stored, always derived fresh."""
+    from app.document_platform.knowledge.health import KnowledgeHealthEvaluator
+    from app.document_platform.knowledge.lifecycle import KnowledgeLifecycle
+    from app.document_platform.knowledge.repository import KnowledgeManifestRepository
+    from app.document_platform.processing.persistence import ProcessingRepository
+    from app.platform.capabilities import get_capability_registry
+
+    try:
+        await service.get(current_user.id, document_id)
+    except DocumentNotFoundError:
+        raise HTTPException(404, detail={"code": "not_found", "message": "Document not found."})
+
+    manifest = await KnowledgeManifestRepository(db).get_by_document_id(document_id)
+    if manifest is None:
+        raise HTTPException(409, detail={"code": "not_ready", "message": "No manifest yet."})
+
+    job = await ProcessingRepository(db).latest_job_for(document_id)
+    evaluator = KnowledgeHealthEvaluator(get_capability_registry())
+    report = evaluator.evaluate(
+        lifecycle=KnowledgeLifecycle(manifest.lifecycle_state),
+        parser_name=manifest.parser_name,
+        parser_version=manifest.parser_version,
+        chunk_version=manifest.chunk_version,
+        job_status=job.status if job else "unknown",
+        job_error=job.error if job else None,
+        warnings=json.loads(manifest.warnings_json) if manifest.warnings_json else [],
+        retry_count=manifest.retry_count,
+    )
+    return HealthOut(document_id=document_id, status=report.status.value, reasons=report.reasons)
+
+
+@router.get("/{document_id}/lineage", response_model=LineageOut)
+async def get_lineage(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    service: DocumentPlatformService = Depends(get_document_platform_service),
+):
+    """Answers 'where did this knowledge come from?' by walking the provenance graph."""
+    from app.document_platform.knowledge.lineage import LineageNodeType, LineageTracker
+    from app.document_platform.knowledge.repository import KnowledgeManifestRepository
+
+    try:
+        await service.get(current_user.id, document_id)
+    except DocumentNotFoundError:
+        raise HTTPException(404, detail={"code": "not_found", "message": "Document not found."})
+
+    manifest = await KnowledgeManifestRepository(db).get_by_document_id(document_id)
+    if manifest is None:
+        return LineageOut(document_id=document_id, chain=[])
+
+    tracker = LineageTracker(KnowledgeManifestRepository(db))
+    chain = await tracker.trace_to_origin(LineageNodeType.KNOWLEDGE_OBJECT, manifest.knowledge_object_id)
+    return LineageOut(
+        document_id=document_id,
+        chain=[LineageStepOut(**step) for step in chain],
     )
 
 

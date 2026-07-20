@@ -788,6 +788,11 @@ class DocumentProcessingJob(Base):
     profile: Mapped[str] = mapped_column(String(30), nullable=False, default="standard")
     dead_lettered: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # Architecture Hardening 2.6 — platform-wide tracing (Objective 4). Root
+    # correlation for this document: minted once at upload, carried forward
+    # across every retry attempt so one ID traces the whole lifecycle.
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, default=_uuid)
+
     started_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -817,6 +822,125 @@ class DocumentProcessingEvent(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False)  # started|completed|failed|skipped
     duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     detail_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# KNOWLEDGE PLATFORM (Phase 2.6 — lifecycle, events, lineage)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class KnowledgeManifest(Base):
+    """
+    The operational dashboard model for one Knowledge Object (Objective 3).
+    KnowledgeObject (Phase 2) stays the stable content/registry row; this is
+    its lifecycle/health/versioning sidecar — kept separate so nothing about
+    Phase 2's tested `KnowledgeObject.status` semantics changes.
+
+    parser_version/chunk_version/processing_version/schema_version are
+    intentionally denormalized copies of KnowledgeObject's — both are
+    written from the same local variables in one transaction (the
+    orchestrator), never computed twice, so there is no drift risk despite
+    the duplication.
+    """
+
+    __tablename__ = "knowledge_manifests"
+    __table_args__ = (
+        Index("ix_knowledge_manifests_ko", "knowledge_object_id", unique=True),
+        Index("ix_knowledge_manifests_doc", "document_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    knowledge_object_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_objects.id"), nullable=False
+    )
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("documents.id"), nullable=False
+    )
+
+    lifecycle_state: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    parser_name: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+
+    parser_version: Mapped[str] = mapped_column(String(20), nullable=False, default="1.0.0")
+    chunk_version: Mapped[str] = mapped_column(String(20), nullable=False, default="1.0.0")
+    embedding_version: Mapped[str] = mapped_column(String(20), nullable=False, default="1.0.0")
+    knowledge_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    relationship_version: Mapped[str] = mapped_column(String(20), nullable=False, default="1.0.0")
+    schema_version: Mapped[str] = mapped_column(String(20), nullable=False, default="1.0.0")
+    processing_version: Mapped[str] = mapped_column(String(20), nullable=False, default="1.0.0")
+
+    validation_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    current_stage: Mapped[str] = mapped_column(String(30), nullable=False, default="")
+    capabilities_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    warnings_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    failures_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    content_identity_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, default=_uuid)
+    workspace_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    visibility: Mapped[str] = mapped_column(String(20), nullable=False, default="org")
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
+    )
+
+
+class KnowledgeEventRecord(Base):
+    """Append-only Knowledge domain event log (Objective 2) — content
+    lifecycle events, distinct from DocumentProcessingEvent's pipeline-stage
+    log."""
+
+    __tablename__ = "knowledge_events"
+    __table_args__ = (
+        Index("ix_knowledge_events_ko", "knowledge_id", "created_at"),
+        Index("ix_knowledge_events_correlation", "correlation_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    knowledge_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    document_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    previous_state: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    current_state: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    version: Mapped[str] = mapped_column(String(20), nullable=False, default="1.0.0")
+    source: Mapped[str] = mapped_column(String(30), nullable=False, default="system")
+    metadata_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    warnings_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    errors_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+
+class KnowledgeLineageEdge(Base):
+    """
+    Generic provenance graph (Objective 8). node_id/parent_id are NOT
+    foreign keys — node_type varies (document/chunk/knowledge_object today;
+    embedding/retrieval_result/generated_answer in future phases), so a
+    single FK target is impossible by design. This is what makes future
+    node types attach without a migration.
+    """
+
+    __tablename__ = "knowledge_lineage_edges"
+    __table_args__ = (
+        Index("ix_lineage_node", "node_type", "node_id"),
+        Index("ix_lineage_parent", "parent_type", "parent_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    node_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    node_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    parent_type: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    parent_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )

@@ -54,9 +54,15 @@ class ProcessingRepository:
     # ── Jobs ─────────────────────────────────────────────────────────────────
 
     async def create_job(
-        self, document_id: str, attempt: int = 1, profile: str = "standard"
+        self,
+        document_id: str,
+        attempt: int = 1,
+        profile: str = "standard",
+        correlation_id: str | None = None,
     ) -> DocumentProcessingJob:
         job = DocumentProcessingJob(document_id=document_id, attempt=attempt, profile=profile)
+        if correlation_id:
+            job.correlation_id = correlation_id
         self._db.add(job)
         await self._db.flush()
         return job

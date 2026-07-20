@@ -158,13 +158,25 @@ class DocumentPlatformService:
 
     # ── Phase 2: processing pipeline integration ──────────────────────────────
 
-    async def _enqueue_processing(self, doc: Document, attempt: int = 1) -> str:
+    async def _enqueue_processing(
+        self, doc: Document, attempt: int = 1, correlation_id: str | None = None,
+    ) -> str:
         from app.document_platform.processing.persistence import ProcessingRepository
         from app.document_platform.processing.queue import enqueue_processing_job
 
         proc = ProcessingRepository(self._repo.db)  # same session/transaction
-        job = await proc.create_job(doc.id, attempt=attempt)
+        # Objective 4 — one correlation id per document, minted on first
+        # enqueue and reused across every retry/reprocess attempt so a
+        # single id traces the document's entire lifecycle end to end.
+        job = await proc.create_job(doc.id, attempt=attempt, correlation_id=correlation_id)
         await proc.set_processing_status(doc, "queued")
+
+        # Commit BEFORE publishing to Redis — the worker's BRPOP can fire
+        # fast enough to query for this document/job before an uncommitted
+        # transaction is visible to its own connection (READ COMMITTED),
+        # which silently drops the job forever (already popped, row "missing").
+        # Committing first guarantees the row exists before anyone can race it.
+        await self._repo.db.commit()
         await enqueue_processing_job(doc.id, job.id, attempt)
         return job.id
 
@@ -174,7 +186,8 @@ class DocumentPlatformService:
         from app.document_platform.processing.persistence import ProcessingRepository
         prior = await ProcessingRepository(self._repo.db).latest_job_for(doc.id)
         attempt = (prior.attempt + 1) if prior else 1
-        return await self._enqueue_processing(doc, attempt=attempt)
+        correlation_id = prior.correlation_id if prior else None
+        return await self._enqueue_processing(doc, attempt=attempt, correlation_id=correlation_id)
 
     async def processing_state(self, user_id: str, document_id: str):
         """(document, latest job | None, events) — ownership enforced."""

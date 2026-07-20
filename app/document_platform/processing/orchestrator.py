@@ -18,6 +18,14 @@ from typing import Any, Optional
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.document_platform.identity import DocumentIdentityBuilder
+from app.document_platform.knowledge.events import (
+    KnowledgeEventPublisher,
+    PersistingKnowledgeEventPublisher,
+)
+from app.document_platform.knowledge.lineage import LineageNodeType, LineageTracker
+from app.document_platform.knowledge.manifest_service import KnowledgeManifestService
+from app.document_platform.knowledge.repository import KnowledgeManifestRepository
 from app.document_platform.processing.capabilities import ParserCapabilities
 from app.document_platform.processing.chunker import ChunkingEngine
 from app.document_platform.processing.cleaner import ContentCleaner
@@ -51,6 +59,7 @@ from app.document_platform.processing.retry import DEFAULT_RETRY_POLICY, RetryPo
 from app.document_platform.processing.structure import StructuralAnalyzer
 from app.document_platform.processing.tables import TableExtractor
 from app.document_platform.processing.versioning import CHUNK_VERSION, PROCESSING_VERSION, SCHEMA_VERSION
+from app.platform.capabilities import CapabilityCategory, get_capability_registry
 
 
 class ProcessingFailure(Exception):
@@ -100,6 +109,14 @@ class ProcessingOrchestrator:
         self._dlq = get_dead_letter_sink()
         self._parsers = get_parser_registry()
 
+        # Phase 2.6 — Knowledge Platform layer
+        self._manifest_repo = KnowledgeManifestRepository(db)
+        self._knowledge_events: KnowledgeEventPublisher = PersistingKnowledgeEventPublisher(self._manifest_repo)
+        self._manifests = KnowledgeManifestService(self._manifest_repo, self._knowledge_events)
+        self._lineage = LineageTracker(self._manifest_repo)
+        self._identity = DocumentIdentityBuilder()
+        self._capabilities = get_capability_registry()
+
     async def run(self, document_id: str, job_id: str) -> None:
         job = await self._repo.get_job(job_id)
         doc = await self._repo.get_document(document_id)
@@ -110,6 +127,9 @@ class ProcessingOrchestrator:
         profile = get_profile(job.profile)
         ctx = ProcessingContext(
             document_id=doc.id, job_id=job.id, profile_name=profile.name, attempt=job.attempt,
+            # Objective 4 — the job's correlation_id is the platform-wide root
+            # for this document (minted at upload, reused across retries).
+            correlation_id=job.correlation_id,
         )
         chunker = ChunkingEngine(
             target_tokens=profile.chunk_target_tokens, max_tokens=profile.chunk_max_tokens,
@@ -159,7 +179,11 @@ class ProcessingOrchestrator:
             ))
 
         try:
-            # Idempotent reprocessing: clear previous derived output first
+            # Idempotent reprocessing: clear previous derived output first.
+            # Manifests reference knowledge_objects via FK — they must be
+            # deleted before the KnowledgeObject rows they point to, or the
+            # delete below violates the foreign key constraint.
+            await self._manifest_repo.delete_manifests_for_document(doc.id)
             await self._repo.wipe_derived(doc.id)
 
             content: bytes = await stage(
@@ -321,6 +345,21 @@ class ProcessingOrchestrator:
                 detail_fn=lambda e: {"knowledge_id": e.knowledge_id},
             )
 
+            # ── Knowledge Platform layer (Phase 2.6): manifest + lineage ──────
+            content_identity = self._identity.content_identity(
+                tree, language, metadata.custom,
+            )
+            capabilities_snapshot = {
+                "parser": f"{parser.name}@{parser.version}",
+                "chunker": f"structure_aware_chunker@{CHUNK_VERSION}",
+            }
+            await stage(
+                "manifest",
+                self._register_manifest_and_lineage,
+                entry.knowledge_id, doc.id, parser, ctx, content_identity, capabilities_snapshot,
+                detail_fn=lambda m: {"lifecycle": m.lifecycle_state},
+            )
+
             await self._repo.set_processing_status(doc, "knowledge_ready")
             await self._repo.job_finished(job, "knowledge_ready")
 
@@ -340,6 +379,35 @@ class ProcessingOrchestrator:
         except Exception as e:
             await self._handle_failure(ctx, job, doc, current_stage or "unknown", e)
 
+    async def _register_manifest_and_lineage(
+        self, knowledge_id: str, document_id: str, parser, ctx: ProcessingContext,
+        content_identity, capabilities_snapshot: dict[str, str],
+    ):
+        manifest = await self._manifests.register(
+            document_id=document_id,
+            knowledge_object_id=knowledge_id,
+            parser_name=parser.name,
+            parser_version=parser.version,
+            chunk_version=CHUNK_VERSION,
+            processing_version=PROCESSING_VERSION,
+            schema_version=SCHEMA_VERSION,
+            correlation_id=ctx.correlation_id,
+            content_identity=content_identity,
+            capabilities_snapshot=capabilities_snapshot,
+            warnings=ctx.warnings,
+            retry_count=ctx.attempt - 1,
+        )
+        # Lineage (Objective 8): Document → KnowledgeObject is recorded here
+        # because the generic graph is what future non-relational node types
+        # (embedding, retrieval, generation) will attach to. Chunk-level
+        # provenance already exists via DocumentChunk.knowledge_object_id —
+        # duplicating it as lineage edges here would just be redundant rows.
+        await self._lineage.record(
+            LineageNodeType.KNOWLEDGE_OBJECT, knowledge_id,
+            LineageNodeType.DOCUMENT, document_id, ctx.correlation_id,
+        )
+        return manifest
+
     async def _handle_failure(self, ctx: ProcessingContext, job, doc, stage: str, exc: BaseException) -> None:
         root_exc = exc.__cause__ or exc
         # A validated-but-broken Knowledge Object is a deterministic failure —
@@ -355,7 +423,10 @@ class ProcessingOrchestrator:
             backoff = self._retry_policy.backoff_seconds(ctx.attempt)
             await self._repo.job_finished(job, "failed", error_message)
             await self._repo.set_processing_status(doc, "queued")
-            next_job = await self._repo.create_job(doc.id, attempt=ctx.attempt + 1, profile=ctx.profile_name)
+            next_job = await self._repo.create_job(
+                doc.id, attempt=ctx.attempt + 1, profile=ctx.profile_name,
+                correlation_id=ctx.correlation_id,
+            )
             await enqueue_processing_job(doc.id, next_job.id, ctx.attempt + 1)
             await self._events.publish(job.id, ProcessingEvent(
                 event_type=ProcessingEventType.STAGE_RETRYING,
