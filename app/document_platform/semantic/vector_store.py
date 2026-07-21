@@ -137,7 +137,39 @@ class ChromaVectorStoreProvider(AbstractVectorStore):
         self, collection: str, query_embedding: list[float],
         top_k: int = 10, filters: Optional[dict] = None,
     ) -> list[VectorSearchHit]:
-        raise NotImplementedError("Retrieval is out of scope for Phase 3 (see Phase 4).")
+        # Implemented in Phase 4 — this was the deliberately-stubbed seam the
+        # Phase 3 contract defined for the Retrieval Engine to fill in.
+        try:
+            client = await self._get_client()
+            coll = await client.get_collection(name=collection)
+            where = None
+            if filters:
+                clauses = [{k: {"$eq": v}} for k, v in filters.items()]
+                where = clauses[0] if len(clauses) == 1 else {"$and": clauses}
+            res = await coll.query(
+                query_embeddings=[query_embedding],
+                n_results=top_k,
+                where=where,
+                include=["documents", "metadatas", "distances"],
+            )
+            ids = (res.get("ids") or [[]])[0]
+            docs = (res.get("documents") or [[]])[0]
+            metas = (res.get("metadatas") or [[]])[0]
+            dists = (res.get("distances") or [[]])[0]
+            hits = []
+            for i, hit_id in enumerate(ids):
+                # Collections are created with hnsw:space=cosine, so
+                # distance = 1 - cosine_similarity; invert for a score.
+                score = 1.0 - float(dists[i]) if i < len(dists) else 0.0
+                hits.append(VectorSearchHit(
+                    id=hit_id,
+                    text=docs[i] if i < len(docs) else "",
+                    score=score,
+                    metadata=dict(metas[i]) if i < len(metas) and metas[i] else {},
+                ))
+            return hits
+        except Exception as e:
+            raise VectorStoreError(f"Chroma search failed for '{collection}': {e}") from e
 
 
 def get_vector_store(provider_name: str | None = None) -> AbstractVectorStore:

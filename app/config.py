@@ -121,6 +121,19 @@ class Settings(BaseSettings):
     dip_embedding_max_retries: int = 3
     dip_vector_store_provider: Literal["chroma"] = "chroma"
 
+    # ── Conversational Knowledge Intelligence (Phase 4) ──────────────────────────
+    # Endpoint/timeout for the ollama LLM provider reuse ollama_host /
+    # ollama_timeout / ollama_num_ctx / ollama_num_predict above.
+    dip_llm_provider: Literal["ollama"] = "ollama"
+    dip_chat_model: str = "qwen3:8b"
+    dip_chat_temperature: float = 0.2
+    dip_llm_max_retries: int = 2
+    dip_retrieval_top_k: int = 8
+    dip_context_token_budget: int = 4000
+    dip_history_max_turns: int = 6
+    # Below this best-hit similarity the platform refuses rather than answers.
+    dip_grounding_min_score: float = 0.35
+
     @field_validator("ollama_host", mode="before")
     @classmethod
     def normalize_ollama_host(cls, v: str) -> str:

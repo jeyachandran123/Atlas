@@ -1115,3 +1115,100 @@ class SemanticIndex(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONVERSATIONAL KNOWLEDGE INTELLIGENCE (Phase 4 — grounded Q&A over knowledge)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class DipConversation(Base):
+    """A knowledge-grounded conversation (Objective 1/13). Deliberately
+    separate from the legacy chat `conversations` table — that system is
+    frozen and serves a different product surface."""
+
+    __tablename__ = "dip_conversations"
+    __table_args__ = (Index("ix_dip_conversations_user", "user_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    org_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, default=_uuid)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
+    )
+
+
+class DipConversationTurn(Base):
+    """One question → grounded answer exchange, with its citations and the
+    full metric set (Objective 15) persisted on the row. CASCADE FKs from
+    day one — the Phase 3 cross-process race taught that referential
+    cleanup belongs to the database, not application statement ordering."""
+
+    __tablename__ = "dip_conversation_turns"
+    __table_args__ = (Index("ix_dip_turns_conversation", "conversation_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("dip_conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    answer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    intent: Mapped[str] = mapped_column(String(30), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="processing")
+    grounded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    grounding_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    refusal_reason: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    citations_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    document_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)  # scope, if any
+
+    # Objective 15 — per-turn metrics
+    retrieval_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    ranking_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    llm_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    streaming_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    prompt_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    cost_estimate: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    citation_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    llm_provider: Mapped[str] = mapped_column(String(30), nullable=False, default="")
+    llm_model: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, default=_uuid)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ConversationEventRecord(Base):
+    """Append-only Conversation event log (Objective 14) — the analytics/
+    monitoring stream, distinct from processing/knowledge/embedding events."""
+
+    __tablename__ = "conversation_events"
+    __table_args__ = (Index("ix_conversation_events_turn", "turn_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("dip_conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    turn_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="completed")
+    duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    detail_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, default=_uuid)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )

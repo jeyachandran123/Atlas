@@ -27,6 +27,9 @@ class CapabilityCategory(str, Enum):
     VECTOR_STORE = "vector_store"           # Phase 3 (Objective 15)
     SEMANTIC_INDEX = "semantic_index"       # Phase 3 (Objective 15)
     RETRIEVER = "retriever"
+    RANKER = "ranker"                       # Phase 4 (Objective 5)
+    LLM_PROVIDER = "llm_provider"           # Phase 4 (Objective 9)
+    INTENT_CLASSIFIER = "intent_classifier"  # Phase 4 (Objective 2)
     REASONER = "reasoner"
     GENERATOR = "generator"
     STORAGE_PROVIDER = "storage_provider"
@@ -99,6 +102,7 @@ def get_capability_registry() -> CapabilityRegistry:
         _registry = CapabilityRegistry()
         _register_document_platform_capabilities(_registry)
         _register_semantic_platform_capabilities(_registry)
+        _register_conversation_platform_capabilities(_registry)
     return _registry
 
 
@@ -195,8 +199,9 @@ def _register_semantic_platform_capabilities(registry: CapabilityRegistry) -> No
             name=vector_store.name,
             category=CapabilityCategory.VECTOR_STORE,
             version="1.0.0",
-            supported_features=frozenset({"upsert", "delete", "count", "collection_exists"}),
-            limitations=frozenset({"search_not_implemented"}),  # Phase 4
+            supported_features=frozenset(
+                {"upsert", "delete", "count", "collection_exists", "search"}  # search: Phase 4
+            ),
         ))
     except Exception:
         pass
@@ -205,7 +210,49 @@ def _register_semantic_platform_capabilities(registry: CapabilityRegistry) -> No
         name="dip_semantic_index",
         category=CapabilityCategory.SEMANTIC_INDEX,
         version="1.0.0",
-        supported_features=frozenset({"create", "register", "stats"}),
-        limitations=frozenset({"query_not_implemented"}),  # Phase 4
+        supported_features=frozenset({"create", "register", "stats", "query"}),  # query: Phase 4
         configuration={"vector_store_provider": cfg.dip_vector_store_provider},
+    ))
+
+
+def _register_conversation_platform_capabilities(registry: CapabilityRegistry) -> None:
+    """Registers Phase 4's providers: the LLM provider, the semantic
+    retriever, the multi-signal ranker, and the intent classifier."""
+    from app.config import get_settings
+
+    cfg = get_settings()
+
+    try:
+        from app.document_platform.conversation.llm import get_llm_provider
+        provider = get_llm_provider()
+        registry.register(PlatformCapability(
+            name=provider.name,
+            category=CapabilityCategory.LLM_PROVIDER,
+            version="1.0.0",
+            supported_features=frozenset({"generate", "stream"}),
+            configuration={"model": provider.model_name},
+        ))
+    except Exception:
+        pass  # never block startup on provider construction
+
+    registry.register(PlatformCapability(
+        name="semantic",
+        category=CapabilityCategory.RETRIEVER,
+        version="1.0.0",
+        supported_features=frozenset(
+            {"semantic_search", "metadata_filtering", "version_aware", "health_aware"}
+        ),
+        configuration={"vector_store_provider": cfg.dip_vector_store_provider},
+    ))
+    registry.register(PlatformCapability(
+        name="multi_signal",
+        category=CapabilityCategory.RANKER,
+        version="1.0.0",
+        supported_features=frozenset({"similarity", "health", "freshness", "version"}),
+    ))
+    registry.register(PlatformCapability(
+        name="rule_based",
+        category=CapabilityCategory.INTENT_CLASSIFIER,
+        version="1.0.0",
+        supported_features=frozenset({"deterministic", "pluggable"}),
     ))
