@@ -74,14 +74,71 @@ class GenerationGateway:
         artifact = await self._repo.create_artifact(
             user_id, org_id, prompt, format_name, document_id,
         )
+        result = artifact
+        async for kind, payload in self._pipeline(
+            artifact, builder, prompt, org_id, document_id,
+        ):
+            if kind in ("ready", "failed"):
+                result = payload
+        return result
+
+    async def generate_stream(
+        self, user_id: str, org_id: str, prompt: str, format_name: str,
+        document_id: str | None = None,
+    ):
+        """SSE variant: emits live per-stage progress (planning → shaping →
+        building → storing) so the UI can show what is actually happening,
+        then a final `done` with the artifact summary. Same pipeline, same
+        lifecycle, same registry rows as generate()."""
+        import json as _json
+
+        def fmt(event: str, payload: dict) -> str:
+            return f"event: {event}\ndata: {_json.dumps(payload)}\n\n"
+
+        try:
+            builder = self._factory.get(format_name)
+        except Exception as e:
+            yield fmt("error", {"message": str(e)})
+            return
+        artifact = await self._repo.create_artifact(
+            user_id, org_id, prompt, format_name, document_id,
+        )
+        yield fmt("meta", {"artifact_id": artifact.id,
+                           "correlation_id": artifact.correlation_id,
+                           "format": format_name})
+        final = artifact
+        async for kind, payload in self._pipeline(
+            artifact, builder, prompt, org_id, document_id,
+        ):
+            if kind == "stage":
+                yield fmt("stage", payload)
+            else:
+                final = payload
+        yield fmt("done", {
+            "artifact_id": final.id, "status": final.status,
+            "title": final.title, "filename": final.filename,
+            "format": final.format, "size_bytes": final.size_bytes,
+            "checksum": final.checksum, "grounded": final.grounded,
+            "error": final.error, "total_ms": final.total_ms,
+        })
+
+    async def _pipeline(
+        self, artifact, builder, prompt: str, org_id: str,
+        document_id: str | None,
+    ):
+        """The one generation pipeline. Yields ("stage", {stage, detail})
+        progress tuples, then exactly one terminal ("ready"|"failed",
+        artifact). Owns lifecycle transitions, events, and the commit."""
         collector = GenerationMetricsCollector()
         await self._publish(artifact, GenerationEventType.GENERATION_REQUESTED,
-                            detail={"format": format_name})
+                            detail={"format": artifact.format})
         try:
             # ── Plan (LLM decides WHAT) ─────────────────────────────────────
+            yield "stage", {"stage": "planning",
+                            "detail": {"note": "AI is planning the document content"}}
             await self._repo.transition(artifact, GenerationLifecycle.PLANNING)
             with collector.timed("planning_ms"):
-                plan = await self._planner.plan(prompt, org_id, format_name, document_id)
+                plan = await self._planner.plan(prompt, org_id, artifact.format, document_id)
             collector.metrics.prompt_tokens = plan.prompt_tokens
             collector.metrics.completion_tokens = plan.completion_tokens
             await self._publish(artifact, GenerationEventType.PLAN_COMPLETED,
@@ -90,6 +147,8 @@ class GenerationGateway:
                                         "sources": len(plan.source_knowledge_ids)})
 
             # ── Transform (engine decides HOW data is shaped) ───────────────
+            yield "stage", {"stage": "shaping_content",
+                            "detail": {"grounded": plan.grounded}}
             await self._repo.transition(artifact, GenerationLifecycle.TRANSFORMING)
             with collector.timed("transform_ms"):
                 model = self._transformer.transform(plan.spec)
@@ -99,6 +158,9 @@ class GenerationGateway:
                                         "tables": len(model.tables)})
 
             # ── Build (builder decides HOW the file is written) ─────────────
+            yield "stage", {"stage": "building_file",
+                            "detail": {"format": builder.format_name,
+                                       "sections": len(model.sections)}}
             await self._repo.transition(artifact, GenerationLifecycle.BUILDING)
             with collector.timed("build_ms"):
                 data = builder.build(model)
@@ -110,6 +172,8 @@ class GenerationGateway:
                                         "size_bytes": len(data)})
 
             # ── Store (storage decides WHERE) ───────────────────────────────
+            yield "stage", {"stage": "storing",
+                            "detail": {"size_bytes": len(data)}}
             await self._repo.transition(artifact, GenerationLifecycle.STORING)
             storage_key = f"{org_id}/{artifact.id}.{builder.extension}"
             with collector.timed("store_ms"):
@@ -134,7 +198,7 @@ class GenerationGateway:
                                 duration_ms=collector.metrics.total_ms,
                                 detail={"checksum": checksum})
             await self._db.commit()
-            return artifact
+            yield "ready", artifact
         except (PlanningError, TransformationError, Exception) as e:
             if not isinstance(e, (PlanningError, TransformationError)):
                 logger.exception(f"Generation {artifact.id} crashed: {e}")
@@ -145,7 +209,7 @@ class GenerationGateway:
             await self._publish(artifact, GenerationEventType.GENERATION_FAILED,
                                 status="failed", detail={"error": str(e)[:500]})
             await self._db.commit()
-            return artifact
+            yield "failed", artifact
 
     # ── Download Service (Objective 13) ──────────────────────────────────────
 

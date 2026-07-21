@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
@@ -62,6 +63,25 @@ async def generate(
     except UnknownFormatError as e:
         raise HTTPException(status_code=422, detail=str(e))
     return _artifact_out(artifact)
+
+
+@router.post("/stream")
+async def generate_stream(
+    body: GenerateIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """SSE progress stream: meta → stage* → done. Same pipeline, registry,
+    and lifecycle as POST /generations — plus live visibility."""
+    gateway = GenerationGateway(db)
+    return StreamingResponse(
+        gateway.generate_stream(
+            current_user.id, current_user.org_id, body.prompt,
+            body.format, body.document_id,
+        ),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("", response_model=list[ArtifactOut])
