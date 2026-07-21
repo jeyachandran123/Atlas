@@ -1212,3 +1212,83 @@ class ConversationEventRecord(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INTELLIGENT CONTENT GENERATION (Phase 5 — planned artifacts, built files)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class GenerationArtifact(Base):
+    """
+    Generation Registry + Manifest in one row (Objectives 14/15): what was
+    requested, how it was planned/built (versions, builder, checksum), where
+    the bytes live, and the full metric set. The file bytes live in blob
+    storage, never in Postgres — same rule as documents and vectors.
+    """
+
+    __tablename__ = "generation_artifacts"
+    __table_args__ = (Index("ix_generation_artifacts_user", "user_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    org_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    format: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="requested")
+
+    title: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    filename: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    storage_key: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    content_type: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    spec_version: Mapped[str] = mapped_column(String(20), nullable=False, default="1.0.0")
+    builder_name: Mapped[str] = mapped_column(String(30), nullable=False, default="")
+    builder_version: Mapped[str] = mapped_column(String(20), nullable=False, default="1.0.0")
+    schema_version: Mapped[str] = mapped_column(String(20), nullable=False, default="1.0.0")
+
+    grounded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    source_document_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    source_knowledge_ids_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    planning_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    transform_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    build_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    store_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    prompt_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    llm_provider: Mapped[str] = mapped_column(String(30), nullable=False, default="")
+    llm_model: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, default=_uuid)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class GenerationEventRecord(Base):
+    """Append-only Generation event log (Objective 16)."""
+
+    __tablename__ = "generation_events"
+    __table_args__ = (Index("ix_generation_events_artifact", "artifact_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    artifact_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("generation_artifacts.id", ondelete="CASCADE"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="completed")
+    duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    detail_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, default=_uuid)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )

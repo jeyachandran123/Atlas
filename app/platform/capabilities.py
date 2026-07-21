@@ -103,6 +103,7 @@ def get_capability_registry() -> CapabilityRegistry:
         _register_document_platform_capabilities(_registry)
         _register_semantic_platform_capabilities(_registry)
         _register_conversation_platform_capabilities(_registry)
+        _register_generation_platform_capabilities(_registry)
     return _registry
 
 
@@ -256,3 +257,22 @@ def _register_conversation_platform_capabilities(registry: CapabilityRegistry) -
         version="1.0.0",
         supported_features=frozenset({"deterministic", "pluggable"}),
     ))
+
+
+def _register_generation_platform_capabilities(registry: CapabilityRegistry) -> None:
+    """Registers Phase 5's file builders (Objective 19 — Builder Capability
+    Registry) under the GENERATOR category reserved back in Phase 2.6. Each
+    builder self-describes its format, version, and feature set."""
+    try:
+        from app.document_platform.generation.builders.factory import get_builder_factory
+        for builder in get_builder_factory().all():
+            registry.register(PlatformCapability(
+                name=builder.format_name,
+                category=CapabilityCategory.GENERATOR,
+                version=builder.version,
+                supported_features=frozenset(builder.features),
+                configuration={"extension": builder.extension,
+                               "content_type": builder.content_type},
+            ))
+    except Exception:
+        pass  # builder construction must never block startup

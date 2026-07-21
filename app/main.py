@@ -28,6 +28,7 @@ from app.api.v1.chat.router import router as chat_router
 from app.api.v1.conversations.router import router as conversations_router
 from app.api.v1.documents.router import router as documents_router
 from app.api.v1.files.router import router as files_router
+from app.api.v1.generations.router import router as generations_router
 from app.api.v1.platform.router import router as platform_router
 from app.api.v1.git.router import router as git_router
 from app.api.v1.indexing.router import router as indexing_router
@@ -184,6 +185,7 @@ def create_app() -> FastAPI:
     app.include_router(chat_router, prefix=API_PREFIX)
     app.include_router(documents_router, prefix=API_PREFIX)
     app.include_router(conversations_router, prefix=API_PREFIX)
+    app.include_router(generations_router, prefix=API_PREFIX)
     app.include_router(files_router, prefix=API_PREFIX)
     app.include_router(platform_router, prefix=API_PREFIX)
     app.include_router(git_router, prefix=API_PREFIX)
