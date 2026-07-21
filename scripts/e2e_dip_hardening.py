@@ -119,8 +119,12 @@ with httpx.Client(timeout=120) as c:
     check("processing_version populated", ko.get("processing_version") == "1.0.0", str(ko.get("processing_version")))
     check("schema_version populated", ko.get("schema_version") == "1.0.0", str(ko.get("schema_version")))
     check("registry status == ready", ko.get("status") == "ready", str(ko.get("status")))
-    check("embedding_status == not_started (future phase not yet run)",
-          ko.get("embedding_status") == "not_started", str(ko.get("embedding_status")))
+    # Phase 3 is now live: embedding_status is asynchronously driven by the
+    # semantic layer (not_started -> generating -> completed/failed) rather
+    # than a permanent placeholder — any valid status is correct here.
+    check("embedding_status is a valid Phase 3 lifecycle value",
+          ko.get("embedding_status") in ("not_started", "generating", "completed", "failed"),
+          str(ko.get("embedding_status")))
     check("index_status == not_started", ko.get("index_status") == "not_started")
     check("retrieval_status == not_started", ko.get("retrieval_status") == "not_started")
     check("generation_status == not_started", ko.get("generation_status") == "not_started")

@@ -24,6 +24,8 @@ class CapabilityCategory(str, Enum):
     OCR_ENGINE = "ocr_engine"
     CHUNK_BUILDER = "chunk_builder"
     EMBEDDING_PROVIDER = "embedding_provider"
+    VECTOR_STORE = "vector_store"           # Phase 3 (Objective 15)
+    SEMANTIC_INDEX = "semantic_index"       # Phase 3 (Objective 15)
     RETRIEVER = "retriever"
     REASONER = "reasoner"
     GENERATOR = "generator"
@@ -96,6 +98,7 @@ def get_capability_registry() -> CapabilityRegistry:
     if _registry is None:
         _registry = CapabilityRegistry()
         _register_document_platform_capabilities(_registry)
+        _register_semantic_platform_capabilities(_registry)
     return _registry
 
 
@@ -158,4 +161,51 @@ def _register_document_platform_capabilities(registry: CapabilityRegistry) -> No
         supported_features=frozenset({"put", "get", "delete", "exists"} | (
             {"signed_url"} if cfg.storage_backend == "s3" else set()
         )),
+    ))
+
+
+def _register_semantic_platform_capabilities(registry: CapabilityRegistry) -> None:
+    """
+    Registers Phase 3's providers (Objective 15). The embedding provider and
+    vector store self-describe their own name/version; nothing here
+    hardcodes which one is active beyond reading it from config, exactly
+    like storage_backend above.
+    """
+    from app.config import get_settings
+    from app.document_platform.semantic.providers import get_embedding_provider
+    from app.document_platform.semantic.vector_store import get_vector_store
+
+    cfg = get_settings()
+
+    try:
+        provider = get_embedding_provider()
+        registry.register(PlatformCapability(
+            name=provider.name,
+            category=CapabilityCategory.EMBEDDING_PROVIDER,
+            version=provider.version,
+            supported_features=frozenset({"embed"}),
+            configuration={"model": provider.model_name, "timeout_seconds": provider.timeout_seconds},
+        ))
+    except Exception:
+        pass  # provider construction depends on runtime config; never block startup
+
+    try:
+        vector_store = get_vector_store()
+        registry.register(PlatformCapability(
+            name=vector_store.name,
+            category=CapabilityCategory.VECTOR_STORE,
+            version="1.0.0",
+            supported_features=frozenset({"upsert", "delete", "count", "collection_exists"}),
+            limitations=frozenset({"search_not_implemented"}),  # Phase 4
+        ))
+    except Exception:
+        pass
+
+    registry.register(PlatformCapability(
+        name="dip_semantic_index",
+        category=CapabilityCategory.SEMANTIC_INDEX,
+        version="1.0.0",
+        supported_features=frozenset({"create", "register", "stats"}),
+        limitations=frozenset({"query_not_implemented"}),  # Phase 4
+        configuration={"vector_store_provider": cfg.dip_vector_store_provider},
     ))

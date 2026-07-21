@@ -114,6 +114,13 @@ class Settings(BaseSettings):
     dip_max_file_size_mb: int = 50
     dip_signed_url_ttl_seconds: int = 300
 
+    # ── Semantic Intelligence Layer (Phase 3) ────────────────────────────────────
+    # Model/endpoint/timeout for the ollama provider reuse the existing
+    # ollama_embed_model / ollama_timeout settings above — no duplication.
+    dip_embedding_provider: Literal["ollama"] = "ollama"
+    dip_embedding_max_retries: int = 3
+    dip_vector_store_provider: Literal["chroma"] = "chroma"
+
     @field_validator("ollama_host", mode="before")
     @classmethod
     def normalize_ollama_host(cls, v: str) -> str:

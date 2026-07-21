@@ -944,3 +944,174 @@ class KnowledgeLineageEdge(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SEMANTIC INTELLIGENCE LAYER (Phase 3 — embeddings, vectors, semantic index)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class EmbeddingJob(Base):
+    """One embedding run for one Knowledge Object (retries create new attempts).
+    Mirrors DocumentProcessingJob exactly — same job-tracking pattern."""
+
+    __tablename__ = "embedding_jobs"
+    __table_args__ = (Index("ix_embedding_jobs_knowledge", "knowledge_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    knowledge_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_objects.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    current_stage: Mapped[str] = mapped_column(String(30), nullable=False, default="")
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    dead_lettered: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, default=_uuid)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+
+class EmbeddingEventRecord(Base):
+    """Append-only Semantic event log (Objective 11) — distinct from both
+    DocumentProcessingEvent (pipeline stages) and KnowledgeEventRecord
+    (content lifecycle)."""
+
+    __tablename__ = "embedding_events"
+    __table_args__ = (Index("ix_embedding_events_job", "job_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("embedding_jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    knowledge_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    embedding_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="completed")
+    duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    detail_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+
+class EmbeddingRecord(Base):
+    """
+    Embedding Registry (Objective 6) — ONE ROW PER CHUNK EMBEDDING. The
+    vector floats themselves live in the vector store, never in Postgres;
+    this row is metadata only (matches how Document tracks S3 keys, not
+    file bytes). Multiple versions can coexist for the same chunk
+    (Objective 13) — reprocessing creates new rows, never overwrites.
+    """
+
+    __tablename__ = "embedding_records"
+    __table_args__ = (
+        Index("ix_embedding_records_knowledge", "knowledge_id"),
+        Index("ix_embedding_records_chunk", "chunk_id"),
+        UniqueConstraint("chunk_id", "embedding_version", name="uq_embedding_chunk_version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    knowledge_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_objects.id", ondelete="CASCADE"), nullable=False
+    )
+    chunk_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("document_chunks.id", ondelete="CASCADE"), nullable=False
+    )
+
+    embedding_version: Mapped[str] = mapped_column(String(20), nullable=False, default="1.0.0")
+    provider_name: Mapped[str] = mapped_column(String(30), nullable=False)
+    provider_version: Mapped[str] = mapped_column(String(20), nullable=False, default="1.0.0")
+    model_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    model_version: Mapped[str] = mapped_column(String(20), nullable=False, default="1.0.0")
+    dimension: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    vector_checksum: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    quality_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    migration_status: Mapped[str] = mapped_column(String(20), nullable=False, default="not_started")
+
+    latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, default=_uuid)
+
+    generated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
+    )
+
+
+class SemanticManifest(Base):
+    """
+    Semantic Registry (Objective 8) — one row per Knowledge Object,
+    aggregating its embedding_records and pointing at the vector store/index
+    that hold them. Knowledge Registry owns content; this owns semantic
+    representation. Knowledge never references vectors directly.
+    """
+
+    __tablename__ = "semantic_manifests"
+    __table_args__ = (Index("ix_semantic_manifests_knowledge", "knowledge_id", unique=True),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    knowledge_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_objects.id", ondelete="CASCADE"), nullable=False
+    )
+
+    vector_store_provider: Mapped[str] = mapped_column(String(30), nullable=False, default="")
+    collection_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    index_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+
+    embedding_version: Mapped[str] = mapped_column(String(20), nullable=False, default="1.0.0")
+    provider_name: Mapped[str] = mapped_column(String(30), nullable=False, default="")
+    model_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    dimension: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    embedding_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    current_index_version: Mapped[str] = mapped_column(String(20), nullable=False, default="1.0.0")
+    similarity_strategy: Mapped[str] = mapped_column(String(30), nullable=False, default="cosine")
+    ranking_strategy: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)     # future
+    retrieval_strategy: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)   # future
+
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, default=_uuid)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
+    )
+
+
+class SemanticIndex(Base):
+    """
+    Semantic Index management (Objective 9) — the index itself as a
+    first-class entity, separate from any single Knowledge Object's
+    manifest. One row per (collection, embedding_version) combination.
+    Indexing only — no retrieval/query logic here.
+    """
+
+    __tablename__ = "semantic_indexes"
+    __table_args__ = (
+        UniqueConstraint("collection_name", "embedding_version", name="uq_index_collection_version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    index_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    collection_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    vector_store_provider: Mapped[str] = mapped_column(String(30), nullable=False)
+    embedding_version: Mapped[str] = mapped_column(String(20), nullable=False, default="1.0.0")
+    dimension: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    vector_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="creating")
+    health_status: Mapped[str] = mapped_column(String(20), nullable=False, default="healthy")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
+    )

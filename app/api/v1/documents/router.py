@@ -45,6 +45,13 @@ from app.document_platform.schemas import (
     ReprocessResponse,
     UploadResponse,
 )
+from app.document_platform.semantic.schemas import (
+    EmbedTriggerResponse,
+    EmbeddingListOut,
+    EmbeddingRecordOut,
+    SemanticHealthOut,
+    SemanticManifestOut,
+)
 from app.document_platform.service import (
     DocumentNotFoundError,
     DocumentPlatformService,
@@ -430,6 +437,156 @@ async def get_lineage(
         document_id=document_id,
         chain=[LineageStepOut(**step) for step in chain],
     )
+
+
+@router.get("/{document_id}/semantic", response_model=SemanticManifestOut)
+async def get_semantic_manifest(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    service: DocumentPlatformService = Depends(get_document_platform_service),
+):
+    """The semantic representation of this document's Knowledge Object (Phase 3)."""
+    from app.document_platform.processing.persistence import ProcessingRepository
+    from app.document_platform.semantic.repository import SemanticRepository
+
+    try:
+        await service.get(current_user.id, document_id)  # ownership check
+    except DocumentNotFoundError:
+        raise HTTPException(404, detail={"code": "not_found", "message": "Document not found."})
+
+    ko = await ProcessingRepository(db).knowledge_for(document_id)
+    if ko is None:
+        raise HTTPException(409, detail={"code": "not_ready", "message": "No knowledge object yet."})
+
+    manifest = await SemanticRepository(db).get_semantic_manifest(ko.id)
+    if manifest is None:
+        raise HTTPException(
+            409, detail={"code": "not_ready", "message": "Embedding not generated yet — check /processing status."},
+        )
+    return SemanticManifestOut(
+        knowledge_id=ko.id, document_id=document_id,
+        vector_store_provider=manifest.vector_store_provider,
+        collection_name=manifest.collection_name, index_name=manifest.index_name,
+        embedding_version=manifest.embedding_version, provider_name=manifest.provider_name,
+        model_name=manifest.model_name, dimension=manifest.dimension,
+        embedding_count=manifest.embedding_count, status=manifest.status,
+        similarity_strategy=manifest.similarity_strategy,
+        ranking_strategy=manifest.ranking_strategy, retrieval_strategy=manifest.retrieval_strategy,
+        correlation_id=manifest.correlation_id,
+        created_at=manifest.created_at, updated_at=manifest.updated_at,
+    )
+
+
+@router.get("/{document_id}/embeddings", response_model=EmbeddingListOut)
+async def list_embeddings(
+    document_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    service: DocumentPlatformService = Depends(get_document_platform_service),
+):
+    """The per-chunk embedding records for this document (Phase 3)."""
+    from app.document_platform.processing.persistence import ProcessingRepository
+    from app.document_platform.semantic.repository import SemanticRepository
+
+    try:
+        await service.get(current_user.id, document_id)
+    except DocumentNotFoundError:
+        raise HTTPException(404, detail={"code": "not_found", "message": "Document not found."})
+
+    ko = await ProcessingRepository(db).knowledge_for(document_id)
+    if ko is None:
+        raise HTTPException(409, detail={"code": "not_ready", "message": "No knowledge object yet."})
+
+    records, total = await SemanticRepository(db).list_embeddings_for_knowledge(ko.id, limit, offset)
+    return EmbeddingListOut(
+        knowledge_id=ko.id,
+        items=[
+            EmbeddingRecordOut(
+                id=r.id, chunk_id=r.chunk_id, embedding_version=r.embedding_version,
+                provider_name=r.provider_name, model_name=r.model_name, dimension=r.dimension,
+                status=r.status, quality_score=r.quality_score, latency_ms=r.latency_ms,
+                vector_checksum=r.vector_checksum, created_at=r.created_at,
+            )
+            for r in records
+        ],
+        total=total, limit=limit, offset=offset,
+    )
+
+
+@router.get("/{document_id}/semantic-health", response_model=SemanticHealthOut)
+async def get_semantic_health(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    service: DocumentPlatformService = Depends(get_document_platform_service),
+):
+    """Computed operational health of this document's semantic representation."""
+    from app.document_platform.processing.persistence import ProcessingRepository
+    from app.document_platform.semantic.health import SemanticHealthEvaluator
+    from app.document_platform.semantic.repository import SemanticRepository
+    from app.platform.capabilities import get_capability_registry
+
+    try:
+        await service.get(current_user.id, document_id)
+    except DocumentNotFoundError:
+        raise HTTPException(404, detail={"code": "not_found", "message": "Document not found."})
+
+    proc_repo = ProcessingRepository(db)
+    ko = await proc_repo.knowledge_for(document_id)
+    if ko is None:
+        raise HTTPException(409, detail={"code": "not_ready", "message": "No knowledge object yet."})
+
+    sem_repo = SemanticRepository(db)
+    manifest = await sem_repo.get_semantic_manifest(ko.id)
+    job = await sem_repo.latest_job_for(ko.id)
+
+    if manifest is None and job is None:
+        raise HTTPException(409, detail={"code": "not_ready", "message": "Embedding not started yet."})
+
+    evaluator = SemanticHealthEvaluator(get_capability_registry())
+    report = evaluator.evaluate(
+        lifecycle_status=manifest.status if manifest else "queued",
+        provider_name=manifest.provider_name if manifest else "",
+        provider_version="1.0.0",
+        model_name=manifest.model_name if manifest else "",
+        job_status=job.status if job else "unknown",
+        job_error=job.error if job else None,
+    )
+    return SemanticHealthOut(knowledge_id=ko.id, status=report.status.value, reasons=report.reasons)
+
+
+@router.post("/{document_id}/embed", response_model=EmbedTriggerResponse)
+async def trigger_embedding(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    service: DocumentPlatformService = Depends(get_document_platform_service),
+):
+    """Manually (re-)trigger embedding generation — mirrors /process for the semantic layer."""
+    from app.document_platform.processing.persistence import ProcessingRepository
+    from app.document_platform.semantic.queue import enqueue_embedding_job
+    from app.document_platform.semantic.repository import SemanticRepository
+
+    try:
+        await service.get(current_user.id, document_id)
+    except DocumentNotFoundError:
+        raise HTTPException(404, detail={"code": "not_found", "message": "Document not found."})
+
+    ko = await ProcessingRepository(db).knowledge_for(document_id)
+    if ko is None:
+        raise HTTPException(409, detail={"code": "not_ready", "message": "No knowledge object yet — process the document first."})
+
+    sem_repo = SemanticRepository(db)
+    prior = await sem_repo.latest_job_for(ko.id)
+    attempt = (prior.attempt + 1) if prior else 1
+    correlation_id = prior.correlation_id if prior else None
+    job = await sem_repo.create_job(ko.id, attempt=attempt, correlation_id=correlation_id)
+    await db.commit()  # commit before publish — same discipline as document processing
+    await enqueue_embedding_job(ko.id, job.id, attempt)
+    return EmbedTriggerResponse(knowledge_id=ko.id, job_id=job.id)
 
 
 @router.post("/{document_id}/process", response_model=ReprocessResponse)

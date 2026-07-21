@@ -136,6 +136,38 @@ services:
     networks:
       - aic_net
 
+  # ── Embedding Worker (Semantic Intelligence Layer, Phase 3) ──────────────────
+  embedding_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    image: ai-coding-assistant:latest
+    command: ["python", "-m", "app.workers.embedding_worker"]
+    healthcheck:
+      disable: true
+    container_name: aic_embedding_worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: postgres
+      REDIS_HOST: redis
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: 8000
+      OLLAMA_HOST: http://host.docker.internal:11434
+    volumes:
+      - ./app:/app/app:ro       # live reload in dev
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      chromadb:
+        condition: service_started
+    networks:
+      - aic_net
+
   # ── PostgreSQL ──────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
