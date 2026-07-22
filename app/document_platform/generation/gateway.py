@@ -41,6 +41,14 @@ STORAGE_PREFIX = "generated_artifacts"
 _SLUG = re.compile(r"[^a-z0-9]+")
 
 
+def _scalar_source(document_id: str | list[str] | None) -> str | None:
+    """The artifact row's source_document_id column stores one id; multi-doc
+    grounding scope flows through to retrieval as-is."""
+    if isinstance(document_id, list):
+        return document_id[0] if len(document_id) == 1 else None
+    return document_id
+
+
 def _slugify(title: str) -> str:
     return _SLUG.sub("-", title.lower()).strip("-")[:80] or "artifact"
 
@@ -68,11 +76,11 @@ class GenerationGateway:
 
     async def generate(
         self, user_id: str, org_id: str, prompt: str, format_name: str,
-        document_id: str | None = None,
+        document_id: str | list[str] | None = None,
     ):
         builder = self._factory.get(format_name)   # UnknownFormatError → 422 upstream
         artifact = await self._repo.create_artifact(
-            user_id, org_id, prompt, format_name, document_id,
+            user_id, org_id, prompt, format_name, _scalar_source(document_id),
         )
         result = artifact
         async for kind, payload in self._pipeline(
@@ -84,7 +92,7 @@ class GenerationGateway:
 
     async def generate_stream(
         self, user_id: str, org_id: str, prompt: str, format_name: str,
-        document_id: str | None = None,
+        document_id: str | list[str] | None = None,
     ):
         """SSE variant: emits live per-stage progress (planning → shaping →
         building → storing) so the UI can show what is actually happening,
@@ -101,7 +109,7 @@ class GenerationGateway:
             yield fmt("error", {"message": str(e)})
             return
         artifact = await self._repo.create_artifact(
-            user_id, org_id, prompt, format_name, document_id,
+            user_id, org_id, prompt, format_name, _scalar_source(document_id),
         )
         yield fmt("meta", {"artifact_id": artifact.id,
                            "correlation_id": artifact.correlation_id,
@@ -124,7 +132,7 @@ class GenerationGateway:
 
     async def _pipeline(
         self, artifact, builder, prompt: str, org_id: str,
-        document_id: str | None,
+        document_id: str | list[str] | None,
     ):
         """The one generation pipeline. Yields ("stage", {stage, detail})
         progress tuples, then exactly one terminal ("ready"|"failed",

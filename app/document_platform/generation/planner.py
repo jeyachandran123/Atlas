@@ -76,7 +76,7 @@ class GenerationPlanner:
 
     async def plan(
         self, prompt: str, org_id: str, format_name: str,
-        document_id: Optional[str] = None,
+        document_id: str | list[str] | None = None,
     ) -> GenerationPlan:
         sources_text = ""
         grounded = False

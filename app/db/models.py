@@ -1292,3 +1292,188 @@ class GenerationEventRecord(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# KNOWLEDGE WORKSPACE (Phase 5.5 — the Product Experience Layer)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class Workspace(Base):
+    """The top-level product object. A thin grouping/orchestration entity —
+    all content stays owned by the frozen platforms; the workspace links it."""
+
+    __tablename__ = "workspaces"
+    __table_args__ = (Index("ix_workspaces_user", "user_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    icon: Mapped[str] = mapped_column(String(30), nullable=False, default="folder")
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, default=_uuid)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
+    )
+
+
+class WorkspaceDocument(Base):
+    """Document ↔ workspace link. document_id is UNIQUE: every document
+    belongs to exactly one workspace."""
+
+    __tablename__ = "workspace_documents"
+    __table_args__ = (Index("ix_workspace_documents_ws", "workspace_id", "added_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    workspace_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False, unique=True,
+    )
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+
+class WorkspaceConversation(Base):
+    """Conversation ↔ workspace link, plus the workspace-owned display title
+    (auto-generated after the first answer; user-renamable). The frozen
+    dip_conversations.title stays untouched as the initial title."""
+
+    __tablename__ = "workspace_conversations"
+    __table_args__ = (Index("ix_workspace_conversations_ws", "workspace_id", "updated_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    workspace_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("dip_conversations.id", ondelete="CASCADE"),
+        nullable=False, unique=True,
+    )
+    title: Mapped[str] = mapped_column(String(300), nullable=False, default="New conversation")
+    title_generated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")  # active|archived
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
+    )
+
+
+class ConversationDocument(Base):
+    """The many-to-many: which documents participate in which conversation.
+    Grows as documents are attached mid-conversation — context expands,
+    never restarts."""
+
+    __tablename__ = "conversation_documents"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "document_id", name="uq_conversation_document"),
+        Index("ix_conversation_documents_conv", "conversation_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("dip_conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    )
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+
+class WorkspaceArtifact(Base):
+    """Generated artifact ↔ workspace link, remembering which conversation
+    (if any) it was generated from — the ConversationReference relationship."""
+
+    __tablename__ = "workspace_artifacts"
+    __table_args__ = (Index("ix_workspace_artifacts_ws", "workspace_id", "added_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    workspace_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    artifact_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("generation_artifacts.id", ondelete="CASCADE"),
+        nullable=False, unique=True,
+    )
+    conversation_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+
+class WorkspaceTimelineEvent(Base):
+    """Append-only audit history of everything that happened in a workspace."""
+
+    __tablename__ = "workspace_timeline"
+    __table_args__ = (Index("ix_workspace_timeline_ws", "workspace_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    workspace_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    ref_type: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    ref_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    title: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    detail_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, default=_uuid)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+
+class WorkspaceBookmark(Base):
+    """User bookmarks: answers, documents, conversations, artifacts."""
+
+    __tablename__ = "workspace_bookmarks"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "target_type", "target_id", name="uq_ws_bookmark"),
+        Index("ix_workspace_bookmarks_ws", "workspace_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    workspace_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(20), nullable=False)  # answer|document|conversation|artifact
+    target_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    note: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+
+class WorkspaceSummaryRow(Base):
+    """Cached Workspace Intelligence: AI summary, stats snapshot, suggested
+    next actions. Regenerated when stale so dashboards open instantly."""
+
+    __tablename__ = "workspace_summaries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    workspace_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False, unique=True,
+    )
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    stats_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    suggestions_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    model: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )

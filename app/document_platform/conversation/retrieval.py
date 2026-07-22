@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from app.document_platform.semantic.providers import get_embedding_provider
 from app.document_platform.semantic.repository import SemanticRepository
@@ -52,7 +52,7 @@ class AbstractRetriever(ABC):
     @abstractmethod
     async def retrieve(
         self, question: str, org_id: str, top_k: int,
-        document_id: Optional[str] = None,
+        document_id: str | list[str] | None = None,
     ) -> RetrievalResult: ...
 
 
@@ -66,9 +66,10 @@ class SemanticRetriever(AbstractRetriever):
 
     async def retrieve(
         self, question: str, org_id: str, top_k: int,
-        document_id: Optional[str] = None,
+        document_id: str | list[str] | None = None,
     ) -> RetrievalResult:
         query_vec = (await self._provider.embed([question]))[0].vector
+        # Phase 5.5 seam: a list scope maps to the vector store's $in filter.
         filters = {"document_id": document_id} if document_id else None
         hits = await self._vector_store.search(
             collection_name_for(org_id), query_vec, top_k=top_k, filters=filters,
@@ -122,7 +123,7 @@ class RetrievalEngine:
 
     async def retrieve(
         self, strategy: str, question: str, org_id: str, top_k: int,
-        document_id: Optional[str] = None,
+        document_id: str | list[str] | None = None,
     ) -> RetrievalResult:
         retriever = self._strategies.get(strategy)
         if retriever is None:

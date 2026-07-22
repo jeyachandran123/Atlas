@@ -11,6 +11,7 @@ class GenerateIn(BaseModel):
     prompt: str = Field(min_length=1, max_length=4000)
     format: str = Field(min_length=1, max_length=20)   # excel|pdf|word|csv|json|markdown|html
     document_id: Optional[str] = None                  # optional single-document grounding scope
+    document_ids: Optional[list[str]] = None           # multi-document scope (Phase 5.5)
 
 
 class ArtifactOut(BaseModel):

@@ -144,7 +144,12 @@ class ChromaVectorStoreProvider(AbstractVectorStore):
             coll = await client.get_collection(name=collection)
             where = None
             if filters:
-                clauses = [{k: {"$eq": v}} for k, v in filters.items()]
+                # List values become $in (multi-document scope, Phase 5.5's
+                # approved seam); scalars stay $eq. Backward compatible.
+                clauses = [
+                    {k: {"$in": v}} if isinstance(v, list) else {k: {"$eq": v}}
+                    for k, v in filters.items()
+                ]
                 where = clauses[0] if len(clauses) == 1 else {"$and": clauses}
             res = await coll.query(
                 query_embeddings=[query_embedding],

@@ -19,7 +19,7 @@ class ConversationContext:
     org_id: str
     question: str
     correlation_id: str
-    document_id: Optional[str] = None  # optional single-document scope
+    document_id: str | list[str] | None = None  # optional document scope (one or many)
     intent: Optional["IntentType"] = None
     plan: Optional["ConversationPlan"] = None
     warnings: list[str] = field(default_factory=list)

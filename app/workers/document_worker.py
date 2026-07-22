@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import signal
+import time
 
 from loguru import logger
 
@@ -101,6 +102,21 @@ async def _enqueue_embedding(knowledge_id: str, correlation_id: str | None = Non
 async def main() -> None:
     configure_logging()
     logger.info("Document processing worker started — waiting for jobs")
+
+    from app.document_platform.processing.recovery import recover_orphaned_jobs
+
+    # Recovery makes the pipeline self-healing: a document stranded at
+    # `queued` because its Redis item was lost (queue/worker restart) would
+    # otherwise never progress. Sweep once on startup, then whenever idle.
+    reenqueue_cooldown: dict[str, float] = {}
+    try:
+        recovered = await recover_orphaned_jobs(reenqueue_cooldown)
+        if recovered:
+            logger.info(f"Startup recovery re-enqueued {recovered} orphaned document(s)")
+    except Exception as e:
+        logger.warning(f"Startup recovery failed (non-fatal): {e}")
+    last_sweep = time.monotonic()
+
     while _running:
         try:
             job = await dequeue_processing_job(timeout=5)
@@ -110,6 +126,14 @@ async def main() -> None:
             continue
         if job:
             await process_job(job)
+        elif time.monotonic() - last_sweep >= 60:
+            last_sweep = time.monotonic()
+            try:
+                recovered = await recover_orphaned_jobs(reenqueue_cooldown)
+                if recovered:
+                    logger.info(f"Recovery sweep re-enqueued {recovered} orphaned document(s)")
+            except Exception as e:
+                logger.warning(f"Recovery sweep failed (non-fatal): {e}")
     logger.info("Document processing worker stopped")
 
 

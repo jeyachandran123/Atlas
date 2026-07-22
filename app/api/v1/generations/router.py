@@ -58,7 +58,7 @@ async def generate(
     try:
         artifact = await gateway.generate(
             current_user.id, current_user.org_id, body.prompt,
-            body.format, body.document_id,
+            body.format, body.document_ids or body.document_id,
         )
     except UnknownFormatError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -77,7 +77,7 @@ async def generate_stream(
     return StreamingResponse(
         gateway.generate_stream(
             current_user.id, current_user.org_id, body.prompt,
-            body.format, body.document_id,
+            body.format, body.document_ids or body.document_id,
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},

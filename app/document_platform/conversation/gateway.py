@@ -44,6 +44,14 @@ from app.document_platform.conversation.validator import ResponseValidator
 from app.document_platform.semantic.repository import SemanticRepository
 
 
+def _scalar_doc(document_id: str | list[str] | None) -> str | None:
+    """The turn row's document_id column stores a single id; a multi-document
+    scope is tracked by the workspace layer's conversation_documents table."""
+    if isinstance(document_id, list):
+        return document_id[0] if len(document_id) == 1 else None
+    return document_id
+
+
 @dataclass
 class TurnResult:
     turn_id: str
@@ -93,9 +101,11 @@ class ConversationGateway:
     # ── One turn, non-streaming ──────────────────────────────────────────────
 
     async def ask(
-        self, conversation, question: str, document_id: str | None = None,
+        self, conversation, question: str,
+        document_id: str | list[str] | None = None,
     ) -> TurnResult:
-        turn = await self._repo.create_turn(conversation, question, document_id)
+        turn = await self._repo.create_turn(
+            conversation, question, _scalar_doc(document_id))
         ctx = ConversationContext(
             conversation_id=conversation.id, turn_id=turn.id,
             user_id=conversation.user_id, org_id=conversation.org_id,
@@ -138,9 +148,11 @@ class ConversationGateway:
     # ── One turn, streaming (SSE event tuples; router wraps in sse()) ────────
 
     async def ask_stream(
-        self, conversation, question: str, document_id: str | None = None,
+        self, conversation, question: str,
+        document_id: str | list[str] | None = None,
     ) -> AsyncIterator[str]:
-        turn = await self._repo.create_turn(conversation, question, document_id)
+        turn = await self._repo.create_turn(
+            conversation, question, _scalar_doc(document_id))
         ctx = ConversationContext(
             conversation_id=conversation.id, turn_id=turn.id,
             user_id=conversation.user_id, org_id=conversation.org_id,

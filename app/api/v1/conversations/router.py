@@ -73,7 +73,7 @@ async def ask(
 ):
     gateway = ConversationGateway(db)
     conv = await _owned_conversation(ConversationRepository(db), conversation_id, current_user)
-    result = await gateway.ask(conv, body.question, body.document_id)
+    result = await gateway.ask(conv, body.question, body.document_ids or body.document_id)
     return TurnOut(**result.__dict__)
 
 
@@ -87,7 +87,7 @@ async def ask_stream(
     gateway = ConversationGateway(db)
     conv = await _owned_conversation(ConversationRepository(db), conversation_id, current_user)
     return StreamingResponse(
-        gateway.ask_stream(conv, body.question, body.document_id),
+        gateway.ask_stream(conv, body.question, body.document_ids or body.document_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -107,6 +107,7 @@ async def list_turns(
             id=t.id, seq=t.seq, question=t.question, answer=t.answer,
             intent=t.intent, status=t.status, grounded=t.grounded,
             grounding_score=t.grounding_score, citation_count=t.citation_count,
+            citations_json=t.citations_json,
             total_ms=t.total_ms, total_tokens=t.total_tokens, created_at=t.created_at,
         )
         for t in turns

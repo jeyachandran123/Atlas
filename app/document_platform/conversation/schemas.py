@@ -21,7 +21,8 @@ class ConversationOut(BaseModel):
 
 class AskIn(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
-    document_id: Optional[str] = None    # optional single-document scope
+    document_id: Optional[str] = None            # optional single-document scope
+    document_ids: Optional[list[str]] = None     # multi-document scope (Phase 5.5)
 
 
 class CitationOut(BaseModel):
@@ -60,6 +61,7 @@ class TurnHistoryOut(BaseModel):
     grounded: bool
     grounding_score: Optional[float]
     citation_count: int
+    citations_json: Optional[str] = None  # full citations — used for history restore
     total_ms: Optional[int]
     total_tokens: Optional[int]
     created_at: datetime
