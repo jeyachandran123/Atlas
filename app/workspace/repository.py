@@ -136,7 +136,10 @@ class WorkspaceRepository:
             await self._db.execute(
                 select(Document)
                 .join(WorkspaceDocument, WorkspaceDocument.document_id == Document.id)
-                .where(WorkspaceDocument.workspace_id == workspace_id)
+                .where(
+                    WorkspaceDocument.workspace_id == workspace_id,
+                    Document.is_deleted.is_(False),
+                )
                 .order_by(WorkspaceDocument.added_at.desc())
             )
         ).scalars().all()
@@ -146,7 +149,11 @@ class WorkspaceRepository:
         rows = (
             await self._db.execute(
                 select(WorkspaceDocument.document_id)
-                .where(WorkspaceDocument.workspace_id == workspace_id)
+                .join(Document, Document.id == WorkspaceDocument.document_id)
+                .where(
+                    WorkspaceDocument.workspace_id == workspace_id,
+                    Document.is_deleted.is_(False),
+                )
             )
         ).scalars().all()
         return list(rows)
@@ -186,6 +193,31 @@ class WorkspaceRepository:
             )
         )
         await self._db.flush()
+
+    async def purge_document_links(self, document_id: str) -> None:
+        """Remove every workspace/conversation link to a document. Needed on
+        delete because the frozen document delete is a SOFT delete (the row
+        survives), so the FK cascades never fire."""
+        await self._db.execute(
+            delete(WorkspaceDocument).where(WorkspaceDocument.document_id == document_id)
+        )
+        await self._db.execute(
+            delete(ConversationDocument).where(ConversationDocument.document_id == document_id)
+        )
+        await self._db.flush()
+
+    async def delete_bookmarks_for(self, target_type: str, target_id: str) -> int:
+        """Remove bookmarks pointing at a now-deleted target (documents,
+        artifacts, conversations) — target_id is generic, not an FK, so these
+        would otherwise orphan."""
+        result = await self._db.execute(
+            delete(WorkspaceBookmark).where(
+                WorkspaceBookmark.target_type == target_type,
+                WorkspaceBookmark.target_id == target_id,
+            )
+        )
+        await self._db.flush()
+        return result.rowcount or 0
 
     async def detach_document(self, conversation_id: str, document_id: str) -> bool:
         """Remove a document from ONE conversation's context (not the
@@ -287,7 +319,10 @@ class WorkspaceRepository:
             await self._db.execute(
                 select(Document)
                 .join(ConversationDocument, ConversationDocument.document_id == Document.id)
-                .where(ConversationDocument.conversation_id == conversation_id)
+                .where(
+                    ConversationDocument.conversation_id == conversation_id,
+                    Document.is_deleted.is_(False),
+                )
                 .order_by(ConversationDocument.added_at)
             )
         ).scalars().all()
@@ -458,6 +493,7 @@ class WorkspaceRepository:
                 .join(WorkspaceDocument, WorkspaceDocument.document_id == Document.id)
                 .where(
                     WorkspaceDocument.workspace_id == workspace_id,
+                    Document.is_deleted.is_(False),
                     Document.original_filename.ilike(f"%{q}%"),
                 )
                 .limit(limit)

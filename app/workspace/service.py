@@ -152,6 +152,103 @@ class WorkspaceService:
             "document": doc, "attached_to_conversation": attached,
         }
 
+    async def document_content(
+        self, ws: Workspace, document_id: str,
+    ) -> tuple[bytes, str, str]:
+        """Raw document bytes for the in-app viewer, served inline through the
+        API (same origin) so the browser never fetches the S3 signed URL
+        cross-origin — which CORS would block. Reuses the frozen proxy read."""
+        if not await self.repo.document_in_workspace(ws.id, document_id):
+            raise WorkspaceNotFoundError(document_id)
+        doc, data = await self._document_service().download_bytes(
+            ws.org_id, ws.user_id, document_id,
+        )
+        return data, doc.mime_type, doc.original_filename
+
+    async def artifact_content(
+        self, ws: Workspace, artifact_id: str,
+    ) -> tuple[bytes, str, str]:
+        """Raw generated-artifact bytes for the in-app viewer (same rationale)."""
+        from app.document_platform.generation.gateway import STORAGE_PREFIX
+        from app.storage import get_blob_storage
+
+        art = await self.repo.get_artifact(artifact_id)
+        if art is None or art.user_id != ws.user_id:
+            raise WorkspaceNotFoundError(artifact_id)
+        data = await get_blob_storage(STORAGE_PREFIX).get(art.storage_key)
+        return data, art.content_type or "application/octet-stream", art.filename
+
+    async def delete_document(self, ws: Workspace, document_id: str) -> dict[str, Any]:
+        """
+        Complete deletion (Objective 5). The frozen document delete is a SOFT
+        delete, so on its own it leaves embeddings, semantic manifests, chunks,
+        knowledge, vectors, links, and bookmarks behind — all still
+        retrievable. This purges the full footprint by reusing the existing
+        platform repositories (never duplicating their logic):
+
+          Chroma vectors → embedding_records/jobs/manifests → chunks/knowledge
+          → workspace & conversation links → bookmarks → frozen soft-delete.
+        """
+        from app.document_platform.knowledge.repository import KnowledgeManifestRepository
+        from app.document_platform.processing.persistence import ProcessingRepository
+        from app.document_platform.semantic.repository import SemanticRepository
+        from app.document_platform.semantic.vector_store import (
+            collection_name_for,
+            get_vector_store,
+        )
+
+        doc = await self.repo.get_document(document_id)
+        if doc is None or doc.uploaded_by != ws.user_id:
+            raise WorkspaceNotFoundError(document_id)
+
+        proc_repo = ProcessingRepository(self._db)
+        sem_repo = SemanticRepository(self._db)
+        knowledge = await proc_repo.knowledge_for(document_id)
+
+        removed_vectors = 0
+        if knowledge is not None:
+            # 1. Remove vectors from the search index (Chroma). Their ids are
+            #    the embedding_record ids used at upsert time. Best-effort —
+            #    a vector-store hiccup must not block the delete.
+            try:
+                records, _ = await sem_repo.list_embeddings_for_knowledge(
+                    knowledge.id, limit=10000, offset=0,
+                )
+                vector_ids = [r.id for r in records]
+                if vector_ids:
+                    removed_vectors = await get_vector_store().delete(
+                        collection_name_for(ws.org_id), vector_ids,
+                    )
+            except Exception as e:
+                logger.warning(f"Chroma vector cleanup failed for {document_id} (non-fatal): {e}")
+            # 2. Semantic metadata (embedding_records, jobs, events, manifest).
+            await sem_repo.wipe_all_semantic_for_document_reprocess(knowledge.id)
+            # 3. Knowledge manifest (Phase 2.6) — must go before the knowledge
+            #    object it references (FK, no cascade); same order the reprocess
+            #    path uses.
+            await KnowledgeManifestRepository(self._db).delete_manifests_for_document(document_id)
+            # 4. Derived knowledge (chunks, knowledge object, metadata, images).
+            await proc_repo.wipe_derived(document_id)
+
+        # 4. Workspace + conversation links (soft-delete won't cascade them).
+        await self.repo.purge_document_links(document_id)
+        # 5. Bookmarks referencing this document.
+        bookmarks_removed = await self.repo.delete_bookmarks_for("document", document_id)
+        # 6. Frozen soft-delete (marks is_deleted + audit).
+        await self._document_service().delete(ws.org_id, ws.user_id, document_id)
+        # 7. Audit the deletion on the workspace timeline (history is kept).
+        await self.repo.add_timeline(
+            ws.id, "document_deleted", f"Deleted {doc.original_filename}",
+            ref_type="document", ref_id=document_id,
+            detail={"vectors_removed": removed_vectors, "bookmarks_removed": bookmarks_removed},
+        )
+        await self._db.commit()
+        return {
+            "document_id": document_id,
+            "vectors_removed": removed_vectors,
+            "bookmarks_removed": bookmarks_removed,
+        }
+
     async def add_document(
         self, ws: Workspace, document_id: str, conversation_id: str | None = None,
     ) -> dict[str, Any]:
@@ -302,6 +399,7 @@ class WorkspaceService:
         wc, _ = await self.conversation_in_workspace(ws, conversation_id)
         title = wc.title
         await self.repo.archive_conversation(wc)
+        await self.repo.delete_bookmarks_for("conversation", conversation_id)
         await self.repo.add_timeline(
             ws.id, "conversation_deleted", f"Deleted '{title}'",
             ref_type="conversation", ref_id=conversation_id,

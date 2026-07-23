@@ -258,6 +258,69 @@ async def upload_document(
     }
 
 
+@router.get("/{workspace_id}/documents/{document_id}/content")
+async def document_content(
+    workspace_id: str,
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Inline document bytes for the in-app viewer — same-origin, so no S3
+    CORS. The Download button still uses the signed-URL flow separately."""
+    service = WorkspaceService(db)
+    ws = await _require(service, workspace_id, current_user)
+    try:
+        data, mime, filename = await service.document_content(ws, document_id)
+    except WorkspaceNotFoundError:
+        raise HTTPException(404, detail="Document not found")
+    await db.commit()
+    safe = filename.replace('"', "")
+    return Response(
+        content=data, media_type=mime,
+        headers={"Content-Disposition": f'inline; filename="{safe}"',
+                 "Cache-Control": "private, max-age=300"},
+    )
+
+
+@router.get("/{workspace_id}/artifacts/{artifact_id}/content")
+async def artifact_content(
+    workspace_id: str,
+    artifact_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    service = WorkspaceService(db)
+    ws = await _require(service, workspace_id, current_user)
+    try:
+        data, mime, filename = await service.artifact_content(ws, artifact_id)
+    except WorkspaceNotFoundError:
+        raise HTTPException(404, detail="Artifact not found")
+    safe = filename.replace('"', "")
+    return Response(
+        content=data, media_type=mime,
+        headers={"Content-Disposition": f'inline; filename="{safe}"',
+                 "Cache-Control": "private, max-age=300"},
+    )
+
+
+@router.delete("/{workspace_id}/documents/{document_id}")
+async def delete_document(
+    workspace_id: str,
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Complete deletion (Objective 5): purges vectors, embeddings, semantic
+    records, chunks, knowledge, workspace/conversation links, and bookmarks —
+    then soft-deletes the document. No orphans remain."""
+    service = WorkspaceService(db)
+    ws = await _require(service, workspace_id, current_user)
+    try:
+        return await service.delete_document(ws, document_id)
+    except WorkspaceNotFoundError:
+        raise HTTPException(404, detail="Document not found")
+
+
 @router.post("/{workspace_id}/documents")
 async def add_document(
     workspace_id: str,
