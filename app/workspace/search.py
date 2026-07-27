@@ -43,8 +43,8 @@ class WorkspaceSearch:
         ]
         results["artifacts"] = [
             {"id": a.id, "title": a.title, "filename": a.filename,
-             "format": a.format, "status": a.status}
-            for a in await self._repo.search_artifacts(workspace_id, q)
+             "format": a.format, "status": a.status, "conversation_id": conv_id}
+            for a, conv_id in await self._repo.search_artifacts(workspace_id, q)
         ]
         results["timeline"] = [
             {"event_type": e.event_type, "title": e.title,

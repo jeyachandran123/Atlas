@@ -1364,6 +1364,7 @@ class WorkspaceConversation(Base):
     title: Mapped[str] = mapped_column(String(300), nullable=False, default="New conversation")
     title_generated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")  # active|archived
+    retrieval_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="all")  # all|selected
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )

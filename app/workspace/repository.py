@@ -16,6 +16,7 @@ from app.db.models import (
     DipConversationTurn,
     Document,
     GenerationArtifact,
+    GenerationEventRecord,
     Workspace,
     WorkspaceArtifact,
     WorkspaceBookmark,
@@ -356,6 +357,57 @@ class WorkspaceRepository:
         ).all()
         return [(r[0], r[1]) for r in rows]
 
+    async def artifact_in_workspace(
+        self, workspace_id: str, artifact_id: str,
+    ) -> Optional[str]:
+        """The workspace link row's conversation_id if the artifact belongs to
+        this workspace, else None (the artifact isn't linked here)."""
+        row = (
+            await self._db.execute(
+                select(WorkspaceArtifact.conversation_id).where(
+                    WorkspaceArtifact.workspace_id == workspace_id,
+                    WorkspaceArtifact.artifact_id == artifact_id,
+                )
+            )
+        ).one_or_none()
+        return row[0] if row is not None else None
+
+    async def has_artifact_link(self, workspace_id: str, artifact_id: str) -> bool:
+        row = (
+            await self._db.execute(
+                select(WorkspaceArtifact.id).where(
+                    WorkspaceArtifact.workspace_id == workspace_id,
+                    WorkspaceArtifact.artifact_id == artifact_id,
+                )
+            )
+        ).first()
+        return row is not None
+
+    async def unlink_artifact(self, artifact_id: str) -> None:
+        """Remove the workspace ↔ artifact link only (used when a cancelled
+        artifact must not surface in the workspace's Generated Documents)."""
+        await self._db.execute(
+            delete(WorkspaceArtifact).where(WorkspaceArtifact.artifact_id == artifact_id)
+        )
+        await self._db.flush()
+
+    async def delete_artifact_cascade(self, artifact_id: str) -> None:
+        """Full artifact-record deletion — no orphans. Removes the generation
+        event log, the workspace link, and the registry/manifest row itself.
+        The FKs (generation_events, workspace_artifacts) declare ON DELETE
+        CASCADE, but we delete explicitly so the intent is auditable and the
+        behaviour survives databases whose cascade enforcement differs."""
+        await self._db.execute(
+            delete(GenerationEventRecord).where(GenerationEventRecord.artifact_id == artifact_id)
+        )
+        await self._db.execute(
+            delete(WorkspaceArtifact).where(WorkspaceArtifact.artifact_id == artifact_id)
+        )
+        await self._db.execute(
+            delete(GenerationArtifact).where(GenerationArtifact.id == artifact_id)
+        )
+        await self._db.flush()
+
     # ── Timeline ─────────────────────────────────────────────────────────────
 
     async def add_timeline(
@@ -540,10 +592,12 @@ class WorkspaceRepository:
 
     async def search_artifacts(
         self, workspace_id: str, q: str, limit: int = 8,
-    ) -> list[GenerationArtifact]:
+    ) -> list[tuple[GenerationArtifact, Optional[str]]]:
+        """Artifacts matching the query, each paired with the conversation it
+        was generated from — so a search hit can jump straight to the message."""
         rows = (
             await self._db.execute(
-                select(GenerationArtifact)
+                select(GenerationArtifact, WorkspaceArtifact.conversation_id)
                 .join(WorkspaceArtifact, WorkspaceArtifact.artifact_id == GenerationArtifact.id)
                 .where(
                     WorkspaceArtifact.workspace_id == workspace_id,
@@ -555,8 +609,8 @@ class WorkspaceRepository:
                 )
                 .limit(limit)
             )
-        ).scalars().all()
-        return list(rows)
+        ).all()
+        return [(r[0], r[1]) for r in rows]
 
     async def search_timeline(
         self, workspace_id: str, q: str, limit: int = 8,

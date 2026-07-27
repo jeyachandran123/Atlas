@@ -47,6 +47,7 @@ class WorkspaceConversationOut(BaseModel):
     conversation_id: str
     title: str
     title_generated: bool
+    retrieval_mode: str = "all"
     created_at: datetime
     updated_at: datetime
 
@@ -57,6 +58,19 @@ class ConversationCreateIn(BaseModel):
 
 class ConversationRenameIn(BaseModel):
     title: str = Field(min_length=1, max_length=300)
+
+
+class ConversationModeIn(BaseModel):
+    mode: str = Field(pattern="^(all|selected)$")
+
+
+class WorkspaceConversationDetailOut(BaseModel):
+    conversation_id: str
+    title: str
+    title_generated: bool
+    retrieval_mode: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class WorkspaceAskIn(BaseModel):
@@ -84,6 +98,15 @@ class WorkspaceArtifactOut(BaseModel):
     grounded: bool
     conversation_id: Optional[str]
     created_at: datetime
+    prompt: str = ""
+    error: Optional[str] = None
+
+
+class ArtifactEventIn(BaseModel):
+    """Records a user interaction with a generated artifact on the workspace
+    timeline (viewed / downloaded). Reuses the existing timeline, no new state."""
+
+    action: str = Field(pattern="^(viewed|downloaded)$")
 
 
 class TimelineEventOut(BaseModel):

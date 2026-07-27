@@ -16,10 +16,12 @@ from app.workspace.export import EXPORT_FORMATS, export_conversation
 from app.workspace.intelligence import WorkspaceIntelligence, rule_based_suggestions
 from app.workspace.schemas import (
     AddDocumentIn,
+    ArtifactEventIn,
     AttachDocumentIn,
     BookmarkIn,
     BookmarkOut,
     ConversationCreateIn,
+    ConversationModeIn,
     ConversationRenameIn,
     DashboardOut,
     RelatedOut,
@@ -45,6 +47,23 @@ from app.workspace.service import (
 router = APIRouter(prefix="/workspaces", tags=["Workspace"])
 
 
+def content_disposition(disposition: str, filename: str) -> str:
+    """
+    RFC 6266-safe Content-Disposition. HTTP header values must be Latin-1
+    encodable; a filename with non-Latin-1 characters (CJK, emoji, Cyrillic —
+    common in auto-generated conversation titles) would otherwise raise
+    UnicodeEncodeError in the ASGI layer and 500 the response. We emit an
+    ASCII-safe `filename` fallback plus an RFC 5987 `filename*` with the real
+    UTF-8 name, exactly as browsers expect.
+    """
+    from urllib.parse import quote
+
+    ascii_fallback = filename.encode("ascii", "ignore").decode("ascii").replace('"', "")
+    ascii_fallback = ascii_fallback.strip() or "download"
+    utf8_encoded = quote(filename, safe="")
+    return f"{disposition}; filename=\"{ascii_fallback}\"; filename*=UTF-8''{utf8_encoded}"
+
+
 def _ws_out(ws) -> WorkspaceOut:
     return WorkspaceOut(
         id=ws.id, name=ws.name, description=ws.description, icon=ws.icon,
@@ -63,7 +82,7 @@ def _doc_out(d) -> WorkspaceDocumentOut:
 def _conv_out(wc) -> WorkspaceConversationOut:
     return WorkspaceConversationOut(
         conversation_id=wc.conversation_id, title=wc.title,
-        title_generated=wc.title_generated,
+        title_generated=wc.title_generated, retrieval_mode=wc.retrieval_mode,
         created_at=wc.created_at, updated_at=wc.updated_at,
     )
 
@@ -73,6 +92,7 @@ def _artifact_out(a, conversation_id) -> WorkspaceArtifactOut:
         id=a.id, title=a.title, filename=a.filename, format=a.format,
         status=a.status, size_bytes=a.size_bytes, grounded=a.grounded,
         conversation_id=conversation_id, created_at=a.created_at,
+        prompt=a.prompt, error=a.error,
     )
 
 
@@ -274,10 +294,9 @@ async def document_content(
     except WorkspaceNotFoundError:
         raise HTTPException(404, detail="Document not found")
     await db.commit()
-    safe = filename.replace('"', "")
     return Response(
         content=data, media_type=mime,
-        headers={"Content-Disposition": f'inline; filename="{safe}"',
+        headers={"Content-Disposition": content_disposition("inline", filename),
                  "Cache-Control": "private, max-age=300"},
     )
 
@@ -295,10 +314,9 @@ async def artifact_content(
         data, mime, filename = await service.artifact_content(ws, artifact_id)
     except WorkspaceNotFoundError:
         raise HTTPException(404, detail="Artifact not found")
-    safe = filename.replace('"', "")
     return Response(
         content=data, media_type=mime,
-        headers={"Content-Disposition": f'inline; filename="{safe}"',
+        headers={"Content-Disposition": content_disposition("inline", filename),
                  "Cache-Control": "private, max-age=300"},
     )
 
@@ -421,6 +439,26 @@ async def rename_conversation(
     return {"conversation_id": conversation_id, "title": title}
 
 
+@router.patch("/{workspace_id}/conversations/{conversation_id}/mode")
+async def set_conversation_mode(
+    workspace_id: str,
+    conversation_id: str,
+    body: ConversationModeIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Switch retrieval mode (all|selected). Scope changes immediately for the
+    next question; history is untouched (Objective 2/6)."""
+    service = WorkspaceService(db)
+    ws = await _require(service, workspace_id, current_user)
+    try:
+        return await service.set_conversation_mode(ws, conversation_id, body.mode)
+    except WorkspaceNotFoundError:
+        raise HTTPException(404, detail="Conversation not found")
+    except ValueError as e:
+        raise HTTPException(422, detail=str(e))
+
+
 @router.delete("/{workspace_id}/conversations/{conversation_id}")
 async def delete_conversation(
     workspace_id: str,
@@ -509,10 +547,10 @@ async def export_conversation_endpoint(
         raise HTTPException(404, detail="Conversation not found")
     turns = await service.repo.turns_for_conversation(conversation_id)
     data, content_type, ext = export_conversation(wc.title, turns, format)
-    safe = "".join(c for c in wc.title[:60] if c.isalnum() or c in " -_").strip() or "conversation"
+    base = (wc.title[:60].strip() or "conversation")
     return Response(
         content=data, media_type=content_type,
-        headers={"Content-Disposition": f'attachment; filename="{safe}.{ext}"'},
+        headers={"Content-Disposition": content_disposition("attachment", f"{base}.{ext}")},
     )
 
 
@@ -548,6 +586,43 @@ async def workspace_artifacts(
     service = WorkspaceService(db)
     ws = await _require(service, workspace_id, current_user)
     return [_artifact_out(a, cid) for a, cid in await service.repo.artifacts_for(ws.id)]
+
+
+@router.delete("/{workspace_id}/artifacts/{artifact_id}")
+async def delete_artifact(
+    workspace_id: str,
+    artifact_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Full lifecycle deletion of a generated document (Objective: no orphans).
+    Removes the S3 object, event log, registry row, workspace + conversation
+    reference, and bookmarks; search and the panel drop it automatically."""
+    service = WorkspaceService(db)
+    ws = await _require(service, workspace_id, current_user)
+    try:
+        return await service.delete_artifact(ws, artifact_id)
+    except WorkspaceNotFoundError:
+        raise HTTPException(404, detail="Artifact not found")
+
+
+@router.post("/{workspace_id}/artifacts/{artifact_id}/event")
+async def record_artifact_event(
+    workspace_id: str,
+    artifact_id: str,
+    body: ArtifactEventIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Record a View / Download of a generated document on the timeline. The
+    download itself still goes through the existing generation download flow."""
+    service = WorkspaceService(db)
+    ws = await _require(service, workspace_id, current_user)
+    try:
+        await service.record_artifact_event(ws, artifact_id, body.action)
+    except WorkspaceNotFoundError:
+        raise HTTPException(404, detail="Artifact not found")
+    return {"recorded": body.action}
 
 
 # ── Timeline / bookmarks / search / related ──────────────────────────────────

@@ -6,7 +6,9 @@ platform gateways follow for theirs).
 """
 from __future__ import annotations
 
+import asyncio
 import json
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Optional
 
 from loguru import logger
@@ -304,15 +306,22 @@ class WorkspaceService:
         wc, conv = await self.conversation_in_workspace(ws, conversation_id)
         turns = await self.repo.turns_for_conversation(conversation_id)
         documents = await self.repo.conversation_documents(conversation_id)
+        # Generation history reuses the artifact ↔ conversation link already
+        # persisted — no separate message table. The UI merges these with the
+        # turns by `created_at` to reproduce the conversation exactly.
         artifacts = [
             {"id": a.id, "title": a.title, "filename": a.filename,
-             "format": a.format, "status": a.status}
+             "format": a.format, "status": a.status, "prompt": a.prompt,
+             "size_bytes": a.size_bytes, "grounded": a.grounded,
+             "error": a.error, "conversation_id": conv_ref,
+             "created_at": a.created_at.isoformat()}
             for a, conv_ref in await self.repo.artifacts_for(ws.id)
             if conv_ref == conversation_id
         ]
         return {
             "conversation_id": conversation_id,
             "title": wc.title,
+            "retrieval_mode": wc.retrieval_mode,
             "correlation_id": conv.correlation_id,
             "turns": [
                 {
@@ -333,13 +342,43 @@ class WorkspaceService:
         }
 
     async def _conversation_scope(self, ws: Workspace, conversation_id: str) -> list[str] | None:
-        """Attached documents win; otherwise all workspace documents; None
-        only when the workspace is empty (no possible scope)."""
-        attached = await self.repo.conversation_document_ids(conversation_id)
-        if attached:
-            return attached
+        """
+        The conversation's explicit retrieval mode decides the scope
+        (Objective 2/6). 'all' → every ready workspace document; 'selected'
+        → only the conversation's attached documents. Returns None when the
+        scope is empty (nothing to retrieve → the pipeline refuses honestly).
+        The retrieval engine consumes this list unchanged — no retrieval logic
+        is duplicated here.
+        """
+        wc = await self.repo.ws_conversation(conversation_id)
+        mode = wc.retrieval_mode if wc else "all"
+        if mode == "selected":
+            attached = await self.repo.conversation_document_ids(conversation_id)
+            # An empty selection must retrieve NOTHING — not silently fall
+            # through to every document. Returning None would mean "no filter"
+            # (i.e. all docs) to the retrieval engine, so instead we pass a
+            # scope that can match no document, forcing an honest refusal.
+            return attached or ["__no_documents_selected__"]
         ws_docs = await self.repo.document_ids_for(ws.id)
         return ws_docs or None
+
+    async def set_conversation_mode(
+        self, ws: Workspace, conversation_id: str, mode: str,
+    ) -> dict[str, Any]:
+        """Switch a conversation between 'all' and 'selected' retrieval —
+        scope changes immediately, history is untouched (Objective 2/6)."""
+        if mode not in ("all", "selected"):
+            raise ValueError("mode must be 'all' or 'selected'")
+        wc, _ = await self.conversation_in_workspace(ws, conversation_id)
+        wc.retrieval_mode = mode
+        await self.repo.add_timeline(
+            ws.id, "retrieval_mode_changed",
+            f"Retrieval set to {'all documents' if mode == 'all' else 'selected documents'}",
+            ref_type="conversation", ref_id=conversation_id,
+        )
+        await self._db.commit()
+        selected = await self.repo.conversation_document_ids(conversation_id)
+        return {"retrieval_mode": mode, "selected_document_ids": selected}
 
     async def ask_stream(
         self, ws: Workspace, conversation_id: str, question: str,
@@ -447,37 +486,151 @@ class WorkspaceService:
         else:
             scope = (await self.repo.document_ids_for(ws.id)) or None
 
+        # Timeline: Generation Started (audit trail begins the moment we accept
+        # the request, before any stage runs).
+        await self.repo.add_timeline(
+            ws.id, "generation_started", f"Started generating a {format_name}",
+            ref_type="conversation", ref_id=conversation_id,
+            detail={"format": format_name, "prompt": prompt[:200]},
+        )
+        await self._db.commit()
+
         gateway = GenerationGateway(self._db)
         artifact_id: str | None = None
         status = ""
         title = ""
-        async for frame in gateway.generate_stream(
-            ws.user_id, ws.org_id, prompt, format_name, scope,
-        ):
-            if frame.startswith("event: meta") or frame.startswith("event: done"):
-                for line in frame.split("\n"):
-                    if line.startswith("data: "):
-                        try:
-                            payload = json.loads(line[6:])
-                            artifact_id = payload.get("artifact_id", artifact_id)
-                            status = payload.get("status", status)
-                            title = payload.get("title", title)
-                        except json.JSONDecodeError:
-                            pass
-            yield frame
+        completed = False
+        try:
+            async for frame in gateway.generate_stream(
+                ws.user_id, ws.org_id, prompt, format_name, scope,
+            ):
+                if frame.startswith("event: meta") or frame.startswith("event: done"):
+                    for line in frame.split("\n"):
+                        if line.startswith("data: "):
+                            try:
+                                payload = json.loads(line[6:])
+                                artifact_id = payload.get("artifact_id", artifact_id)
+                                status = payload.get("status", status)
+                                title = payload.get("title", title)
+                            except json.JSONDecodeError:
+                                pass
+                yield frame
+            completed = True
+        finally:
+            # Not completed → the user pressed Stop and the SSE was aborted
+            # (GeneratorExit from aclose, or CancelledError on task cancel).
+            # Backend execution is already unwinding; clean up any partial
+            # artifact under a shield so the cleanup survives teardown. The
+            # original exception still propagates after the finally.
+            if not completed and artifact_id:
+                await asyncio.shield(
+                    self._finalize_cancelled(ws.id, artifact_id, format_name, title)
+                )
 
         if artifact_id:
             try:
                 await self.repo.link_artifact(ws.id, artifact_id, conversation_id)
+                completed = status == "ready"
                 await self.repo.add_timeline(
-                    ws.id, "artifact_generated",
-                    f"Generated {title or format_name} ({format_name})",
+                    ws.id,
+                    "artifact_generated" if completed else "generation_failed",
+                    (f"Generated {title or format_name} ({format_name})" if completed
+                     else f"Generation failed ({format_name})"),
                     ref_type="artifact", ref_id=artifact_id,
                     detail={"status": status, "format": format_name},
                 )
                 await self._db.commit()
             except Exception as e:
                 logger.warning(f"Artifact workspace linking failed: {e}")
+
+    async def _finalize_cancelled(
+        self, ws_id: str, artifact_id: str, format_name: str, title: str,
+    ) -> None:
+        """Client pressed Stop. Mark the artifact cancelled if a committed row
+        exists, drop any workspace link + stored bytes so no partial artifact
+        surfaces, and record the event. Runs on a FRESH session: the request's
+        own session is being torn down by the cancellation."""
+        from app.database import get_db_session
+        from app.document_platform.generation.gateway import STORAGE_PREFIX
+        from app.storage import get_blob_storage
+
+        try:
+            async with get_db_session() as db:
+                repo = WorkspaceRepository(db)
+                art = await repo.get_artifact(artifact_id)
+                if art is not None and art.status not in (
+                    "ready", "failed", "cancelled", "deleted",
+                ):
+                    if art.storage_key:
+                        try:
+                            await get_blob_storage(STORAGE_PREFIX).delete(art.storage_key)
+                        except Exception:
+                            pass
+                    art.status = "cancelled"
+                    art.finished_at = datetime.now(timezone.utc)
+                    await repo.unlink_artifact(artifact_id)
+                await repo.add_timeline(
+                    ws_id, "generation_cancelled",
+                    f"Cancelled {title or format_name} generation",
+                    ref_type="artifact", ref_id=artifact_id,
+                    detail={"format": format_name},
+                )
+        except Exception as e:
+            logger.warning(f"Cancellation finalize failed for {artifact_id}: {e}")
+
+    async def delete_artifact(self, ws: Workspace, artifact_id: str) -> dict[str, Any]:
+        """Full lifecycle deletion of a generated document — no orphans. Removes
+        the S3 object, the generation event log + registry/manifest row, the
+        workspace link, the conversation reference, and any bookmarks. Search
+        and the Generated Documents panel read live rows, so the record leaves
+        them the moment it is gone. Timeline keeps the audit trail."""
+        from app.document_platform.generation.gateway import STORAGE_PREFIX
+        from app.storage import get_blob_storage
+
+        art = await self.repo.get_artifact(artifact_id)
+        if (art is None or art.user_id != ws.user_id
+                or not await self.repo.has_artifact_link(ws.id, artifact_id)):
+            raise WorkspaceNotFoundError(artifact_id)
+
+        title = art.title or art.filename or "document"
+        storage_key = art.storage_key
+        fmt = art.format
+
+        # 1. Blob bytes (best-effort — a storage hiccup must not block delete).
+        if storage_key:
+            try:
+                await get_blob_storage(STORAGE_PREFIX).delete(storage_key)
+            except Exception as e:
+                logger.warning(f"Artifact blob cleanup failed for {artifact_id} (non-fatal): {e}")
+        # 2. Bookmarks referencing this artifact (generic target, not an FK).
+        bookmarks_removed = await self.repo.delete_bookmarks_for("artifact", artifact_id)
+        # 3. Registry/manifest row + event log + workspace link (cascade).
+        await self.repo.delete_artifact_cascade(artifact_id)
+        # 4. Audit on the workspace timeline (history is kept).
+        await self.repo.add_timeline(
+            ws.id, "artifact_deleted", f"Deleted {title}",
+            ref_type="artifact", ref_id=artifact_id,
+            detail={"format": fmt, "bookmarks_removed": bookmarks_removed},
+        )
+        await self._db.commit()
+        return {"artifact_id": artifact_id, "bookmarks_removed": bookmarks_removed}
+
+    async def record_artifact_event(
+        self, ws: Workspace, artifact_id: str, action: str,
+    ) -> None:
+        """Timeline record for View / Download of a generated document. Reuses
+        the workspace timeline — no new state, no duplicated download logic."""
+        if not await self.repo.has_artifact_link(ws.id, artifact_id):
+            raise WorkspaceNotFoundError(artifact_id)
+        art = await self.repo.get_artifact(artifact_id)
+        title = (art.title or art.filename or "document") if art else "document"
+        event_type = "artifact_viewed" if action == "viewed" else "artifact_downloaded"
+        verb = "Viewed" if action == "viewed" else "Downloaded"
+        await self.repo.add_timeline(
+            ws.id, event_type, f"{verb} {title}",
+            ref_type="artifact", ref_id=artifact_id,
+        )
+        await self._db.commit()
 
     # ── Save conversation as Knowledge ───────────────────────────────────────
 

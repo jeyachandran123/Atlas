@@ -32,7 +32,9 @@ _MD_STRIP: list[tuple[re.Pattern, str]] = [
 ]
 
 
-def _plain(text: str) -> str:
+def _plain(text: str | None) -> str:
+    if not text:
+        return ""
     for pattern, repl in _MD_STRIP:
         text = pattern.sub(repl, text)
     return text.strip()
