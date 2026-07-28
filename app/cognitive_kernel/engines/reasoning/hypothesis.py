@@ -51,9 +51,13 @@ class HypothesisGenerator:
             # Best-explanation mode: abduce candidate causes for the observations.
             observations = frozenset(e.statement for e in evidence if not e.negated)
             for expl in abduce(observations, causes, self._config.parsimony_penalty):
+                covered_handles = tuple(sorted(
+                    e.handle for e in evidence if e.statement in expl.covered and not e.negated
+                ))
                 hyps.append(
                     Hypothesis(
                         nid(), expl.statement, False, prior=expl.score, derivation="abduced",
+                        supports=covered_handles,  # the observation evidence it explains (traceability)
                         rationale=f"explains {list(expl.covered)}",
                     )
                 )
@@ -70,6 +74,16 @@ class HypothesisGenerator:
                                     derivation="abduced_rule", rationale=f"would entail {r.consequent}",
                                 )
                             )
+            # Analogical transfer: a conscious source case suggests its conclusion (discounted).
+            for a in sorted(analogies, key=lambda a: a.handle):
+                if (a.conclusion, a.conclusion_negated) not in seen:
+                    seen.add((a.conclusion, a.conclusion_negated))
+                    hyps.append(
+                        Hypothesis(
+                            nid(), a.conclusion, a.conclusion_negated, prior=_clamp(a.strength * 0.8),
+                            derivation="analogical", rationale=f"transferred via relation '{a.relation}'",
+                        )
+                    )
         return hyps
 
     def rank(self, hyps: Sequence[Hypothesis], evidence: Sequence[Evidence]) -> list[Hypothesis]:
@@ -80,9 +94,8 @@ class HypothesisGenerator:
             if h.negated:
                 support, oppose = oppose, support
             score = _clamp(_noisy_or([h.prior, support]) * (1.0 - oppose))
-            supports = tuple(
-                sorted(e.handle for e in evidence if e.statement == h.statement and e.negated == h.negated)
-            )
+            direct = {e.handle for e in evidence if e.statement == h.statement and e.negated == h.negated}
+            supports = tuple(sorted(set(h.supports) | direct))  # keep abductive/analogical supports
             opposes = tuple(
                 sorted(e.handle for e in evidence if e.statement == h.statement and e.negated != h.negated)
             )

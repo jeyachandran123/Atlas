@@ -11,9 +11,9 @@ verdicts and conflict signals for the faculty to act on.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Mapping, Sequence
 
-from .contracts import Evidence, Hypothesis
+from .contracts import Evidence
 from .evidence import _noisy_or
 
 _EPSILON = 0.05
@@ -47,17 +47,26 @@ class ConsistencyGuard:
         self._margin = hysteresis_margin
 
     def detect(
-        self, evidence: Sequence[Evidence], hypotheses: Sequence[Hypothesis]
+        self,
+        evidence: Sequence[Evidence],
+        facts: Mapping[str, float],
+        negations: Mapping[str, float],
     ) -> list[Contradiction]:
-        """Find statements asserted with both polarities at meaningful weight."""
+        """Find statements *asserted* with both polarities at meaningful weight.
+
+        Contradictions are about what has been asserted or derived (the facts and
+        negations of the Working Reasoning Space) and the conscious evidence — never
+        about the mere presence of competing candidate hypotheses (that is normal
+        competition, not incoherence).
+        """
         pos: dict[str, list[tuple[float, str]]] = {}
         neg: dict[str, list[tuple[float, str]]] = {}
         for e in evidence:
             (neg if e.negated else pos).setdefault(e.statement, []).append((e.weight, e.handle))
-        for h in hypotheses:
-            if h.confidence <= _EPSILON:
-                continue
-            (neg if h.negated else pos).setdefault(h.statement, []).append((h.confidence, h.hid))
+        for statement, conf in facts.items():
+            pos.setdefault(statement, []).append((conf, f"fact:{statement}"))
+        for statement, conf in negations.items():
+            neg.setdefault(statement, []).append((conf, f"fact:¬{statement}"))
 
         contradictions: list[Contradiction] = []
         for statement in sorted(set(pos) & set(neg)):
