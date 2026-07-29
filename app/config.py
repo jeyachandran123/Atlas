@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     app_debug: bool = False
     secret_key: SecretStr = SecretStr("change-me")
 
+    # ── Cognitive Operating System integration (Version 1) ───────────────────
+    # When False (default) the existing chat pipeline is completely unchanged.
+    # When True, the Conversation Platform routes through the Cognitive OS brain.
+    cognitive_brain_enabled: bool = True
+
     # ── Auth ─────────────────────────────────────────────────────────────────
     jwt_algorithm: str = "HS256"
     jwt_private_key_path: str = "./infra/keys/private.pem"
