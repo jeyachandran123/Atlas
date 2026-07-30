@@ -79,7 +79,17 @@ def verify_firebase_token(id_token: str) -> dict:
     # - Expiration check
     # - Issuer validation
     # - Audience validation
-    decoded_token = firebase_auth.verify_id_token(id_token, check_revoked=False)
+    #
+    # clock_skew_seconds tolerates small clock drift between this machine and Google
+    # (avoids the "Token used too early / expired" failure when the local clock is a few
+    # seconds off). Google supports up to 60s; 10s is a safe, conservative tolerance.
+    try:
+        decoded_token = firebase_auth.verify_id_token(
+            id_token, check_revoked=False, clock_skew_seconds=10
+        )
+    except TypeError:
+        # Older firebase-admin without clock_skew_seconds — fall back gracefully.
+        decoded_token = firebase_auth.verify_id_token(id_token, check_revoked=False)
     
     logger.debug(f"✅ Verified Firebase token for user: {decoded_token.get('email')}")
     

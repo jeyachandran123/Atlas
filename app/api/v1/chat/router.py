@@ -510,6 +510,57 @@ async def _stream_document_response(
     )
 
 
+def _cognitive_chunks(text: str, size: int = 40):
+    for i in range(0, len(text), size):
+        yield text[i:i + size]
+
+
+def _stream_cognitive_response(*, db, conv_repo, conv_id, user_id, message, request_id, result) -> StreamingResponse:
+    """Stream a brain-produced reply in the SAME SSE contract as the classic path, then
+    persist it. The 'done' frame carries brain metadata (decision/confidence/escalated)
+    additively — the existing frontend ignores unknown fields, so no UI change is needed."""
+    import json
+    import time
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        start = time.monotonic()
+        try:
+            reply = result.reply or ""
+            for chunk in _cognitive_chunks(reply):
+                yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
+            tokens_used = max(1, len(reply) // 4)
+            latency_ms = int((time.monotonic() - start) * 1000)
+            assistant_msg = await conv_repo.add_message(
+                conversation_id=conv_id, role="assistant", content=reply,
+                agent_used="cognitive_os", tokens_used=tokens_used, latency_ms=latency_ms,
+            )
+            await db.commit()
+            await push_session_message(user_id, conv_id, "user", message)
+            await push_session_message(user_id, conv_id, "assistant", reply)
+            done = {
+                "type": "done", "conversation_id": conv_id, "message_id": assistant_msg.id,
+                "tokens_used": tokens_used, "latency_ms": latency_ms,
+                # Brain metadata (additive; classic clients ignore unknown fields).
+                "brain": True, "decision": result.decision, "authorized": result.authorized,
+                "escalated": result.escalated, "confidence": result.confidence, "intent": result.intent,
+            }
+            yield f"data: {json.dumps(done)}\n\n"
+        except Exception as e:  # noqa: BLE001
+            from loguru import logger
+            logger.exception(f"Cognitive stream error: {e}")
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e), 'conversation_id': conv_id})}\n\n"
+
+    return StreamingResponse(
+        event_generator(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no",
+                 "X-Request-ID": request_id, "Connection": "keep-alive"},
+    )
+
+
 @router.post("/stream")
 async def stream_message(
     req: ChatRequest,
@@ -566,6 +617,25 @@ async def stream_message(
             request_id=request_id,
             session_messages=session_messages,
         )
+
+    # ── Cognitive Operating System routing (flag-gated, brain-first with fallback) ──
+    # When COGNITIVE_BRAIN_ENABLED is on, route the turn through the Cognitive OS. If the
+    # brain has nothing usable (e.g. the LLM is unreachable) it returns None and we fall
+    # through to the existing orchestrator — enabling the flag can never break chat.
+    from app.cognitive_integration import cognitive_brain_enabled
+
+    if cognitive_brain_enabled():
+        from app.cognitive_integration.service import cognitive_turn
+
+        brain = await cognitive_turn(
+            req.message, conversation_id=conv.id, user_id=current_user.id,
+            org_id=current_user.org_id, history=session_messages,
+        )
+        if brain is not None:
+            return _stream_cognitive_response(
+                db=db, conv_repo=conv_repo, conv_id=conv.id, user_id=current_user.id,
+                message=req.message, request_id=request_id, result=brain,
+            )
 
     state = initial_state(
         user_message=req.message,
