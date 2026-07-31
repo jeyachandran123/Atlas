@@ -233,13 +233,33 @@ import time
 from typing import AsyncGenerator, Optional
 
 import httpx
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAIError
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.config import get_settings
 from app.shared.exceptions import OllamaUnavailableError
 
 settings = get_settings()
+
+# Reused across calls: constructing AsyncOpenAI per request forces a fresh TLS
+# handshake and discards the connection pool. Built lazily so importing this
+# module never requires an NVIDIA key when LLM_PROVIDER=ollama.
+_nvidia_singleton: AsyncOpenAI | None = None
+
+# deepseek-v4-pro emits a reasoning pass by default. It is filtered out of the
+# stream either way, but generating it costs latency and eats into max_tokens,
+# so turn it off at the template level.
+_NVIDIA_NO_THINKING = {"chat_template_kwargs": {"thinking": False}}
+
+
+def _nvidia_client() -> AsyncOpenAI:
+    global _nvidia_singleton
+    if _nvidia_singleton is None:
+        _nvidia_singleton = AsyncOpenAI(
+            base_url=settings.nvidia_base_url,
+            api_key=settings.nvidia_api_key.get_secret_value(),
+        )
+    return _nvidia_singleton
 
 class OllamaClient:
     """
@@ -263,57 +283,65 @@ class OllamaClient:
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
-        temperature: float = 1.0,
+        temperature: Optional[float] = None,
     ) -> str:
         """Route chat to NVIDIA API (deepseek-v4-pro)."""
-        client = AsyncOpenAI(
-            base_url=settings.nvidia_base_url,
-            api_key=settings.nvidia_api_key.get_secret_value(),
-        )
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        completion = await client.chat.completions.create(
-            model=settings.nvidia_chat_model,
-            messages=messages,
-            temperature=settings.nvidia_temperature,
-            top_p=settings.nvidia_top_p,
-            max_tokens=settings.nvidia_max_tokens,
-            stream=False,
-        )
+        try:
+            completion = await _nvidia_client().chat.completions.create(
+                model=settings.nvidia_chat_model,
+                messages=messages,
+                temperature=(
+                    settings.nvidia_temperature if temperature is None else temperature
+                ),
+                top_p=settings.nvidia_top_p,
+                max_tokens=settings.nvidia_max_tokens,
+                stream=False,
+                extra_body=_NVIDIA_NO_THINKING,
+            )
+        except OpenAIError as e:
+            raise OllamaUnavailableError(f"NVIDIA API unavailable: {e}") from e
         return completion.choices[0].message.content
 
     async def _nvidia_chat_stream(
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
     ) -> AsyncGenerator[str, None]:
         """Streaming version for NVIDIA API."""
-        client = AsyncOpenAI(
-            base_url=settings.nvidia_base_url,
-            api_key=settings.nvidia_api_key.get_secret_value(),
-        )
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        stream = await client.chat.completions.create(
-            model=settings.nvidia_chat_model,
-            messages=messages,
-            temperature=settings.nvidia_temperature,
-            top_p=settings.nvidia_top_p,
-            max_tokens=settings.nvidia_max_tokens,
-            stream=True,
-        )
-        async for chunk in stream:
-            delta = chunk.choices[0].delta
-            # Skip thinking tokens — only yield actual response content
-            content = getattr(delta, "content", None)
-            if content:
-                yield content
+        try:
+            stream = await _nvidia_client().chat.completions.create(
+                model=settings.nvidia_chat_model,
+                messages=messages,
+                temperature=(
+                    settings.nvidia_temperature if temperature is None else temperature
+                ),
+                top_p=settings.nvidia_top_p,
+                max_tokens=settings.nvidia_max_tokens,
+                stream=True,
+                extra_body=_NVIDIA_NO_THINKING,
+            )
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                # Reasoning arrives on delta.reasoning_content, never on delta.content,
+                # so reading content alone keeps any thinking out of the user stream.
+                content = getattr(delta, "content", None)
+                if content:
+                    yield content
+        except OpenAIError as e:
+            raise OllamaUnavailableError(f"NVIDIA API unavailable: {e}") from e
 
     # ── Public interface (same as before — coding_agent.py unchanged) ─────────
 
@@ -327,17 +355,21 @@ class OllamaClient:
         prompt: str,
         system_prompt: Optional[str] = None,
         model: Optional[str] = None,
-        temperature: float = 0.15,
+        temperature: Optional[float] = None,
     ) -> str:
         """
         Single-turn chat completion.
         Routes to NVIDIA or Ollama based on LLM_PROVIDER setting.
+
+        ``temperature=None`` means "use the configured default for whichever
+        provider is active" — NVIDIA_TEMPERATURE or the Ollama default below.
         """
         # ── Switch: NVIDIA ────────────────────────────────────────────────────
         if settings.llm_provider == "nvidia":
             return await self._nvidia_chat(prompt, system_prompt, temperature)
 
         # ── Switch: Ollama (default) ──────────────────────────────────────────
+        temperature = 0.15 if temperature is None else temperature
         model = model or settings.ollama_chat_model
         messages = []
         if system_prompt:
@@ -376,21 +408,27 @@ class OllamaClient:
         prompt: str,
         system_prompt: Optional[str] = None,
         model: Optional[str] = None,
-        temperature: float = 0.1,
+        temperature: Optional[float] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Streaming chat completion.
         Routes to NVIDIA or Ollama based on LLM_PROVIDER setting.
+
+        ``temperature=None`` means "use the configured default for whichever
+        provider is active" — NVIDIA_TEMPERATURE or the Ollama default below.
         """
         # ── Switch: NVIDIA ────────────────────────────────────────────────────
         if settings.llm_provider == "nvidia":
-            async for chunk in self._nvidia_chat_stream(prompt, system_prompt):
+            async for chunk in self._nvidia_chat_stream(
+                prompt, system_prompt, temperature
+            ):
                 yield chunk
             return
 
         # ── Switch: Ollama (default) ──────────────────────────────────────────
         import json as _json
 
+        temperature = 0.1 if temperature is None else temperature
         model = model or settings.ollama_chat_model
         messages = []
         if system_prompt:
