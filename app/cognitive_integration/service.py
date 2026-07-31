@@ -37,3 +37,23 @@ async def cognitive_turn(
     if result.conclusion is None and not result.escalated:
         return None
     return result
+
+
+async def deliberate_turn(
+    message: str,
+    *,
+    conversation_id: str = "conv",
+    user_id: str = "user",
+    org_id: str = "org",
+    history: Sequence[Any] | None = None,
+    pipeline: Any | None = None,
+) -> Any | None:
+    """Governance-only pass for the *streaming* chat path (no generation). Returns a
+    ``Deliberation`` (authorize/escalate + prompts to stream) or ``None`` to fall back."""
+    turn = Turn(message=message, conversation_id=str(conversation_id), user_id=str(user_id),
+                org_id=str(org_id), history=tuple(history or ()))
+    engine = pipeline or get_pipeline()
+    try:
+        return await asyncio.to_thread(engine.deliberate, turn)
+    except Exception:
+        return None

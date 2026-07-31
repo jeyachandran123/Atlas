@@ -73,16 +73,22 @@ class IntentDetectorAdapter:
 class ConversationContextAdapter:
     """ContextPort assembling recent conversation context from the turn history.
 
-    (The full DB-backed Context Builder plugs in here unchanged once an ``AgentState``
-    is available; the slice uses the turn history it already has.)"""
+    Keeps enough of the recent transcript that multi-turn references stay anchored
+    (e.g. "describe Reiner" three turns after "Attack on Titan"). Uses clear role
+    labels so the model treats it as prior dialogue. (The full DB-backed Context
+    Builder / retrieval plugs in here unchanged when richer grounding is wanted.)"""
+
+    MAX_TURNS = 12
+    MAX_CHARS_PER_MESSAGE = 800
 
     def build(self, message: str, turn: Turn) -> str:
         parts = []
-        for h in list(turn.history)[-4:]:
-            role = str(h.get("role", "user"))
-            content = str(h.get("content", ""))[:200]
+        for h in list(turn.history)[-self.MAX_TURNS:]:
+            role = str(h.get("role", "user")).lower()
+            label = "Assistant" if role in ("assistant", "ai", "bot") else "User"
+            content = str(h.get("content", "")).strip()[: self.MAX_CHARS_PER_MESSAGE]
             if content:
-                parts.append(f"{role}: {content}")
+                parts.append(f"{label}: {content}")
         return "\n".join(parts)
 
 

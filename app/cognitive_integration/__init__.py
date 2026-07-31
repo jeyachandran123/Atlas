@@ -18,7 +18,7 @@ gates the whole layer — disabled, the existing production pipeline is untouche
 from __future__ import annotations
 
 from .flag import cognitive_brain_enabled
-from .pipeline import CognitivePipeline
+from .pipeline import CognitivePipeline, Deliberation
 from .ports import (
     ContextPort,
     GenerationPort,
@@ -35,6 +35,7 @@ from .session import CognitiveSession
 __all__ = [
     "CognitiveSession",
     "CognitivePipeline",
+    "Deliberation",
     "cognitive_brain_enabled",
     # ports & DTOs
     "IntentPort",

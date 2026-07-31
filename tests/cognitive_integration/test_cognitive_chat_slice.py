@@ -102,6 +102,21 @@ def test_normal_turn_flows_through_every_faculty() -> None:
         session.shutdown()
 
 
+def test_deliberate_governs_without_generating_for_streaming() -> None:
+    session, llm, pipeline = _build()
+    try:
+        # Governance-only pass (used by the streaming path) does NOT call the LLM.
+        normal = pipeline.deliberate(Turn(message="What is the capital of France?"))
+        assert normal is not None and normal.authorized and not normal.escalated
+        assert normal.system_prompt and normal.user_prompt      # prompts ready to stream
+        assert len(llm.calls) == 0                              # answer is streamed later, not here
+
+        danger = pipeline.deliberate(Turn(message="delete all my documents now"))
+        assert danger is not None and danger.escalated and danger.hold_message  # safety gate, pre-generation
+    finally:
+        session.shutdown()
+
+
 def test_dangerous_request_is_escalated_not_auto_answered() -> None:
     session, llm, pipeline = _build()
     try:

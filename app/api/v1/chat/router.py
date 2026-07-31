@@ -515,34 +515,52 @@ def _cognitive_chunks(text: str, size: int = 40):
         yield text[i:i + size]
 
 
-def _stream_cognitive_response(*, db, conv_repo, conv_id, user_id, message, request_id, result) -> StreamingResponse:
-    """Stream a brain-produced reply in the SAME SSE contract as the classic path, then
-    persist it. The 'done' frame carries brain metadata (decision/confidence/escalated)
-    additively — the existing frontend ignores unknown fields, so no UI change is needed."""
+def _stream_cognitive_response(*, db, conv_repo, conv_id, user_id, message, request_id, delib) -> StreamingResponse:
+    """Stream a brain-governed reply token-by-token (TRUE streaming), then persist it.
+
+    The Executive safety gate (in ``delib``) already decided authorize-vs-escalate. If
+    escalated, we stream the short hold message; otherwise we stream the answer straight
+    from Ollama's ``chat_stream`` so tokens appear progressively (not all at once). The
+    'done' frame carries brain metadata additively — the existing frontend is unchanged.
+    """
     import json
     import time
 
     async def event_generator() -> AsyncGenerator[str, None]:
         start = time.monotonic()
+        full = ""
         try:
-            reply = result.reply or ""
-            for chunk in _cognitive_chunks(reply):
-                yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
-            tokens_used = max(1, len(reply) // 4)
+            if delib.escalated:
+                for chunk in _cognitive_chunks(delib.hold_message or "Held for review."):
+                    full += chunk
+                    yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
+            else:
+                from app.ollama_client import get_ollama_client
+
+                client = get_ollama_client()
+                async for chunk in client.chat_stream(
+                    delib.user_prompt, system_prompt=delib.system_prompt, model=delib.model
+                ):
+                    if not chunk:
+                        continue
+                    full += chunk
+                    yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
+
+            tokens_used = max(1, len(full) // 4)
             latency_ms = int((time.monotonic() - start) * 1000)
             assistant_msg = await conv_repo.add_message(
-                conversation_id=conv_id, role="assistant", content=reply,
+                conversation_id=conv_id, role="assistant", content=full,
                 agent_used="cognitive_os", tokens_used=tokens_used, latency_ms=latency_ms,
             )
             await db.commit()
             await push_session_message(user_id, conv_id, "user", message)
-            await push_session_message(user_id, conv_id, "assistant", reply)
+            await push_session_message(user_id, conv_id, "assistant", full)
             done = {
                 "type": "done", "conversation_id": conv_id, "message_id": assistant_msg.id,
                 "tokens_used": tokens_used, "latency_ms": latency_ms,
                 # Brain metadata (additive; classic clients ignore unknown fields).
-                "brain": True, "decision": result.decision, "authorized": result.authorized,
-                "escalated": result.escalated, "confidence": result.confidence, "intent": result.intent,
+                "brain": True, "decision": delib.decision, "authorized": delib.authorized,
+                "escalated": delib.escalated, "confidence": delib.confidence, "intent": delib.intent,
             }
             yield f"data: {json.dumps(done)}\n\n"
         except Exception as e:  # noqa: BLE001
@@ -625,16 +643,16 @@ async def stream_message(
     from app.cognitive_integration import cognitive_brain_enabled
 
     if cognitive_brain_enabled():
-        from app.cognitive_integration.service import cognitive_turn
+        from app.cognitive_integration.service import deliberate_turn
 
-        brain = await cognitive_turn(
+        delib = await deliberate_turn(
             req.message, conversation_id=conv.id, user_id=current_user.id,
             org_id=current_user.org_id, history=session_messages,
         )
-        if brain is not None:
+        if delib is not None:
             return _stream_cognitive_response(
                 db=db, conv_repo=conv_repo, conv_id=conv.id, user_id=current_user.id,
-                message=req.message, request_id=request_id, result=brain,
+                message=req.message, request_id=request_id, delib=delib,
             )
 
     state = initial_state(
