@@ -84,10 +84,12 @@ def tracker_factory(platform: VisionPlatform, tracker_id: str) -> TrackerPort:
             f"unknown tracker '{tracker_id}'; available: "
             f"{', '.join(sorted(TRACKER_FACTORIES))}"
         )
+    settings = platform.config.tracking()
     return factory(
         lifecycle=build_lifecycle_policy(platform),
         association=build_association_policy(platform),
         config_revision=str(platform.config.revision()),
+        history_length=settings.history_length,
     )
 
 
@@ -105,10 +107,18 @@ def build_tracking_layer(
     degrade, never die (invariant V9).
 
     Raises:
-        TrackingError: no conformance kit is registered for P9. An ungated
-            tracker is never activated, so this is fatal rather than a warning.
+        TrackingError: tracking is not enabled, or no conformance kit is
+            registered for P9. An ungated tracker is never activated, so a
+            missing kit is fatal rather than a warning.
+        ConfigurationError: appearance is enabled but no provider exists.
     """
     settings = platform.config.tracking()
+
+    if not settings.enabled:
+        raise TrackingError(
+            "tracking.enabled is false; a site that does not want tracking should "
+            "not build the layer rather than build one that produces nothing"
+        )
 
     if platform.conformance.get(PortCatalogue.TRACKER) is None:
         raise TrackingError(
@@ -117,13 +127,24 @@ def build_tracking_layer(
             "with conformance=platform_registry()."
         )
 
+    if settings.appearance_enabled:
+        # Loud rather than silent. Appearance embeddings are C2 biometric data
+        # and no provider ships (12_SECURITY section 4.3); quietly running on
+        # geometry instead would hide the gap from the operator who asked for it.
+        raise ConfigurationError(
+            "tracking.appearance_enabled is true but no EmbeddingPort provider "
+            "is available. Appearance embeddings are C2 biometric data, disabled "
+            "by default, and no provider ships with the platform."
+        )
+
     manager = TrackingManager(
         metrics=platform.metrics,
         conformance=platform.conformance,
         fallback_factory=lambda: build_iou_tracker(
-            config_revision=str(platform.config.revision())
+            config_revision=str(platform.config.revision()),
+            history_length=settings.history_length,
         ),
-        appearance_available=False,
+        appearance_available=settings.appearance_enabled,
         require_deterministic=settings.require_deterministic,
     )
 

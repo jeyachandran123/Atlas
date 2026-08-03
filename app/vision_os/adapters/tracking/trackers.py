@@ -30,6 +30,7 @@ def build_iou_tracker(
     lifecycle: LifecyclePolicy | None = None,
     association: AssociationPolicy | None = None,
     config_revision: str = "unset",
+    history_length: int = 32,
 ) -> GeometricTracker:
     """``tracker.iou`` — pure geometry. **The universal fallback.**
 
@@ -54,6 +55,7 @@ def build_iou_tracker(
         association=association or AssociationPolicy(),
         associator=GreedyAssociator(),
         config_revision=config_revision,
+        history_length=history_length,
     )
 
 
@@ -62,6 +64,7 @@ def build_sort_tracker(
     lifecycle: LifecyclePolicy | None = None,
     association: AssociationPolicy | None = None,
     config_revision: str = "unset",
+    history_length: int = 32,
 ) -> GeometricTracker:
     """``tracker.sort`` — linear motion prediction with optimal assignment.
 
@@ -81,6 +84,7 @@ def build_sort_tracker(
         association=association or AssociationPolicy(),
         associator=OptimalAssociator(),
         config_revision=config_revision,
+        history_length=history_length,
     )
 
 
@@ -89,6 +93,7 @@ def build_bytetrack_tracker(
     lifecycle: LifecyclePolicy | None = None,
     association: AssociationPolicy | None = None,
     config_revision: str = "unset",
+    history_length: int = 32,
 ) -> GeometricTracker:
     """``tracker.bytetrack`` — two-stage association.
 
@@ -115,6 +120,7 @@ def build_bytetrack_tracker(
         association=association or AssociationPolicy(),
         associator=OptimalAssociator(),
         config_revision=config_revision,
+        history_length=history_length,
     )
 
 

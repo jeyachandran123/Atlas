@@ -246,18 +246,19 @@ class TrackingSection:
     count rather than of how long any track has lived (port obligation T8)."""
 
     # --- runtime ----------------------------------------------------------- #
-    queue_capacity: int = 8
-    """Small and **blocking**. 08_RUNTIME section 5.2 specifies the
-    Detection-to-Tracking edge as ``block``: *"ordering matters; dropping here
-    corrupts tracks"*. This is a backpressure bound, not a shedding bound."""
-
     frame_timeout_ms: int = 500
+    """Ceiling on one frame's tracking work.
+
+    Backpressure on the Detection-to-Tracking edge is **blocking** by design
+    (08_RUNTIME section 5.2: *"ordering matters; dropping here corrupts
+    tracks"*), so a hung tracker would otherwise stall its camera forever. This
+    bounds the wait and lets the frame fail instead."""
+
     slow_frame_warn_ms: int = 50
     require_deterministic: bool = False
     """When true, a tracker declaring itself non-deterministic fails to bind
     (invariant V13)."""
 
-    use_motion_model: bool = True
     appearance_enabled: bool = False
     """Appearance embeddings are C2 biometric data, **disabled by default**
     (12_SECURITY section 4.3). No provider ships; enabling this without one is a
@@ -294,8 +295,6 @@ class TrackingSection:
             raise ValidationError("tracking.max_tracks_per_camera must be >= 1")
         if self.history_length < 1:
             raise ValidationError("tracking.history_length must be >= 1")
-        if self.queue_capacity < 1:
-            raise ValidationError("tracking.queue_capacity must be >= 1")
         if self.frame_timeout_ms < 1:
             raise ValidationError("tracking.frame_timeout_ms must be >= 1")
 

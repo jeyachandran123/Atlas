@@ -517,11 +517,11 @@ cross-camera state, so cameras are fully parallel with zero contention;
 ### 9.1 Totals
 
 ```
-Plain run:     1,041 passed, 0 skipped        (49.9s)
-Coverage run:  1,030 passed, 11 skipped       94% of app/vision_os
-                                              (9,427 statements, 578 missed)
+Plain run:     1,069 passed, 0 skipped        (36.4s)
+Coverage run:  1,058 passed, 11 skipped       94% of app/vision_os
+                                              (9,436 statements, 563 missed)
 Ruff:          all checks passed
-Wider Atlas:   2,086 tests collect cleanly; tests/cognitive_kernel 36 passed
+Wider Atlas:   2,114 tests collect cleanly; tests/cognitive_kernel 36 passed
 ```
 
 The 11 tests that skip *only* under coverage are timing budgets; instrumentation
@@ -531,7 +531,7 @@ every uninstrumented run.
 
 ### 9.2 Flow 3 tests by required category
 
-439 tests.
+467 tests.
 
 | Category | File | Tests |
 | --- | --- | --- |
@@ -543,6 +543,7 @@ every uninstrumented run.
 | Adapter — tracker behaviour | `unit/test_tracker_behaviour.py` | 68 |
 | Conformance | `unit/test_tracker_conformance.py` | 29 |
 | Integration + port + plugin + failure | `integration/test_tracking_pipeline.py` | 55 |
+| Integration — configuration | `integration/test_tracking_configuration.py` | 28 |
 | Integration — end to end | `integration/test_end_to_end.py` | 9 |
 | Architecture | `test_tracking_architecture.py` | 38 |
 | Performance + concurrency + stress + regression | `test_tracking_performance.py` | 27 |
@@ -653,7 +654,28 @@ Naming one there makes the config schema the place that decides which tracker is
 right, which is the coupling the port structure exists to prevent. The default is
 now empty, and enabling tracking without naming a tracker is a validation error.
 
-### 10.5 Two implementation defects, found by tests, pinned as regressions
+### 10.5 Five configuration fields were dead
+
+An audit of `TrackingSection` against its consumers found five fields that were
+validated but never read: `enabled`, `history_length`, `queue_capacity`,
+`frame_timeout_ms` and `appearance_enabled`.
+
+Dead configuration is worse than absent configuration — it advertises a knob, an
+operator turns it, and nothing happens. Four were wired to real behaviour and one
+was deleted:
+
+| Field | Resolution |
+| --- | --- |
+| `enabled` | Gates `build_tracking_layer`; building a disabled layer is an error. |
+| `history_length` | Reaches the track table's bounded ring. |
+| `frame_timeout_ms` | Bounds the wait on a busy camera's lock (see §11.6). |
+| `appearance_enabled` | Enabling it without a provider is a loud configuration error rather than a silent downgrade to geometry. |
+| `queue_capacity` | **Removed.** Backpressure is the per-camera lock; a bound that nothing reads is a false promise. |
+
+`test_every_tracking_field_is_consumed` is now a standing guard: it fails if a
+field is added to the schema without being wired.
+
+### 10.6 Two implementation defects, found by tests, pinned as regressions
 
 **Coasting positions did not advance.** Predictions extrapolated by one frame's
 elapsed time rather than the cumulative time since the last measurement, so a
@@ -718,14 +740,32 @@ architecture's answer for `n > 100` is spatial hashing (`03_MODULES` §M6
 performance), which is not implemented — the gating already keeps association
 near-linear at the densities the bound permits.
 
-### 11.6 `TrackingSection.queue_capacity` is declared but unused
+### 11.6 The frame timeout cannot interrupt a synchronously wedged tracker
 
-The `block` policy is currently implemented by awaiting the per-camera lock, which
-provides backpressure without an explicit queue. The config field is present for
-when a queued implementation is needed (for example when tracking moves to a
-separate process); today it has no effect. Flagged rather than removed, because
-the architecture specifies the connection as a bounded queue and a future
-distributed deployment will need it.
+`frame_timeout_ms` bounds the **wait** for a busy camera's lock, which is the real
+unbounded-queueing risk on a blocking edge. It cannot bound a tracker that is
+stuck inside a synchronous call: `asyncio.timeout` has no way to interrupt one.
+
+That is a property of Python, not of this design, and the honest mitigation is
+elsewhere — the conformance kit's resource checks, the bounded track table, and
+the requirement that `TrackerPort.update` is pure computation over a small
+in-memory structure. A tracker that blocks on I/O inside `update` is violating
+its port contract, and no timeout would make that safe.
+
+Documented in the test that covers it, so the limit is visible at the point
+someone would otherwise assume the guard is total.
+
+### 11.7 Backpressure is a lock, not a queue
+
+`08_RUNTIME` §5.2 describes the Detection-to-Tracking connection as a bounded
+queue with a `block` policy. The implementation achieves the same semantics with a
+per-camera lock and no queue: ordering is preserved, nothing is dropped, and
+pressure propagates to the scheduler.
+
+The difference matters only when tracking moves to a separate process, where an
+explicit bounded queue would be needed. `queue_capacity` was removed rather than
+left as a knob that does nothing (§10.5); re-adding it is the right move at the
+point a queued transport actually exists.
 
 ---
 
@@ -791,12 +831,12 @@ structurally prevented.
 
 ## Summary
 
-Flow 3 is complete. 15 new source files, 3,858 lines, 439 new tests, 94% coverage,
+Flow 3 is complete. 15 new source files, 3,858 lines, 467 new tests, 94% coverage,
 ruff clean.
 
 The architecture was treated as a constitution. One conflict surfaced during the
 mandatory review — and it lay in Flow 2's implementation, not the architecture, so
-it was resolved by conforming Flow 2 to what the constitution already said. Four
+it was resolved by conforming Flow 2 to what the constitution already said. Five
 further discoveries during implementation (§10) each corrected the code to match
 the architecture rather than the reverse.
 

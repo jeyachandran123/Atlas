@@ -47,6 +47,7 @@ class TrackingRuntimeStats:
     __slots__ = (
         "frames_consumed",
         "frames_failed",
+        "frames_timed_out",
         "frames_tracked",
         "sink_failures",
         "tracks_emitted",
@@ -56,6 +57,7 @@ class TrackingRuntimeStats:
         self.frames_consumed = 0
         self.frames_tracked = 0
         self.frames_failed = 0
+        self.frames_timed_out = 0
         self.tracks_emitted = 0
         self.sink_failures = 0
 
@@ -124,10 +126,27 @@ class TrackingRuntime:
             self._locks[camera_id] = lock
 
         try:
-            async with lock:
-                result = self._engine.track(outcome)
+            # Backpressure here is blocking by design, so the wait must be
+            # bounded: a tracker wedged on one frame would otherwise stall its
+            # camera's whole pipeline indefinitely rather than degrade.
+            async with asyncio.timeout(self._config.frame_timeout_ms / 1000):
+                async with lock:
+                    result = self._engine.track(outcome)
         except asyncio.CancelledError:
             raise
+        except TimeoutError:
+            self._stats.frames_failed += 1
+            self._stats.frames_timed_out += 1
+            self._metrics.counter(
+                MetricName.TRACKING_FAILURES,
+                camera_id=str(camera_id),
+                reason="timeout",
+            ).increment()
+            self._report_health(
+                HealthState.DEGRADED,
+                f"tracking exceeded {self._config.frame_timeout_ms}ms on {camera_id}",
+            )
+            return
         except Exception as exc:  # noqa: BLE001 - the seam is a firewall
             self._stats.frames_failed += 1
             self._metrics.counter(
