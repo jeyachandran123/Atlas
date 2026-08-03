@@ -83,6 +83,45 @@ class MetricName:
     normalized range, unmapped label, contract violation.
     """
 
+    # --- tracking (M6, Flow 3) ---------------------------------------------- #
+    TRACKS_ACTIVE: Final = "vision_os.tracking.active"
+    TRACKS_CREATED: Final = "vision_os.tracking.created"
+    TRACKS_TERMINATED: Final = "vision_os.tracking.terminated"
+    """Labelled by ``break_reason``. The label is what makes a regression
+    attributable: a rise concentrated in ``detector_miss`` points at the
+    detector, not the tracker."""
+
+    TRACKS_RECOVERED: Final = "vision_os.tracking.recovered"
+    TRACKS_COASTING: Final = "vision_os.tracking.coasting"
+    TRACK_LIFETIME_FRAMES: Final = "vision_os.tracking.lifetime_frames"
+    TRACK_LIFETIME_MS: Final = "vision_os.tracking.lifetime_ms"
+    TRACK_HIT_RATIO: Final = "vision_os.tracking.hit_ratio"
+    """Measured frames over total frames, per terminated track. The
+    fragmentation signal: 14_TESTING section 7.2 names fragmentation as the
+    primary cause of downstream object-count errors."""
+
+    TRACKING_FPS: Final = "vision_os.tracking.fps"
+    TRACKING_LATENCY_MS: Final = "vision_os.tracking.latency_ms"
+    ASSOCIATION_MS: Final = "vision_os.tracking.association_ms"
+    ASSOCIATION_FAILURES: Final = "vision_os.tracking.association_failures"
+    """Associations *refused* for ambiguity, not associations that were wrong.
+    The platform cannot know an association was wrong without ground truth; it
+    can know it declined to assert one (invariant V1)."""
+
+    TRACKING_FRAMES_PROCESSED: Final = "vision_os.tracking.frames_processed"
+    TRACKING_FAILURES: Final = "vision_os.tracking.failures"
+    TRACKING_OUT_OF_ORDER: Final = "vision_os.tracking.out_of_order_frames"
+    """A pipeline bug, alarmed rather than absorbed (port obligation T1)."""
+
+    TRACKER_EPOCH_RESETS: Final = "vision_os.tracking.epoch_resets"
+    TRACKER_CAPACITY_REFUSALS: Final = "vision_os.tracking.capacity_refusals"
+    TRACK_TABLE_SATURATION: Final = "vision_os.tracking.table_saturation"
+    TRACKING_STATE_BYTES: Final = "vision_os.tracking.state_bytes"
+    TRACKERS_ACTIVE: Final = "vision_os.tracking.trackers_active"
+    TRACKER_FALLBACKS: Final = "vision_os.tracking.fallbacks"
+    """Times the platform dropped to ``tracker.iou`` because the configured
+    tracker failed. Degradation is visible, never silent (invariant V9)."""
+
     # --- models (M18, Flow 2) ------------------------------------------------ #
     MODELS_LOADED: Final = "vision_os.models.loaded"
     MODEL_EVICTIONS: Final = "vision_os.models.evictions"

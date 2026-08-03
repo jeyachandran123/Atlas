@@ -104,10 +104,20 @@ FLOW2_PORTS: frozenset[PortId] = frozenset(
     }
 )
 
+#: Ports implemented by Flow 3 — tracking.
+#:
+#: ``EMBEDDING`` (P10) is deliberately **absent**. The port is defined so that a
+#: tracker's ``requires_embeddings`` capability is meaningful, but appearance
+#: embeddings are C2 biometric data, disabled by default (12_SECURITY section
+#: 4.3). Making it bindable would let a deployment turn on the platform's most
+#: invasive capability by adding a plugin, which is exactly the accident the
+#: frontier exists to prevent.
+FLOW3_PORTS: frozenset[PortId] = frozenset({PortCatalogue.TRACKER})
+
 #: Everything currently bindable. Binding anything else is rejected, because a
 #: plugin for a port whose owning module does not exist yet cannot be activated —
 #: which is how "no future flow is implemented early" stays enforceable.
-BINDABLE_PORTS: frozenset[PortId] = FLOW1_PORTS | FLOW2_PORTS
+BINDABLE_PORTS: frozenset[PortId] = FLOW1_PORTS | FLOW2_PORTS | FLOW3_PORTS
 
 
 @dataclass(frozen=True, slots=True)

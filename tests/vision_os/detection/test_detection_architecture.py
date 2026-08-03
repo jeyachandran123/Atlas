@@ -265,17 +265,35 @@ class TestFlowScope:
         ):
             assert port in BINDABLE_PORTS
 
-    def test_flow_three_ports_remain_unbindable(self) -> None:
+    def test_flow_four_ports_remain_unbindable(self) -> None:
+        """The frontier moved to Flow 4 when tracking shipped.
+
+        ``EMBEDDING`` and ``IDENTITY_RESOLVER`` stay unbindable regardless of
+        flow: they are the biometric and cross-camera-identity capabilities,
+        disabled by default (12_SECURITY section 4.3, 15_ROADMAP Phase 2).
+        """
         for port in (
-            PortCatalogue.TRACKER,
             PortCatalogue.EMBEDDING,
             PortCatalogue.IDENTITY_RESOLVER,
+            PortCatalogue.TRIGGER_POLICY,
+            PortCatalogue.QUALITY_ESTIMATOR,
+            PortCatalogue.CROP_STRATEGY,
         ):
             assert port not in BINDABLE_PORTS
 
-    def test_no_tracking_or_crop_module_exists(self) -> None:
-        for absent in ("tracking", "registry", "crop", "understanding"):
+    def test_no_crop_or_understanding_module_exists(self) -> None:
+        for absent in ("registry", "crop", "understanding"):
             assert not (PERCEPTION / absent).exists()
+
+    def test_detection_does_not_import_tracking(self) -> None:
+        """Flow 2 must not learn that Flow 3 exists."""
+        offenders: list[str] = []
+        for path in _files(DETECTION):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module and "tracking" in node.module:
+                    offenders.append(f"{_module_of(path)} imports {node.module}")
+        assert not offenders, "\n".join(offenders)
 
     def test_detection_emits_no_observations(self) -> None:
         """Observations are Flow 6. Flow 2 emits detections and events."""

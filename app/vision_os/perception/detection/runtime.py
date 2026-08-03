@@ -7,9 +7,18 @@ This is the only Flow 2 module the Flow 1 Runtime ever holds, and it holds it as
 an ``AdmittedFrameConsumer`` protocol — so Flow 1 never learns that detection
 exists, let alone which detector is bound.
 
-Detections are published to the **Event Bus**, not handed to a named successor.
-Flow 3 subscribes; Flow 2 does not know it will. That is what keeps the layers
-uncoupled as later flows arrive.
+**Two distinct downstream paths, deliberately not the same mechanism:**
+
+* ``DetectionCompleted`` / ``DetectionFailed`` go to the **Event Bus**, for
+  observability. The bus is bounded and lossy by design, which is correct for
+  notification and wrong for pipeline data.
+* The next pipeline stage receives every ``DetectionOutcome`` through the
+  ``DetectionConsumer`` seam — a direct sideways-within-layer handoff
+  (``01_LAYERED`` section 2.1) with backpressure rather than dropping
+  (``08_RUNTIME`` section 5.2, *"ordering matters; dropping here corrupts
+  tracks"*).
+
+The runtime holds the consumer as a protocol and never learns what implements it.
 """
 
 from __future__ import annotations
@@ -18,16 +27,17 @@ import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from ...core.model.detection import Detection
+from ...core.model.detection import Detection, DetectionOutcome
 from ...core.model.health import ComponentHealth, HealthState
 from ...core.model.ids import FrameRef, ModuleId
 from ...core.model.timebase import Duration
 from ...core.ports.clock import Clock
+from ...core.ports.pipeline import DetectionConsumer
 from ...core.ports.scheduling import Fidelity
 from ...kernel.events import EventBus
 from ...kernel.health import HealthMonitor
 from ...kernel.metrics import MetricName, MetricsEngine
-from .engine import DetectionEngine, DetectionOutcome
+from .engine import DetectionEngine
 
 DETECTION_RUNTIME_ID = ModuleId("detection_runtime")
 
@@ -35,10 +45,11 @@ DETECTION_RUNTIME_ID = ModuleId("detection_runtime")
 _DEFAULT_REPORT_INTERVAL = Duration.from_millis(1_000)
 
 DetectionSink = Callable[[Sequence[Detection]], None]
-"""An optional in-process tap on the detection stream.
+"""A synchronous tap on the *non-empty* detection stream.
 
-The Event Bus is the contract; this exists for a co-located consumer that wants
-the objects themselves rather than a reference, and is never required.
+For diagnostics and co-located inspection only. It is **not** the pipeline seam:
+it never fires on empty or failed frames, so a stage that needs to age state must
+use ``DetectionConsumer`` instead.
 """
 
 
@@ -48,6 +59,9 @@ class DetectionRuntimeStats:
     frames_detected: int = 0
     frames_failed: int = 0
     detections_emitted: int = 0
+    consumer_failures: int = 0
+    """Downstream-seam faults. Counted here rather than swallowed, so a broken
+    consumer is visible without being able to stop detection."""
 
     @property
     def failure_rate(self) -> float:
@@ -66,6 +80,7 @@ class DetectionRuntime:
         health: HealthMonitor,
         engine: DetectionEngine,
         sink: DetectionSink | None = None,
+        consumer: DetectionConsumer | None = None,
         report_interval: Duration = _DEFAULT_REPORT_INTERVAL,
     ) -> None:
         self._clock = clock
@@ -74,6 +89,10 @@ class DetectionRuntime:
         self._health = health
         self._engine = engine
         self._sink = sink
+        # The documented pipeline seam. ``None`` is the Flow 2 behaviour: an
+        # outcome is published and dropped. The runtime holds a protocol and
+        # never learns what implements it.
+        self._consumer = consumer
         self._report_interval = report_interval
         self._stats = DetectionRuntimeStats()
         self._started = False
@@ -126,9 +145,9 @@ class DetectionRuntime:
             )
             return
 
-        self._publish(outcome)
+        await self._publish(outcome)
 
-    def _publish(self, outcome: DetectionOutcome) -> None:
+    async def _publish(self, outcome: DetectionOutcome) -> None:
         if outcome.failed:
             self._stats.frames_failed += 1
         else:
@@ -136,13 +155,29 @@ class DetectionRuntime:
             self._stats.detections_emitted += outcome.count
 
         # The engine already published DetectionCompleted / DetectionFailed on the
-        # bus. An in-process sink is an optional convenience for a co-located
-        # consumer and never a substitute for the bus.
+        # bus for observability. The diagnostic sink fires only on non-empty
+        # frames, by contract.
         if self._sink is not None and outcome.detections:
             try:
                 self._sink(outcome.detections)
             except Exception:  # noqa: BLE001, S110 - a bad sink must not break detection
                 pass
+
+        # The pipeline seam. Awaited inline so backpressure reaches the scheduler
+        # and per-camera frame order is preserved (08_RUNTIME section 5.2).
+        # Fires on EVERY outcome — empty and failed included — because that is
+        # when a downstream stage ages or invalidates its state.
+        if self._consumer is not None:
+            try:
+                await self._consumer.on_detected(outcome)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - the seam is a firewall
+                self._stats.consumer_failures += 1
+                self._metrics.counter(
+                    MetricName.PIPELINE_CONSUMER_FAILURES,
+                    camera_id=str(outcome.frame_ref.camera_id),
+                ).increment()
 
         self._maybe_report()
 

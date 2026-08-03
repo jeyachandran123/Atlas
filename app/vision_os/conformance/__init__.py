@@ -21,14 +21,17 @@ from .model_kits import (
     DEVICE_KIT,
     MODEL_RUNTIME_KIT,
 )
+from .tracker_kit import DETERMINISM_CHECK, TRACKER_KIT
 
 __all__ = [
     "ALL_FLOW1_KITS",
     "ALL_MODEL_KITS",
     "ARTIFACT_STORE_KIT",
     "DETECTOR_KIT",
+    "DETERMINISM_CHECK",
     "DEVICE_KIT",
     "MODEL_RUNTIME_KIT",
+    "TRACKER_KIT",
     "ConformanceCheck",
     "ConformanceKit",
     "ConformanceRegistry",

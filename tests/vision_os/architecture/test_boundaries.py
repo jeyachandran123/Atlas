@@ -24,6 +24,7 @@ from app.vision_os.kernel.plugins.manifest import (
     BINDABLE_PORTS,
     FLOW1_PORTS,
     FLOW2_PORTS,
+    FLOW3_PORTS,
 )
 
 ROOT = Path(vision_os_pkg.__file__).parent
@@ -362,20 +363,22 @@ class TestSemanticCeiling:
 class TestFlowScope:
     """No flow may implement responsibilities belonging to a later one.
 
-    These assertions move forward exactly one flow at a time. Flow 2 shipped
-    detection, so the frontier is now Flow 3 (tracking and identity) — and the
-    guards below police *that* boundary, not the one already crossed.
+    These assertions move forward exactly one flow at a time. Flow 3 shipped
+    tracking, so the frontier is now Flow 4 (object registry, cropping) — and the
+    guards below police *that* boundary, not the ones already crossed.
     """
 
     def test_only_implemented_ports_are_bindable(self) -> None:
         assert len(FLOW1_PORTS) == 11
         assert len(FLOW2_PORTS) == 4
-        assert BINDABLE_PORTS == FLOW1_PORTS | FLOW2_PORTS
+        assert len(FLOW3_PORTS) == 1
+        assert BINDABLE_PORTS == FLOW1_PORTS | FLOW2_PORTS | FLOW3_PORTS
 
         later_flow_ports = {
-            "P9.TrackerPort",
             "P10.EmbeddingPort",
             "P11.IdentityResolverPort",
+            "P12.TriggerPolicyPort",
+            "P13.QualityEstimatorPort",
             "P14.CropStrategyPort",
             "P15.UnderstanderPort",
             "P19.ObservationSinkPort",
@@ -386,16 +389,26 @@ class TestFlowScope:
             "a port whose owning module does not exist cannot be bindable"
         )
 
-    def test_no_later_flow_object_kinds_exist(self) -> None:
-        """Track, Crop, Attribute, Observation belong to Flows 3-7.
+    def test_embedding_stays_unbindable_even_though_tracking_ships(self) -> None:
+        """P10 is a Flow 3-adjacent port that must **not** become bindable.
 
-        ``Detection`` is legitimately present as of Flow 2.
+        Appearance embeddings are C2 biometric data, disabled by default
+        (12_SECURITY section 4.3). Tracking shipping is not a reason to enable
+        the platform's most invasive capability.
+        """
+        assert "P10.EmbeddingPort" not in BINDABLE_PORTS
+
+    def test_no_later_flow_object_kinds_exist(self) -> None:
+        """Crop, Attribute, Observation belong to Flows 4-7.
+
+        ``Detection`` and ``Track`` are legitimately present as of Flows 2 and 3.
         """
         import app.vision_os.core.model as model
 
         assert hasattr(model, "Detection"), "Flow 2 implements the Detection kind"
+        assert hasattr(model, "Track"), "Flow 3 implements the Track kind"
         for absent in (
-            "Track", "VisualObject", "Crop", "Attribute",
+            "VisualObject", "Crop", "Attribute",
             "Observation", "Evidence", "VisionState",
         ):
             assert not hasattr(model, absent), (
@@ -403,13 +416,13 @@ class TestFlowScope:
             )
 
     def test_no_later_flow_modules_exist(self) -> None:
-        for absent in ("tracking", "understanding", "state", "api", "observation", "crop"):
+        for absent in ("understanding", "state", "api", "observation", "crop", "synthesis"):
             assert not (ROOT / absent).exists(), (
                 f"package '{absent}' belongs to a later flow"
             )
-        for absent in ("tracking", "registry", "crop"):
+        for absent in ("registry", "crop", "understanding"):
             assert not (ROOT / "perception" / absent).exists(), (
-                f"perception/{absent} belongs to Flow 3 or later"
+                f"perception/{absent} belongs to Flow 4 or later"
             )
 
     def test_detection_holds_no_temporal_state(self) -> None:

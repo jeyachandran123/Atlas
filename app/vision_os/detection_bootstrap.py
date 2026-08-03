@@ -200,6 +200,7 @@ def build_detection_layer(
     conformance: ConformanceRegistry | None = None,
     taxonomy: TaxonomyRegistry | None = None,
     detection_sink=None,
+    detection_consumer=None,
 ) -> DetectionLayer:
     """Assemble Flow 2 against an already-built Flow 1 platform.
 
@@ -282,6 +283,7 @@ def build_detection_layer(
         health=platform.health,
         engine=engine,
         sink=detection_sink,
+        consumer=detection_consumer,
     )
     return DetectionLayer(
         taxonomy=registry,

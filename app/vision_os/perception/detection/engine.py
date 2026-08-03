@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections.abc import Sequence
-from dataclasses import dataclass
 
 from ...acquisition import FrameBuffer
 from ...core.errors import (
@@ -28,7 +27,7 @@ from ...core.errors import (
     FrameUnavailableError,
     NotFoundError,
 )
-from ...core.model.detection import Detection
+from ...core.model.detection import Detection, DetectionOutcome
 from ...core.model.frame import Frame
 from ...core.model.health import ComponentHealth, HealthState
 from ...core.model.ids import CameraId, ClassId, FrameRef, ModuleId
@@ -60,24 +59,10 @@ DETECTION_ENGINE_ID = ModuleId("detection_engine")
 LEASE_HOLDER = "detection_engine"
 
 
-@dataclass(frozen=True, slots=True)
-class DetectionOutcome:
-    """What one frame produced.
-
-    ``detections`` being empty is a **valid, non-error** outcome — "nothing was
-    there". ``failed`` distinguishes "we could not look", which is a different
-    fact entirely (port obligation D5, invariant V8).
-    """
-
-    frame_ref: FrameRef
-    detections: tuple[Detection, ...]
-    failed: bool = False
-    reason: str = ""
-    rejected: tuple[tuple[str, str], ...] = ()
-
-    @property
-    def count(self) -> int:
-        return len(self.detections)
+#: Re-exported for the many call sites that import it from the engine. The type
+#: itself lives in ``core.model.detection`` because it is the payload of the
+#: Detection-to-Tracking handoff and a port may not name a flow-layer type.
+__all__ = ["DETECTION_ENGINE_ID", "DetectionEngine", "DetectionOutcome"]
 
 
 class DetectionEngine:

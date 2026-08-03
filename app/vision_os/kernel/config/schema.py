@@ -192,6 +192,115 @@ class DetectionSection:
 
 
 @dataclass(frozen=True, slots=True)
+class TrackingSection:
+    """Tracking operating envelope (M6, Flow 3).
+
+    Resource- and capability-shaped only. There is no slot here for "track
+    people more carefully near the till": tracking has no vocabulary for what a
+    region means, and adding one would breach the Semantic Ceiling (V1/V2).
+
+    Every bound is finite and none may be disabled. Together they are the whole
+    of "track memory" — tracking owns short temporal continuity and must never
+    become long-term memory (03_MODULES M6 state ownership).
+    """
+
+    enabled: bool = False
+    """Off unless a deployment declares a tracker. Flow 2 behaviour is the
+    default, so adding Flow 3 to a running site is an explicit act."""
+
+    tracker_id: str = ""
+    """Selects the adapter. Resolved through a factory table in the composition
+    root; the platform never learns what it names.
+
+    **No default on purpose.** Naming one here would make the config schema —
+    a platform module — the place that decides which tracker is right, which is
+    the coupling the port structure exists to prevent. A deployment that enables
+    tracking must say which tracker it wants."""
+
+    # --- association ------------------------------------------------------- #
+    iou_threshold: float = 0.1
+    """Hard geometric gate. Below this a pair is not a candidate at all."""
+
+    max_association_cost: float = 0.7
+    ambiguity_margin: float = 0.05
+    """Minimum cost gap to the runner-up before a match is asserted. Below it
+    the association is refused and the track coasts — 03_MODULES M6's *"prefer
+    terminating a track over a wrong association"* as a number."""
+
+    iou_weight: float = 0.6
+    distance_weight: float = 0.25
+    scale_weight: float = 0.15
+    gate_multiplier: float = 3.0
+
+    # --- lifecycle / track memory ------------------------------------------ #
+    min_hits_to_confirm: int = 3
+    max_coast_frames: int = 5
+    max_lost_frames: int = 15
+    """Recovery window. After this the track terminates and its id is retired
+    for the epoch."""
+
+    max_age_frames: int = 36_000
+    max_tracks_per_camera: int = 256
+    history_length: int = 32
+    """Frames retained per track. Bounded, so memory is a function of track
+    count rather than of how long any track has lived (port obligation T8)."""
+
+    # --- runtime ----------------------------------------------------------- #
+    queue_capacity: int = 8
+    """Small and **blocking**. 08_RUNTIME section 5.2 specifies the
+    Detection-to-Tracking edge as ``block``: *"ordering matters; dropping here
+    corrupts tracks"*. This is a backpressure bound, not a shedding bound."""
+
+    frame_timeout_ms: int = 500
+    slow_frame_warn_ms: int = 50
+    require_deterministic: bool = False
+    """When true, a tracker declaring itself non-deterministic fails to bind
+    (invariant V13)."""
+
+    use_motion_model: bool = True
+    appearance_enabled: bool = False
+    """Appearance embeddings are C2 biometric data, **disabled by default**
+    (12_SECURITY section 4.3). No provider ships; enabling this without one is a
+    configuration error rather than a silent downgrade to geometry."""
+
+    def __post_init__(self) -> None:
+        if self.enabled and not self.tracker_id:
+            raise ValidationError(
+                "tracking.enabled is true but no tracking.tracker_id is named; the "
+                "platform has no opinion about which tracker is right for a site"
+            )
+        for name in ("iou_threshold", "max_association_cost"):
+            value = getattr(self, name)
+            if not 0.0 <= value <= 1.0:
+                raise ValidationError(f"tracking.{name} must be in [0,1]")
+        if self.ambiguity_margin < 0.0:
+            raise ValidationError("tracking.ambiguity_margin must be >= 0")
+        for name in ("iou_weight", "distance_weight", "scale_weight"):
+            if getattr(self, name) < 0.0:
+                raise ValidationError(f"tracking.{name} must be >= 0")
+        if self.iou_weight + self.distance_weight + self.scale_weight <= 0.0:
+            raise ValidationError("tracking association weights must sum above zero")
+        if self.gate_multiplier < 0.0:
+            raise ValidationError("tracking.gate_multiplier must be >= 0")
+        if self.min_hits_to_confirm < 1:
+            raise ValidationError("tracking.min_hits_to_confirm must be >= 1")
+        if self.max_coast_frames < 0:
+            raise ValidationError("tracking.max_coast_frames must be >= 0")
+        if self.max_lost_frames < 0:
+            raise ValidationError("tracking.max_lost_frames must be >= 0")
+        if self.max_age_frames < 1:
+            raise ValidationError("tracking.max_age_frames must be >= 1")
+        if self.max_tracks_per_camera < 1:
+            raise ValidationError("tracking.max_tracks_per_camera must be >= 1")
+        if self.history_length < 1:
+            raise ValidationError("tracking.history_length must be >= 1")
+        if self.queue_capacity < 1:
+            raise ValidationError("tracking.queue_capacity must be >= 1")
+        if self.frame_timeout_ms < 1:
+            raise ValidationError("tracking.frame_timeout_ms must be >= 1")
+
+
+@dataclass(frozen=True, slots=True)
 class ModelsSection:
     """Model artifact and device policy (M18, Flow 2)."""
 
@@ -349,6 +458,7 @@ class EffectiveConfig:
     runtime: RuntimeSection
     detection: DetectionSection = DetectionSection()
     models: ModelsSection = ModelsSection()
+    tracking: TrackingSection = TrackingSection()
     profiles: tuple[ProfileDeclaration, ...] = ()
     regions: tuple[RegionDeclaration, ...] = ()
     cameras: tuple[CameraDeclaration, ...] = ()
@@ -368,6 +478,7 @@ SECTION_TYPES: dict[str, type] = {
     "runtime": RuntimeSection,
     "detection": DetectionSection,
     "models": ModelsSection,
+    "tracking": TrackingSection,
 }
 
 LIST_SECTIONS: frozenset[str] = frozenset(

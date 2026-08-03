@@ -374,6 +374,145 @@ class PerformanceWarning(Event):
     expected: float = 0.0
 
 
+# --- tracking (M6, Flow 3) ------------------------------------------------- #
+
+
+@dataclass(frozen=True, slots=True)
+class TrackCreated(Event):
+    """A new track was started.
+
+    ``track_id`` is the full composite ``camera/epoch/#local``. Publishing the
+    bare local id would let a subscriber treat it as an identity, which it is
+    not (invariant V10).
+    """
+
+    event_type: ClassVar[str] = "tracking.track_created"
+    camera_id: CameraId = CameraId("")
+    track_id: str = ""
+    tracker_epoch: int = 0
+    class_id: str = ""
+    frame_ref: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class TrackUpdated(Event):
+    """A track was measured again this frame."""
+
+    event_type: ClassVar[str] = "tracking.track_updated"
+    camera_id: CameraId = CameraId("")
+    track_id: str = ""
+    state: str = ""
+    association_confidence: float = 0.0
+    measurement_basis: str = "measured"
+
+
+@dataclass(frozen=True, slots=True)
+class TrackRecovered(Event):
+    """A coasting or lost track was re-associated.
+
+    A transition, not a state: recovery is expressible entirely as
+    ``coasting|lost -> confirmed``, so it is published rather than modelled as a
+    sixth lifecycle state the architecture does not define.
+    """
+
+    event_type: ClassVar[str] = "tracking.track_recovered"
+    camera_id: CameraId = CameraId("")
+    track_id: str = ""
+    coasted_frames: int = 0
+    previous_state: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class TrackLost(Event):
+    """A track exhausted its coast budget and entered the recovery window."""
+
+    event_type: ClassVar[str] = "tracking.track_lost"
+    camera_id: CameraId = CameraId("")
+    track_id: str = ""
+    coasted_frames: int = 0
+    break_reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class TrackTerminated(Event):
+    """A track ended. Final — the id is retired for the epoch.
+
+    ``break_reason`` is the field that makes tracker regressions findable:
+    *"we lost 40% more tracks this week, all with detector_miss"* points at the
+    detector rather than the tracker (02_VOM section 10.5).
+    """
+
+    event_type: ClassVar[str] = "tracking.track_terminated"
+    camera_id: CameraId = CameraId("")
+    track_id: str = ""
+    break_reason: str = ""
+    age_frames: int = 0
+    hit_count: int = 0
+    lifetime_ms: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class AssociationFailure(Event):
+    """An association was **refused** as too ambiguous to assert.
+
+    Not a wrong association — the platform cannot know that without ground
+    truth. This is the tracker declining to bind rather than risking an ID
+    switch, which 03_MODULES M6 requires it prefer.
+    """
+
+    event_type: ClassVar[str] = "tracking.association_failure"
+    camera_id: CameraId = CameraId("")
+    track_id: str = ""
+    best_cost: float = 0.0
+    runner_up_cost: float = 0.0
+    margin: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class TrackingWarning(Event):
+    """Tracking is degraded but running."""
+
+    event_type: ClassVar[str] = "tracking.warning"
+    camera_id: CameraId = CameraId("")
+    reason: str = ""
+    detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class TrackerLoaded(Event):
+    event_type: ClassVar[str] = "tracking.tracker_loaded"
+    adapter_id: str = ""
+    version: str = ""
+    deterministic: bool = True
+    is_fallback: bool = False
+    """True when the platform dropped to ``tracker.iou`` because the configured
+    tracker failed. Degradation is announced, never silent (invariant V9)."""
+
+
+@dataclass(frozen=True, slots=True)
+class TrackerUnloaded(Event):
+    event_type: ClassVar[str] = "tracking.tracker_unloaded"
+    adapter_id: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class TrackerEpochAdvanced(Event):
+    """A camera's tracker was reset and a new epoch minted.
+
+    Consumers must see this: without it, every track vanishing at once and new
+    ids appearing looks like the whole scene teleported (03_MODULES M6 failure
+    handling).
+    """
+
+    event_type: ClassVar[str] = "tracking.epoch_advanced"
+    camera_id: CameraId = CameraId("")
+    previous_epoch: int = 0
+    epoch: int = 0
+    reason: str = ""
+    discarded_tracks: int = 0
+
+
 ALL_EVENT_TYPES: tuple[type[Event], ...] = (
     StreamConnected,
     StreamLost,
@@ -408,4 +547,14 @@ ALL_EVENT_TYPES: tuple[type[Event], ...] = (
     DetectorUnloaded,
     ThresholdExceeded,
     PerformanceWarning,
+    TrackCreated,
+    TrackUpdated,
+    TrackRecovered,
+    TrackLost,
+    TrackTerminated,
+    AssociationFailure,
+    TrackingWarning,
+    TrackerLoaded,
+    TrackerUnloaded,
+    TrackerEpochAdvanced,
 )

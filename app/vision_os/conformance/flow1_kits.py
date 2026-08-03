@@ -595,9 +595,16 @@ def platform_registry() -> ConformanceRegistry:
     """
     from .detector_kit import DETECTOR_KIT
     from .model_kits import ARTIFACT_STORE_KIT, DEVICE_KIT, MODEL_RUNTIME_KIT
+    from .tracker_kit import TRACKER_KIT
 
     registry = flow1_registry()
-    for kit in (DETECTOR_KIT, ARTIFACT_STORE_KIT, MODEL_RUNTIME_KIT, DEVICE_KIT):
+    for kit in (
+        DETECTOR_KIT,
+        ARTIFACT_STORE_KIT,
+        MODEL_RUNTIME_KIT,
+        DEVICE_KIT,
+        TRACKER_KIT,
+    ):
         registry.register(kit)
     return registry
 

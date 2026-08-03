@@ -305,3 +305,75 @@ class DetectionQueueFullError(DetectionError):
 
 class TaxonomyError(VisionOSError):
     """A taxonomy class or mapping is unknown, malformed, or inconsistent."""
+
+
+# --- tracking (Flow 3) ---------------------------------------------------- #
+
+
+class TrackingError(VisionOSError):
+    """Base for the tracking layer."""
+
+
+class TrackingFailedError(TrackingError):
+    """A tracker could not process a frame.
+
+    Distinct from an update that produced no tracks, which is valid. Conflating
+    them makes "the tracker broke" and "nothing is in view" the same fact.
+    """
+
+    failure_class = FailureClass.TRANSIENT
+
+
+class OutOfOrderFrameError(TrackingError):
+    """A frame arrived before one already processed for this camera.
+
+    **Loud on purpose** (03_MODULES M6, port obligation T1). Out-of-order frames
+    corrupt tracking silently: the motion model integrates a negative time step,
+    positions run backwards, and associations degrade in a way that looks like
+    poor tracker quality rather than a pipeline bug. The architecture requires
+    this be rejected and alarmed rather than absorbed.
+    """
+
+    failure_class = FailureClass.BYZANTINE
+
+
+class IllegalTransitionError(TrackingError):
+    """A track was asked to move between states that do not connect.
+
+    Byzantine rather than transient: the lifecycle is a closed machine, so this
+    can only mean a tracker or an adapter is constructing state incorrectly.
+    """
+
+    failure_class = FailureClass.BYZANTINE
+
+
+class TrackerContractError(TrackingError):
+    """An adapter violated its port contract at runtime.
+
+    Reused track ids within an epoch, cross-camera state leakage, a predicted
+    position presented as measured — structurally plausible, semantically wrong.
+    """
+
+    failure_class = FailureClass.BYZANTINE
+
+
+class TrackerCapacityError(TrackingError):
+    """The tracker's bounded track table is full.
+
+    Bounded by design (port obligation T8): a crowd scene must degrade by
+    refusing new tracks, never by growing without limit.
+    """
+
+    failure_class = FailureClass.SYSTEMIC
+
+
+class EmbeddingUnavailableError(TrackingError):
+    """A tracker requiring appearance embeddings has no provider configured.
+
+    Fails loudly rather than degrading to geometry, because a silent degradation
+    would make a capability gap invisible to the consumer (invariant V8). Note
+    that no embedding provider ships: appearance embeddings are C2 biometric
+    data and are disabled by default (12_SECURITY section 4).
+    """
+
+    failure_class = FailureClass.PERSISTENT

@@ -52,6 +52,16 @@ DetectionId = NewType("DetectionId", str)
 StreamEpoch = NewType("StreamEpoch", int)
 FrameSeq = NewType("FrameSeq", int)
 
+# --- tracking identifiers (Flow 3) ---------------------------------------- #
+
+TrackerEpoch = NewType("TrackerEpoch", int)
+"""Monotonic per camera; +1 on every tracker reset. Tracks do not survive a
+reset, so the epoch is what stops a recycled ``LocalTrackId`` from silently
+appearing to continue a track it has nothing to do with."""
+
+LocalTrackId = NewType("LocalTrackId", int)
+"""A tracker's own counter, meaningful only inside one ``(camera, epoch)``."""
+
 
 # --- ULID ---------------------------------------------------------------- #
 
@@ -130,3 +140,43 @@ class FrameRef:
 
     def __str__(self) -> str:
         return f"{self.camera_id}/e{self.stream_epoch}/f{self.frame_seq}"
+
+
+# --- TrackId ------------------------------------------------------------- #
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class TrackId:
+    """``(camera_id, tracker_epoch, local_id)`` — 02_VOM section 4.1.
+
+    **Composite on purpose.** A bare integer track id is the single most common
+    route by which a camera-local, fragile, seconds-lived handle gets mistaken
+    for durable identity: it compares equal across cameras, survives a tracker
+    reset in appearance only, and reads like a primary key.
+
+    Carrying the camera and the epoch inside the identifier makes every one of
+    those mistakes a type-level impossibility rather than a convention. A track
+    id from another camera cannot collide, and one from a previous epoch cannot
+    compare equal to a live track (invariant V10, port obligation T3).
+
+    A ``TrackId`` is **not an identity**. It answers "is this the same thing I
+    saw a moment ago on this camera", never "who is this". Durable identity is
+    ``ObjectId``, minted by the Object Registry, which is not this flow.
+    """
+
+    camera_id: CameraId
+    tracker_epoch: TrackerEpoch
+    local_id: LocalTrackId
+
+    def __post_init__(self) -> None:
+        if self.tracker_epoch < 0:
+            raise ValueError(f"tracker_epoch must be non-negative, got {self.tracker_epoch}")
+        if self.local_id < 0:
+            raise ValueError(f"local_id must be non-negative, got {self.local_id}")
+
+    def same_epoch_as(self, other: TrackId) -> bool:
+        """Whether two ids are even comparable as continuity claims."""
+        return self.camera_id == other.camera_id and self.tracker_epoch == other.tracker_epoch
+
+    def __str__(self) -> str:
+        return f"{self.camera_id}/t{self.tracker_epoch}/#{self.local_id}"

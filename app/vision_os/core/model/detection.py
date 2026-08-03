@@ -175,3 +175,27 @@ class Detection:
     def is_a(self, ancestor: ClassId) -> bool:
         """Hierarchical class match without consulting the registry."""
         return self.class_id == ancestor or self.class_id.startswith(f"{ancestor}.")
+
+
+@dataclass(frozen=True, slots=True)
+class DetectionOutcome:
+    """What one frame produced.
+
+    ``detections`` being empty is a **valid, non-error** outcome — "nothing was
+    there". ``failed`` distinguishes "we could not look", which is a different
+    fact entirely (port obligation D5, invariant V8).
+
+    Lives in the object model rather than inside the Detection Engine because it
+    is the payload of the documented Detection-to-Tracking handoff, and a port
+    may not name a type that lives inside a flow layer.
+    """
+
+    frame_ref: FrameRef
+    detections: tuple[Detection, ...]
+    failed: bool = False
+    reason: str = ""
+    rejected: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def count(self) -> int:
+        return len(self.detections)

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from ..model.detection import DetectionOutcome
 from ..model.ids import FrameRef
 from .scheduling import Fidelity
 
@@ -42,4 +43,32 @@ class AdmittedFrameConsumer(Protocol):
                 read its pixels; treat ``FrameUnavailableError`` as normal.
             fidelity: The resolution tier and model tier the scheduler selected.
         """
+        ...
+
+
+@runtime_checkable
+class DetectionConsumer(Protocol):
+    """Resumes the pipeline after detection — the L2 Detection-to-Tracking handoff.
+
+    ``01_LAYERED`` section 2.1 classifies this as a **sideways within-layer**
+    dependency: a direct call along the declared intra-layer order, not an Event
+    Bus notification. ``08_RUNTIME`` section 5.2 specifies the connection as a
+    bounded queue with a **block** policy, because *"ordering matters; dropping
+    here corrupts tracks"*. The Event Bus is lossy by design and is therefore the
+    wrong transport for this edge, however right it is for observability.
+
+    **Every outcome is delivered, including empty and failed ones.** This is not
+    an optimization detail — it is a correctness requirement:
+
+    * an empty frame is exactly when a track coasts, ages, and eventually
+      terminates. A consumer that only sees non-empty frames never ages anything;
+    * ``failed`` and empty are different facts. "The detector broke" must never
+      be indistinguishable from "nothing was there" (invariant V8).
+
+    Implementations **must not raise**, for the same reason
+    ``AdmittedFrameConsumer`` must not.
+    """
+
+    async def on_detected(self, outcome: DetectionOutcome) -> None:
+        """Consume one frame's detection outcome, in per-camera frame order."""
         ...

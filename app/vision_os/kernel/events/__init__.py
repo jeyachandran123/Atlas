@@ -8,6 +8,7 @@ from __future__ import annotations
 from .bus import BusStats, DeliveryPolicy, EventBus, OverflowPolicy, Subscription
 from .events import (
     ALL_EVENT_TYPES,
+    AssociationFailure,
     BudgetExceeded,
     CameraChanged,
     CanaryPromoted,
@@ -41,11 +42,21 @@ from .events import (
     StreamLost,
     SustainedDropAlarm,
     ThresholdExceeded,
+    TrackCreated,
+    TrackerEpochAdvanced,
+    TrackerLoaded,
+    TrackerUnloaded,
+    TrackingWarning,
+    TrackLost,
+    TrackRecovered,
+    TrackTerminated,
+    TrackUpdated,
     ViewpointDriftSuspected,
 )
 
 __all__ = [
     "ALL_EVENT_TYPES",
+    "AssociationFailure",
     "BudgetExceeded",
     "BusStats",
     "CameraChanged",
@@ -84,5 +95,14 @@ __all__ = [
     "Subscription",
     "SustainedDropAlarm",
     "ThresholdExceeded",
+    "TrackCreated",
+    "TrackLost",
+    "TrackRecovered",
+    "TrackTerminated",
+    "TrackUpdated",
+    "TrackerEpochAdvanced",
+    "TrackerLoaded",
+    "TrackerUnloaded",
+    "TrackingWarning",
     "ViewpointDriftSuspected",
 ]

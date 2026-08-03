@@ -53,6 +53,7 @@ from .schema import (
     SchedulerSection,
     SourceSection,
     TaxonomyClassDeclaration,
+    TrackingSection,
     validate,
 )
 
@@ -283,6 +284,9 @@ class ConfigurationManager:
     def models(self) -> ModelsSection:
         return self.effective().models
 
+    def tracking(self) -> TrackingSection:
+        return self.effective().tracking
+
     def taxonomy(self) -> tuple[TaxonomyClassDeclaration, ...]:
         return self.effective().taxonomy
 
@@ -446,6 +450,7 @@ def _build_effective(merged: dict[str, Any]) -> EffectiveConfig:
         runtime=sections["runtime"],
         detection=sections["detection"],
         models=sections["models"],
+        tracking=sections["tracking"],
         profiles=tuple(_build_profile(p) for p in merged.get("profiles", []) or []),
         regions=tuple(_build_region(r) for r in merged.get("regions", []) or []),
         cameras=tuple(_build_camera(c) for c in merged.get("cameras", []) or []),

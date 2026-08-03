@@ -374,18 +374,34 @@ class TestPluginCompatibility:
     def test_later_flow_port_is_not_bindable(self, plugins: PluginManager) -> None:
         """A plugin for a port whose owning module does not exist yet cannot bind.
 
-        ``TrackerPort`` belongs to Flow 3. Detection's ``DetectorPort`` became
-        bindable in Flow 2, so this guard tracks the current frontier rather than
-        a boundary already crossed.
+        ``CropStrategyPort`` belongs to Flow 4. ``TrackerPort`` became bindable
+        in Flow 3, so this guard tracks the current frontier rather than a
+        boundary already crossed.
         """
         plugins.register(
             PluginDescriptor(
-                _manifest(plugin_id="tracker.bytetrack", port=PortCatalogue.TRACKER),
+                _manifest(plugin_id="crop.centre", port=PortCatalogue.CROP_STRATEGY),
                 _GoodAllocator,
             )
         )
         with pytest.raises(PortIncompatibleError, match="not bindable"):
-            plugins.load(PluginId("tracker.bytetrack"))
+            plugins.load(PluginId("crop.centre"))
+
+    def test_the_embedding_port_is_never_bindable(self, plugins: PluginManager) -> None:
+        """Not a frontier guard — a standing one.
+
+        Appearance embeddings are C2 biometric data, disabled by default
+        (12_SECURITY section 4.3). This must not become bindable when Flow 4
+        ships, or any later flow.
+        """
+        plugins.register(
+            PluginDescriptor(
+                _manifest(plugin_id="embedding.osnet", port=PortCatalogue.EMBEDDING),
+                _GoodAllocator,
+            )
+        )
+        with pytest.raises(PortIncompatibleError, match="not bindable"):
+            plugins.load(PluginId("embedding.osnet"))
 
     def test_unregistered_plugin_is_typed(self, plugins: PluginManager) -> None:
         from app.vision_os.core.errors import PluginError
