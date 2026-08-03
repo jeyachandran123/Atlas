@@ -12,7 +12,9 @@ from .manager import (
 )
 from .manifest import (
     ALL_PORTS,
+    BINDABLE_PORTS,
     FLOW1_PORTS,
+    FLOW2_PORTS,
     IsolationLevel,
     PluginManifest,
     PortCatalogue,
@@ -22,7 +24,9 @@ from .manifest import (
 
 __all__ = [
     "ALL_PORTS",
+    "BINDABLE_PORTS",
     "FLOW1_PORTS",
+    "FLOW2_PORTS",
     "PLATFORM_VERSION",
     "PORT_VERSIONS",
     "IsolationLevel",

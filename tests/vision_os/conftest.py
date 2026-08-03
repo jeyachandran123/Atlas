@@ -8,6 +8,7 @@ the seam, so tests exercise production code paths rather than stand-ins.
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import Sequence
 
 import pytest
@@ -64,6 +65,19 @@ FRAME_BYTES = WIDTH * HEIGHT * CHANNELS
 TENANT = TenantId("acme")
 SITE = SiteId("site-sg-01")
 CAMERA = CameraId("cam-01")
+
+
+#: Timing budgets are meaningless under a trace function.
+#:
+#: Coverage instrumentation inflates per-call cost by an order of magnitude, so a
+#: latency assertion measured under it tests the profiler, not the platform.
+#: Growth and boundedness assertions stay enabled — those are still valid.
+UNDER_TRACING = sys.gettrace() is not None
+
+skip_if_traced = pytest.mark.skipif(
+    UNDER_TRACING,
+    reason="timing budget is not measurable under coverage instrumentation",
+)
 
 
 def pytest_configure(config: pytest.Config) -> None:

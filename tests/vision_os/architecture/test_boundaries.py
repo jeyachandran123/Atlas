@@ -20,7 +20,11 @@ import pytest
 
 import app.vision_os as vision_os_pkg
 from app.vision_os.kernel.config.schema import ALLOWED_TOP_LEVEL, SECTION_TYPES, allowed_keys
-from app.vision_os.kernel.plugins.manifest import FLOW1_PORTS
+from app.vision_os.kernel.plugins.manifest import (
+    BINDABLE_PORTS,
+    FLOW1_PORTS,
+    FLOW2_PORTS,
+)
 
 ROOT = Path(vision_os_pkg.__file__).parent
 
@@ -29,6 +33,8 @@ KERNEL = ROOT / "kernel"
 ACQUISITION = ROOT / "acquisition"
 ADAPTERS = ROOT / "adapters"
 CONFORMANCE = ROOT / "conformance"
+PERCEPTION = ROOT / "perception"
+TAXONOMY = ROOT / "taxonomy"
 
 
 def _python_files(directory: Path) -> list[Path]:
@@ -118,7 +124,7 @@ class TestNoExternalTechnologyInPlatform:
         NVDEC and RTSP arrive.
         """
         offenders: list[str] = []
-        for directory in (CORE, KERNEL, ACQUISITION, CONFORMANCE):
+        for directory in (CORE, KERNEL, ACQUISITION, CONFORMANCE, PERCEPTION, TAXONOMY):
             for path in _python_files(directory):
                 for imported in _imports(path):
                     root = imported.split(".")[0]
@@ -164,7 +170,7 @@ class TestLayerDependencyLaw:
             "NullEventTransport", "SampledDigestChangeDetector",
         )
         offenders: list[str] = []
-        for directory in (CORE, KERNEL, ACQUISITION):
+        for directory in (CORE, KERNEL, ACQUISITION, PERCEPTION, TAXONOMY):
             for path in _python_files(directory):
                 text = path.read_text(encoding="utf-8")
                 for name in concrete:
@@ -182,7 +188,7 @@ class TestInjectedClock:
         pattern = re.compile(r"\btime\.(time|time_ns|monotonic|monotonic_ns)\s*\(")
         allowed = {"kernel/clock.py", "core/model/ids.py"}
         offenders: list[str] = []
-        for directory in (CORE, KERNEL, ACQUISITION, ADAPTERS):
+        for directory in (CORE, KERNEL, ACQUISITION, ADAPTERS, PERCEPTION, TAXONOMY):
             for path in _python_files(directory):
                 module = _module_of(path)
                 if module in allowed:
@@ -195,7 +201,7 @@ class TestInjectedClock:
 
     def test_no_module_calls_datetime_now(self) -> None:
         offenders: list[str] = []
-        for directory in (CORE, KERNEL, ACQUISITION, ADAPTERS):
+        for directory in (CORE, KERNEL, ACQUISITION, ADAPTERS, PERCEPTION, TAXONOMY):
             for path in _python_files(directory):
                 text = path.read_text(encoding="utf-8")
                 if "datetime.now(" in text or "datetime.utcnow(" in text:
@@ -208,7 +214,7 @@ class TestDependencyInjection:
 
     def test_no_module_level_mutable_singletons(self) -> None:
         offenders: list[str] = []
-        for directory in (KERNEL, ACQUISITION):
+        for directory in (KERNEL, ACQUISITION, PERCEPTION, TAXONOMY):
             for path in _python_files(directory):
                 tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
                 for node in tree.body:
@@ -296,7 +302,7 @@ class TestSemanticCeiling:
         where they *explain* the prohibition; identifiers never may.
         """
         offenders: list[str] = []
-        for directory in (CORE, KERNEL, ACQUISITION):
+        for directory in (CORE, KERNEL, ACQUISITION, PERCEPTION, TAXONOMY):
             for path in _python_files(directory):
                 tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
                 for node in ast.walk(tree):
@@ -321,9 +327,17 @@ class TestSemanticCeiling:
         )
 
     def test_config_schema_is_closed(self) -> None:
-        """A vertical enters as data through four channels, never as a rule."""
+        """A vertical enters as data through declared channels, never as a rule.
+
+        The set grows by flow — Flow 2 added taxonomy and detectors — but only by
+        a reviewed schema change, which is exactly what "closed" means here.
+        """
         assert ALLOWED_TOP_LEVEL == frozenset(SECTION_TYPES) | {
-            "profiles", "regions", "cameras"
+            "profiles",
+            "regions",
+            "cameras",
+            "taxonomy",
+            "detectors",
         }
 
     def test_no_config_section_admits_a_business_threshold(self) -> None:
@@ -346,42 +360,83 @@ class TestSemanticCeiling:
 
 
 class TestFlowScope:
-    """Flow 1 must not implement responsibilities belonging to later flows."""
+    """No flow may implement responsibilities belonging to a later one.
 
-    def test_only_flow1_ports_are_bindable(self) -> None:
+    These assertions move forward exactly one flow at a time. Flow 2 shipped
+    detection, so the frontier is now Flow 3 (tracking and identity) — and the
+    guards below police *that* boundary, not the one already crossed.
+    """
+
+    def test_only_implemented_ports_are_bindable(self) -> None:
         assert len(FLOW1_PORTS) == 11
-        later_flow_ports = {"P8.DetectorPort", "P9.TrackerPort", "P15.UnderstanderPort"}
-        assert not (later_flow_ports & set(FLOW1_PORTS))
+        assert len(FLOW2_PORTS) == 4
+        assert BINDABLE_PORTS == FLOW1_PORTS | FLOW2_PORTS
+
+        later_flow_ports = {
+            "P9.TrackerPort",
+            "P10.EmbeddingPort",
+            "P11.IdentityResolverPort",
+            "P14.CropStrategyPort",
+            "P15.UnderstanderPort",
+            "P19.ObservationSinkPort",
+            "P21.StateStorePort",
+            "P32.ApiTransportPort",
+        }
+        assert not (later_flow_ports & set(BINDABLE_PORTS)), (
+            "a port whose owning module does not exist cannot be bindable"
+        )
 
     def test_no_later_flow_object_kinds_exist(self) -> None:
-        """Detection, Track, Crop, Attribute, Observation belong to Flows 2-6."""
+        """Track, Crop, Attribute, Observation belong to Flows 3-7.
+
+        ``Detection`` is legitimately present as of Flow 2.
+        """
         import app.vision_os.core.model as model
 
+        assert hasattr(model, "Detection"), "Flow 2 implements the Detection kind"
         for absent in (
-            "Detection", "Track", "VisualObject", "Crop", "Attribute",
+            "Track", "VisualObject", "Crop", "Attribute",
             "Observation", "Evidence", "VisionState",
         ):
             assert not hasattr(model, absent), (
-                f"{absent} belongs to a later flow and must not exist in Flow 1"
+                f"{absent} belongs to a later flow and must not exist yet"
             )
 
     def test_no_later_flow_modules_exist(self) -> None:
-        for absent in ("detection", "tracking", "understanding", "state", "api", "observation"):
+        for absent in ("tracking", "understanding", "state", "api", "observation", "crop"):
             assert not (ROOT / absent).exists(), (
                 f"package '{absent}' belongs to a later flow"
             )
+        for absent in ("tracking", "registry", "crop"):
+            assert not (ROOT / "perception" / absent).exists(), (
+                f"perception/{absent} belongs to Flow 3 or later"
+            )
 
-    def test_model_manager_is_deferred_to_flow_2(self) -> None:
-        """M18's first consumer is the Detection Engine; building it now is speculative."""
-        assert not (KERNEL / "models").exists()
+    def test_detection_holds_no_temporal_state(self) -> None:
+        """Detection is memoryless by construction (port obligation D7).
+
+        A detector that remembered a previous frame would be doing tracking, and
+        the boundary between Flow 2 and Flow 3 would already have dissolved.
+        """
+        detection_root = ROOT / "perception" / "detection"
+        forbidden = ("track_id", "object_id", "TrackId", "ObjectId", "previous_frame")
+        offenders: list[str] = []
+        for path in _python_files(detection_root):
+            text = path.read_text(encoding="utf-8")
+            for term in forbidden:
+                if term in text:
+                    offenders.append(f"{_module_of(path)} references {term}")
+        assert not offenders, (
+            "detection must hold no identity or temporal state:\n" + "\n".join(offenders)
+        )
 
     def test_no_observation_types_are_emitted(self) -> None:
         """Coverage *observations* are the Observation Builder's job (Flow 6).
 
-        Flow 1 produces observability state and events only.
+        Flows 1 and 2 produce observability state, events and detections only.
         """
         offenders: list[str] = []
-        for directory in (KERNEL, ACQUISITION):
+        for directory in (KERNEL, ACQUISITION, PERCEPTION):
             for path in _python_files(directory):
                 text = path.read_text(encoding="utf-8")
                 if "build_coverage" in text or "ObservationBuilder" in text:
@@ -393,7 +448,7 @@ class TestSecretHygiene:
     def test_no_hardcoded_credentials_in_platform_code(self) -> None:
         pattern = re.compile(r"(password|passwd|secret_key|api_key)\s*=\s*[\"'][^\"']+[\"']")
         offenders: list[str] = []
-        for directory in (CORE, KERNEL, ACQUISITION, ADAPTERS):
+        for directory in (CORE, KERNEL, ACQUISITION, ADAPTERS, PERCEPTION, TAXONOMY):
             for path in _python_files(directory):
                 if pattern.search(path.read_text(encoding="utf-8")):
                     offenders.append(_module_of(path))
@@ -404,7 +459,7 @@ class TestBoundedByConstruction:
     def test_no_unbounded_queue_constructs(self) -> None:
         """An unbounded queue is a memory leak with a delayed fuse."""
         offenders: list[str] = []
-        for directory in (KERNEL, ACQUISITION):
+        for directory in (KERNEL, ACQUISITION, PERCEPTION):
             for path in _python_files(directory):
                 text = path.read_text(encoding="utf-8")
                 if "asyncio.Queue()" in text or "Queue(maxsize=0)" in text:
@@ -416,7 +471,7 @@ class TestBoundedByConstruction:
 
 @pytest.mark.parametrize(
     "package",
-    ["core", "kernel", "acquisition", "adapters", "conformance"],
+    ["core", "kernel", "acquisition", "adapters", "conformance", "perception", "taxonomy"],
 )
 def test_every_package_has_a_module_docstring(package: str) -> None:
     """A module still understandable after five years starts with why it exists."""

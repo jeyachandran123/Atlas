@@ -587,4 +587,19 @@ def flow1_registry() -> ConformanceRegistry:
     return registry
 
 
+def platform_registry() -> ConformanceRegistry:
+    """Every kit for every currently bindable port.
+
+    The Plugin Manager refuses to activate an adapter for a port with no kit, so
+    this registry is what makes each flow's ports usable at all.
+    """
+    from .detector_kit import DETECTOR_KIT
+    from .model_kits import ARTIFACT_STORE_KIT, DEVICE_KIT, MODEL_RUNTIME_KIT
+
+    registry = flow1_registry()
+    for kit in (DETECTOR_KIT, ARTIFACT_STORE_KIT, MODEL_RUNTIME_KIT, DEVICE_KIT):
+        registry.register(kit)
+    return registry
+
+
 _ = Duration  # re-exported for adapters constructing durations in kits

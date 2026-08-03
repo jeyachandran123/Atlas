@@ -201,3 +201,107 @@ class CapacityExceededError(VisionOSError):
 
 class LifecycleError(VisionOSError):
     """An operation was attempted in an invalid lifecycle state."""
+
+
+# --- models and devices (Flow 2) ----------------------------------------- #
+
+
+class ModelError(VisionOSError):
+    """Base for model artifact, runtime, and device failures."""
+
+
+class ArtifactUnavailableError(ModelError):
+    """An artifact could not be fetched. Transient; retry or use a cached copy."""
+
+    failure_class = FailureClass.TRANSIENT
+
+
+class ArtifactIntegrityError(ModelError):
+    """An artifact's content hash did not match its declaration.
+
+    A **supply-chain event**, not a network glitch. Fails closed and is never
+    retried into success (12_SECURITY section 6).
+    """
+
+
+class ModelLoadError(ModelError):
+    """A model artifact could not be loaded: corrupt, incompatible, unsupported."""
+
+
+class ModelUnavailableError(ModelError):
+    """No usable version of the requested model is resident or loadable."""
+
+    failure_class = FailureClass.TRANSIENT
+
+
+class DeviceUnavailableError(ModelError):
+    """A required device is absent or has disappeared."""
+
+    failure_class = FailureClass.TRANSIENT
+
+
+class DeviceOutOfMemoryError(ModelError):
+    """A device could not satisfy a memory reservation.
+
+    Systemic: retrying unchanged makes it worse. The broker evicts by policy,
+    retries once, then denies with a stated reason.
+    """
+
+    failure_class = FailureClass.SYSTEMIC
+
+
+class LicenceViolationError(ModelError):
+    """A model's licence forbids this deployment context.
+
+    Checked at registration, never discovered in production.
+    """
+
+
+# --- detection (Flow 2) --------------------------------------------------- #
+
+
+class DetectionError(VisionOSError):
+    """Base for the detection layer."""
+
+
+class DetectionFailedError(DetectionError):
+    """A detector could not produce a result for a frame.
+
+    Distinct from an empty result, which is a **valid, non-error** outcome
+    (port obligation D5). Conflating the two is how "nothing was there" and
+    "we could not look" become indistinguishable.
+    """
+
+    failure_class = FailureClass.TRANSIENT
+
+
+class DetectionTimeoutError(DetectionError):
+    """Inference exceeded its budget."""
+
+    failure_class = FailureClass.TRANSIENT
+
+
+class DetectorContractError(DetectionError):
+    """An adapter violated its port contract at runtime.
+
+    Byzantine: the adapter returned something structurally plausible but wrong —
+    a mismatched batch length, a native label, a box outside normalized space.
+    Detected and rejected rather than propagated.
+    """
+
+    failure_class = FailureClass.BYZANTINE
+
+
+class DetectionQueueFullError(DetectionError):
+    """The bounded inference queue is at capacity.
+
+    Shedding rather than growing: an unbounded inference queue is a memory leak
+    with a delayed fuse, and a frame that waits forever is worse than one dropped
+    with an attributed reason (invariant V8).
+    """
+
+    failure_class = FailureClass.SYSTEMIC
+
+
+class TaxonomyError(VisionOSError):
+    """A taxonomy class or mapping is unknown, malformed, or inconsistent."""

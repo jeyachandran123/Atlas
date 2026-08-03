@@ -372,15 +372,20 @@ class TestPluginCompatibility:
             plugins.load(PluginId("allocator.host"))
 
     def test_later_flow_port_is_not_bindable(self, plugins: PluginManager) -> None:
-        """A plugin for a port whose owning module does not exist yet cannot bind."""
+        """A plugin for a port whose owning module does not exist yet cannot bind.
+
+        ``TrackerPort`` belongs to Flow 3. Detection's ``DetectorPort`` became
+        bindable in Flow 2, so this guard tracks the current frontier rather than
+        a boundary already crossed.
+        """
         plugins.register(
             PluginDescriptor(
-                _manifest(plugin_id="detector.yolo", port=PortCatalogue.DETECTOR),
+                _manifest(plugin_id="tracker.bytetrack", port=PortCatalogue.TRACKER),
                 _GoodAllocator,
             )
         )
         with pytest.raises(PortIncompatibleError, match="not bindable"):
-            plugins.load(PluginId("detector.yolo"))
+            plugins.load(PluginId("tracker.bytetrack"))
 
     def test_unregistered_plugin_is_typed(self, plugins: PluginManager) -> None:
         from app.vision_os.core.errors import PluginError

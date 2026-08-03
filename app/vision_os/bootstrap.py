@@ -1,8 +1,8 @@
-"""Composition root helper — assemble a Flow 1 platform from configuration.
+"""Composition root helper - assemble a Flow 1 platform from configuration.
 
 This is the *only* place in the codebase where concrete adapters are chosen and
 wired to ports. Every module receives its collaborators through its constructor
-(01_LAYERED §8.1); nothing reaches out to find a dependency, and no module knows
+(01_LAYERED section 8.1); nothing reaches out to find a dependency, and no module knows
 which adapter it was given.
 
 The three consequences are the point:
@@ -32,12 +32,13 @@ from .acquisition import (
 from .adapters.memory import HostMemoryPool
 from .adapters.observability import NullEventTransport
 from .adapters.scheduling import CadenceAdmissionPolicy, NullChangeDetector
-from .conformance import ConformanceRegistry, flow1_registry
+from .conformance import ConformanceRegistry, platform_registry
 from .core.model.camera import Camera
 from .core.ports.acquisition import ClockSyncPort, DecoderPort, PrivacyMaskPort, SourcePort
 from .core.ports.clock import Clock
 from .core.ports.configuration import ConfigSourcePort, SecretProviderPort
 from .core.ports.observability import EventTransportPort, MetricsExportPort
+from .core.ports.pipeline import AdmittedFrameConsumer
 from .core.ports.scheduling import AdmissionPolicyPort, ChangeDetectorPort
 from .kernel.clock import ScaledClock, SystemClock, VirtualClock
 from .kernel.config import ConfigLayer, ConfigurationManager
@@ -56,7 +57,7 @@ class VisionPlatform:
     """Every constructed collaborator, exposed for operation and test.
 
     Returned rather than hidden so that a test can drive any single module
-    directly — the practical expression of "every module is independently
+    directly - the practical expression of "every module is independently
     testable".
     """
 
@@ -108,11 +109,16 @@ def build_platform(
     conformance: ConformanceRegistry | None = None,
     require_signatures: bool = False,
     defaults: dict[str, Any] | None = None,
+    admitted_frame_consumer: AdmittedFrameConsumer | None = None,
 ) -> VisionPlatform:
     """Construct a Flow 1 platform.
 
     Every adapter is an argument with a dependency-free default, so a caller may
     substitute any one of them without touching the platform (invariant V3).
+
+    ``admitted_frame_consumer`` is the documented extension point at which a
+    later flow resumes the admitted-frame path. Omitted, the platform behaves
+    exactly as Flow 1 did: an admitted frame is counted and released.
     """
     configuration = ConfigurationManager(
         clock=SystemClock(),
@@ -149,7 +155,7 @@ def build_platform(
         clock=resolved_clock,
         bus=bus,
         metrics=metrics,
-        conformance=conformance or flow1_registry(),
+        conformance=conformance or platform_registry(),
         verifier=SignatureVerifier(),
         require_signatures=require_signatures,
     )
@@ -203,6 +209,7 @@ def build_platform(
         scheduler=scheduler,
         sources=sources,
         bindings_factory=bindings_factory,
+        admitted_frame_consumer=admitted_frame_consumer,
     )
 
     return VisionPlatform(
@@ -212,7 +219,7 @@ def build_platform(
         metrics=metrics,
         health=health,
         plugins=plugins,
-        conformance=conformance or flow1_registry(),
+        conformance=conformance or platform_registry(),
         cameras=cameras,
         buffer=buffer,
         scheduler=scheduler,

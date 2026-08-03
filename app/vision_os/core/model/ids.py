@@ -36,6 +36,19 @@ ModuleId = NewType("ModuleId", str)
 ProfileId = NewType("ProfileId", str)
 PrivacyPolicyId = NewType("PrivacyPolicyId", str)
 
+# --- perception identifiers (Flow 2 onward) ------------------------------- #
+
+ModelId = NewType("ModelId", str)
+"""Registry identity for a model. **Not a filename** — the same weights may live
+at different paths on different nodes, and history must stay interpretable when
+they move (02_VOM section 3)."""
+
+ClassId = NewType("ClassId", str)
+"""A platform Visual Taxonomy class, e.g. ``person`` or ``vehicle.forklift``.
+Hierarchical by dotted path. Model-native label spaces never appear here."""
+
+DetectionId = NewType("DetectionId", str)
+
 StreamEpoch = NewType("StreamEpoch", int)
 FrameSeq = NewType("FrameSeq", int)
 

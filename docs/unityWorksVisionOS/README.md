@@ -4,11 +4,9 @@
 
 | | |
 |---|---|
-| **Status** | Architecture Blueprint — Phase 1 (Design Only) |
-| **Scope** | Architecture only. No implementation. No modification of existing platforms. |
-| **Version** | 1.0 (foundational) |
+| **Architecture** | Frozen at v1.0 (foundational). 16 documents — this index + 15 specifications. |
+| **Implementation** | Flows 1–2 of 8 complete. See [implementation status](#implementation-status). |
 | **Sibling** | Cognitive Intelligence Platform — `docs/architecture/COGNITIVE_*.md` |
-| **Documents** | 16 (this index + 15 specifications) |
 
 ---
 
@@ -83,6 +81,30 @@ Failure Handling · Performance · Extension Points.
 | **13** | [Deployment Architecture](./13_DEPLOYMENT_ARCHITECTURE.md) | Five topologies from embedded to distributed cluster, upgrades, operational surface |
 | **14** | [Testing Strategy](./14_TESTING_STRATEGY.md) | Unit · integration · conformance · performance · stress · **soak** · invariant verification |
 | **15** | [Roadmap](./15_ROADMAP.md) | What Phase 1 omits and how each future capability attaches; **what must never change** |
+
+---
+
+## Implementation status
+
+The architecture above is **frozen**. Implementation proceeds one flow at a time,
+in a fixed order, and each flow produces a report against the same nine headings.
+Code lives in `backend/app/vision_os/`.
+
+| Flow | Scope | Status | Report |
+|---|---|---|---|
+| **1** | Infrastructure & Acquisition | ✅ complete | [Flow 1 report](./IMPLEMENTATION_FLOW_1.md) |
+| **2** | Detection | ✅ complete | [Flow 2 report](./IMPLEMENTATION_FLOW_2.md) |
+| 3 | Tracking | pending | |
+| 4 | Crop Management | pending | |
+| 5 | Vision Understanding | pending | |
+| 6 | Observation Builder | pending | |
+| 7 | Vision State | pending | |
+| 8 | Observation API | pending | |
+
+**Frontier discipline.** `BINDABLE_PORTS` names exactly the ports the implemented
+flows may bind. Every later-flow port is defined in the catalogue and deliberately
+unbindable, and an architecture test fails if that changes ahead of its flow. A
+port becomes bindable when its flow is implemented — never before.
 
 ---
 

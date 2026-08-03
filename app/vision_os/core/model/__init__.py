@@ -1,17 +1,17 @@
-"""The Vision Object Model — Flow 1 subset (02_VISION_OBJECT_MODEL).
+"""The Vision Object Model — Flow 1 + Flow 2 subset (02_VISION_OBJECT_MODEL).
 
 The ontology is **closed**: eleven object kinds, fixed. New capability adds
 instances and attributes, never new kinds.
 
-Flow 1 implements the kinds acquisition needs:
+Implemented so far:
 
-    Camera · Frame · Region  (+ the identity, time and space models)
+    Flow 1   Camera · Frame · Region  (+ identity, time, space, health)
+    Flow 2   Detection  (+ taxonomy, confidence, provenance, quality)
 
 Deliberately **not** implemented, because they belong to later flows and
 implementing them early would be speculative:
 
-    Detection (Flow 2) · Track (Flow 3) · Crop (Flow 4) ·
-    Attribute (Flow 5) · VisualObject (Flow 3/7) ·
+    Track, VisualObject (Flow 3) · Crop (Flow 4) · Attribute (Flow 5) ·
     Observation, Evidence (Flow 6) · VisionState (Flow 7)
 """
 
@@ -24,6 +24,15 @@ from .camera import (
     PipelineProfile,
     SourceSemantics,
     SourceSpec,
+)
+from .confidence import Confidence, ConfidenceSemantics
+from .detection import (
+    DETECTION_SCHEMA_VERSION,
+    DecisionStep,
+    Detection,
+    DetectionEvidence,
+    ExposureLevel,
+    QualityGrades,
 )
 from .frame import (
     DecodeQuality,
@@ -45,9 +54,12 @@ from .ids import (
     AdapterId,
     CalibrationId,
     CameraId,
+    ClassId,
     ConfigRevision,
+    DetectionId,
     FrameRef,
     FrameSeq,
+    ModelId,
     ModuleId,
     PluginId,
     PortId,
@@ -60,6 +72,7 @@ from .ids import (
     new_ulid,
     ulid_timestamp_ms,
 )
+from .provenance import InferenceTiming, ModelMeta, Provenance
 from .region import ContainmentMethod, MembershipState, Region
 from .space import (
     Box,
@@ -71,9 +84,21 @@ from .space import (
     Polygon,
     SpatialInfo,
 )
+from .taxonomy import (
+    UNKNOWN_CLASS,
+    ClassStatus,
+    CoverageReport,
+    GeometryKind,
+    MappingEntry,
+    TaxonomyClass,
+    TaxonomyMapping,
+    UnmappedPolicy,
+)
 from .timebase import ZERO_DURATION, ClockQuality, Duration, FrameTime, Instant
 
 __all__ = [
+    "DETECTION_SCHEMA_VERSION",
+    "UNKNOWN_CLASS",
     "ZERO_DURATION",
     "AdapterId",
     "Box",
@@ -82,14 +107,24 @@ __all__ = [
     "Camera",
     "CameraId",
     "CameraStatus",
+    "ClassId",
+    "ClassStatus",
     "ClockQuality",
     "ComponentHealth",
+    "Confidence",
+    "ConfidenceSemantics",
     "ConfigRevision",
     "ContainmentMethod",
     "CoverageGap",
+    "CoverageReport",
+    "DecisionStep",
     "DecodeQuality",
+    "Detection",
+    "DetectionEvidence",
+    "DetectionId",
     "Duration",
     "Ellipse",
+    "ExposureLevel",
     "Frame",
     "FrameDimensions",
     "FrameOfReference",
@@ -97,10 +132,15 @@ __all__ = [
     "FrameRef",
     "FrameSeq",
     "FrameTime",
+    "GeometryKind",
     "HealthState",
     "Homography",
+    "InferenceTiming",
     "Instant",
+    "MappingEntry",
     "MembershipState",
+    "ModelId",
+    "ModelMeta",
     "ModuleId",
     "NativeProfile",
     "ObservabilityReason",
@@ -114,6 +154,8 @@ __all__ = [
     "PrivacyPolicyId",
     "PrivacyState",
     "ProfileId",
+    "Provenance",
+    "QualityGrades",
     "Region",
     "RegionId",
     "SiteId",
@@ -122,7 +164,10 @@ __all__ = [
     "SourceSpec",
     "SpatialInfo",
     "StreamEpoch",
+    "TaxonomyClass",
+    "TaxonomyMapping",
     "TenantId",
+    "UnmappedPolicy",
     "new_ulid",
     "ulid_timestamp_ms",
 ]

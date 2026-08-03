@@ -77,8 +77,7 @@ ALL_PORTS: frozenset[PortId] = frozenset(
     value for key, value in vars(PortCatalogue).items() if not key.startswith("_")
 )
 
-#: Ports implemented by Flow 1. Binding anything else is rejected, because a
-#: plugin for a port whose owning module does not exist yet cannot be activated.
+#: Ports implemented by Flow 1.
 FLOW1_PORTS: frozenset[PortId] = frozenset(
     {
         PortCatalogue.SOURCE,
@@ -94,6 +93,21 @@ FLOW1_PORTS: frozenset[PortId] = frozenset(
         PortCatalogue.METRICS_EXPORT,
     }
 )
+
+#: Ports implemented by Flow 2 — detection and the model substrate that serves it.
+FLOW2_PORTS: frozenset[PortId] = frozenset(
+    {
+        PortCatalogue.DETECTOR,
+        PortCatalogue.ARTIFACT_STORE,
+        PortCatalogue.MODEL_RUNTIME,
+        PortCatalogue.DEVICE,
+    }
+)
+
+#: Everything currently bindable. Binding anything else is rejected, because a
+#: plugin for a port whose owning module does not exist yet cannot be activated —
+#: which is how "no future flow is implemented early" stays enforceable.
+BINDABLE_PORTS: frozenset[PortId] = FLOW1_PORTS | FLOW2_PORTS
 
 
 @dataclass(frozen=True, slots=True)

@@ -27,7 +27,8 @@ from ...core.model.health import ComponentHealth, HealthState, ObservabilityReas
 from ...core.model.ids import CameraId, ModuleId
 from ...core.model.timebase import Duration
 from ...core.ports.clock import Clock
-from ...core.ports.scheduling import AdmissionVerdict
+from ...core.ports.pipeline import AdmittedFrameConsumer
+from ...core.ports.scheduling import AdmissionVerdict, Fidelity
 from ..config import ConfigurationManager
 from ..events import EventBus, PipelineAttached, PipelineDetached
 from ..health import HealthMonitor
@@ -35,6 +36,11 @@ from ..metrics import MetricName, MetricsEngine
 from ..plugins import PluginManager
 
 _RUNTIME_ID = ModuleId("runtime")
+
+#: Used when an admission policy admits without naming a fidelity. Full
+#: resolution is the honest default: a consumer must never silently receive
+#: degraded input believing it was primary.
+_DEFAULT_FIDELITY = Fidelity(inference_width=640, inference_height=640)
 
 
 class RuntimeState(enum.Enum):
@@ -101,6 +107,7 @@ class VisionRuntime:
         scheduler,  # FrameScheduler
         sources,  # VideoSourceManager
         bindings_factory,  # Callable[[Camera], SourceBindings]
+        admitted_frame_consumer: AdmittedFrameConsumer | None = None,
     ) -> None:
         self._clock = clock
         self._config = config
@@ -113,6 +120,11 @@ class VisionRuntime:
         self._scheduler = scheduler
         self._sources = sources
         self._bindings_factory = bindings_factory
+        # The single documented extension point at which a later flow resumes the
+        # admitted-frame path. ``None`` is the Flow 1 behaviour: an admitted frame
+        # is counted and released. The runtime holds a protocol and never learns
+        # what implements it.
+        self._admitted_consumer = admitted_frame_consumer
 
         self._state = RuntimeState.CREATED
         self._pipelines: dict[CameraId, PipelineStats] = {}
@@ -201,10 +213,17 @@ class VisionRuntime:
         )
 
     def _make_sink(self, camera_id: CameraId):
-        """The Flow 1 frame sink: offer each published frame for admission.
+        """Offer each published frame for admission, then continue the pipeline.
 
-        Flow 1 ends here by design. An admitted frame is counted and its lease
-        released; detection (Flow 2) is where the admitted path continues.
+        With no consumer attached this is exactly the Flow 1 behaviour: an
+        admitted frame is counted and released. With one attached, the frame
+        *reference* is handed on and the consumer takes its own lease — so the
+        payload stays control-plane sized and an eviction between admission and
+        consumption degrades cleanly (invariant V12).
+
+        ``complete`` runs after the consumer returns, which is what makes
+        ``max_in_flight`` a real bound on work in the pipeline rather than a
+        bound on frames the scheduler has merely looked at.
         """
 
         async def sink(frame: Frame) -> None:
@@ -217,18 +236,33 @@ class VisionRuntime:
                 dimensions=frame.dimensions,
             )
             pipeline.last_verdict = verdict
-            if verdict.admit:
-                pipeline.admitted += 1
-                self._health.observe_frame_digest(camera_id, _digest(frame))
-                # Flow 1 boundary: the admitted frame is released immediately.
-                # Flow 2 will take a lease here and hand it to detection.
-                self._scheduler.complete(camera_id)
-            else:
+            if not verdict.admit:
                 pipeline.dropped += 1
                 reason = verdict.reason.value if verdict.reason else "unattributed"
                 pipeline.recent_drop_reasons[reason] = (
                     pipeline.recent_drop_reasons.get(reason, 0) + 1
                 )
+                return
+
+            pipeline.admitted += 1
+            self._health.observe_frame_digest(camera_id, _digest(frame))
+            try:
+                if self._admitted_consumer is not None:
+                    await self._admitted_consumer.on_admitted(
+                        frame.frame_ref,
+                        verdict.fidelity or _DEFAULT_FIDELITY,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - a later flow never stops acquisition
+                # The consumer contract says it must not raise. If one does, the
+                # source actor still survives: acquisition is the platform's
+                # floor and no downstream stage may take it down (invariant V9).
+                self._metrics.counter(
+                    MetricName.PIPELINE_CONSUMER_FAILURES, camera_id=str(camera_id)
+                ).increment()
+            finally:
+                self._scheduler.complete(camera_id)
 
         return sink
 

@@ -135,6 +135,86 @@ class MetricsSection:
 
 
 @dataclass(frozen=True, slots=True)
+class DetectionSection:
+    """Detection operating envelope (Flow 2).
+
+    Resource- and capability-shaped only. There is no slot here for "detect
+    people more carefully in the kitchen": ``priority_class`` on a camera profile
+    is the only ordering input, and the platform never interprets it (V1/V2).
+    """
+
+    enabled: bool = False
+    """Off unless a deployment declares detectors. Flow 1 behaviour is the
+    default, so adding Flow 2 to an existing site is an explicit act."""
+
+    confidence_threshold: float = 0.25
+    iou_threshold: float = 0.45
+    """Used only when the platform applies NMS because the adapter declared it
+    does not (port obligation D4)."""
+
+    max_detections_per_frame: int = 300
+    max_batch_size: int = 8
+    batch_max_wait_ms: int = 5
+    """Dual trigger with ``max_batch_size``. **0 means flush immediately**, which
+    is what deterministic mode requires: batch composition must not depend on
+    arrival timing (08_RUNTIME section 4.3)."""
+
+    inference_timeout_ms: int = 2_000
+    queue_capacity: int = 64
+    """Bounded, always. An unbounded inference queue is a memory leak with a
+    delayed fuse."""
+
+    half_precision: bool = False
+    dynamic_resolution: bool = True
+    """Honour the fidelity tier the Frame Scheduler selected under pressure."""
+
+    warmup_enabled: bool = True
+    slow_inference_warn_ms: int = 500
+    apply_platform_nms: bool = True
+    """Apply NMS when the adapter declares it did not. A platform cannot correct
+    for what it does not know, but it can act on what was declared."""
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.confidence_threshold <= 1.0:
+            raise ValidationError("detection.confidence_threshold must be in [0,1]")
+        if not 0.0 <= self.iou_threshold <= 1.0:
+            raise ValidationError("detection.iou_threshold must be in [0,1]")
+        if self.max_detections_per_frame < 1:
+            raise ValidationError("detection.max_detections_per_frame must be >= 1")
+        if self.max_batch_size < 1:
+            raise ValidationError("detection.max_batch_size must be >= 1")
+        if self.batch_max_wait_ms < 0:
+            raise ValidationError("detection.batch_max_wait_ms must be >= 0")
+        if self.queue_capacity < 1:
+            raise ValidationError("detection.queue_capacity must be >= 1")
+        if self.inference_timeout_ms < 1:
+            raise ValidationError("detection.inference_timeout_ms must be >= 1")
+
+
+@dataclass(frozen=True, slots=True)
+class ModelsSection:
+    """Model artifact and device policy (M18, Flow 2)."""
+
+    artifact_cache_dir: str = ".vision_os/models"
+    device_preference: str = "auto"
+    """``auto`` | ``cpu`` | a concrete device id such as ``cuda:0``."""
+
+    allow_cpu_fallback: bool = True
+    """When false, a site that loses its accelerators reports the capability
+    unavailable rather than silently running 50x slower."""
+
+    vram_headroom_fraction: float = 0.1
+    warmup_enabled: bool = True
+    deployment_context: str = "on_premise"
+    """Checked against each model's licence at registration, never discovered in
+    production."""
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.vram_headroom_fraction < 1.0:
+            raise ValidationError("models.vram_headroom_fraction must be in [0,1)")
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeSection:
     drain_timeout_ms: int = 30_000
     pipeline_restart_backoff_ms: int = 1_000
@@ -203,6 +283,60 @@ class CameraDeclaration:
 
 
 @dataclass(frozen=True, slots=True)
+class TaxonomyClassDeclaration:
+    """One visual kind (Flow 2).
+
+    A vertical enters the platform partly through this list. ``person``,
+    ``vehicle.forklift``, ``container.tray`` are admissible; ``staff_member``,
+    ``patient`` and ``customer`` are roles that no crop can evidence and are
+    rejected at registration (invariant V1).
+    """
+
+    class_id: str
+    geometry_kinds: tuple[str, ...] = ("box",)
+    description: str = ""
+    status: str = "active"
+    superseded_by: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MappingEntryDeclaration:
+    native_label: str
+    class_id: str
+    mapping_confidence: float = 1.0
+    notes: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class DetectorDeclaration:
+    """A detector adapter bound to a model artifact (Flow 2).
+
+    This is where a model is *named*, not where one is chosen: the adapter, the
+    weights and the label mapping are data, so replacing YOLO with RT-DETR is a
+    configuration change plus an adapter, never a platform change (V3).
+    """
+
+    detector_id: str
+    adapter_id: str
+    model_id: str
+    model_version: str
+    artifact_uri: str
+    artifact_hash: str
+    role: str = "primary_detector"
+    precision: str = "fp32"
+    device_kind: str = "cpu"
+    vram_bytes: int = 0
+    licence: str = "unspecified"
+    permitted_contexts: tuple[str, ...] = ()
+    native_label_space: str = ""
+    unmapped_policy: str = "drop"
+    mappings: tuple[MappingEntryDeclaration, ...] = ()
+    calibration_id: str | None = None
+    runtime_options: tuple[tuple[str, str], ...] = ()
+    enabled: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class EffectiveConfig:
     """The fully resolved, validated configuration tree."""
 
@@ -213,9 +347,13 @@ class EffectiveConfig:
     health: HealthSection
     metrics: MetricsSection
     runtime: RuntimeSection
+    detection: DetectionSection = DetectionSection()
+    models: ModelsSection = ModelsSection()
     profiles: tuple[ProfileDeclaration, ...] = ()
     regions: tuple[RegionDeclaration, ...] = ()
     cameras: tuple[CameraDeclaration, ...] = ()
+    taxonomy: tuple[TaxonomyClassDeclaration, ...] = ()
+    detectors: tuple[DetectorDeclaration, ...] = ()
 
 
 # --- the closed key set --------------------------------------------------- #
@@ -228,9 +366,13 @@ SECTION_TYPES: dict[str, type] = {
     "health": HealthSection,
     "metrics": MetricsSection,
     "runtime": RuntimeSection,
+    "detection": DetectionSection,
+    "models": ModelsSection,
 }
 
-LIST_SECTIONS: frozenset[str] = frozenset({"profiles", "regions", "cameras"})
+LIST_SECTIONS: frozenset[str] = frozenset(
+    {"profiles", "regions", "cameras", "taxonomy", "detectors"}
+)
 
 ALLOWED_TOP_LEVEL: frozenset[str] = frozenset(SECTION_TYPES) | LIST_SECTIONS
 
@@ -291,7 +433,148 @@ def validate(document: dict[str, Any]) -> tuple[str, ...]:
             violations.append(f"section '{section}' must be a list, got {type(raw).__name__}")
 
     violations.extend(_validate_cameras(document))
+    violations.extend(_validate_taxonomy(document))
+    violations.extend(_validate_detectors(document))
     return tuple(violations)
+
+
+#: Role and judgment vocabulary that may never name a taxonomy class.
+#:
+#: 02_VOM section 8.3 rule 4: ``person`` and ``vehicle.forklift`` are visual kinds
+#: any observer would name; ``staff_member``, ``patient`` and ``customer`` are
+#: *roles*, and no crop evidences a role. This is the taxonomy's neutrality gate
+#: — the Flow 2 counterpart of the attribute registry's gate in Flow 5.
+_FORBIDDEN_CLASS_TOKENS: frozenset[str] = frozenset(
+    {
+        "staff", "employee", "waiter", "chef", "cashier", "clerk", "manager",
+        "patient", "nurse", "doctor", "customer", "shopper", "guest", "visitor",
+        "intruder", "suspect", "thief", "trespasser",
+        "violation", "compliant", "noncompliant", "authorized", "unauthorized",
+        "anomaly", "alert", "hazard", "unsafe", "danger",
+    }
+)
+
+
+def _validate_taxonomy(document: dict[str, Any]) -> list[str]:
+    violations: list[str] = []
+    classes = document.get("taxonomy")
+    if not isinstance(classes, list):
+        return violations
+
+    seen: set[str] = set()
+    for index, declaration in enumerate(classes):
+        if not isinstance(declaration, dict):
+            violations.append(f"taxonomy[{index}] must be a mapping")
+            continue
+        class_id = declaration.get("class_id")
+        if not class_id:
+            violations.append(f"taxonomy[{index}].class_id is required")
+            continue
+        if class_id in seen:
+            violations.append(f"duplicate taxonomy class '{class_id}'")
+        seen.add(class_id)
+
+        tokens = {token.lower() for token in str(class_id).replace(".", "_").split("_")}
+        leaked = tokens & _FORBIDDEN_CLASS_TOKENS
+        if leaked:
+            violations.append(
+                f"taxonomy class '{class_id}' uses {sorted(leaked)}, which names a role "
+                f"or a judgment rather than a visual kind. No crop evidences a role "
+                f"(invariant V1); register the appearance instead and let the consumer "
+                f"assign meaning."
+            )
+
+        status = declaration.get("status", "active")
+        if status not in ("active", "deprecated", "superseded"):
+            violations.append(
+                f"taxonomy['{class_id}'].status must be one of "
+                f"['active', 'deprecated', 'superseded'], got {status!r}"
+            )
+        for kind in declaration.get("geometry_kinds", ("box",)) or ("box",):
+            if kind not in ("box", "oriented_box", "mask", "keypoints"):
+                violations.append(
+                    f"taxonomy['{class_id}'] declares unknown geometry kind {kind!r}"
+                )
+
+    for declaration in classes:
+        if not isinstance(declaration, dict):
+            continue
+        class_id = declaration.get("class_id")
+        if not class_id or "." not in str(class_id):
+            continue
+        parent = str(class_id).rsplit(".", 1)[0]
+        if parent not in seen:
+            violations.append(
+                f"taxonomy class '{class_id}' has no declared parent '{parent}'; "
+                f"an orphan breaks every hierarchical query for '{parent}'"
+            )
+
+    return violations
+
+
+def _validate_detectors(document: dict[str, Any]) -> list[str]:
+    violations: list[str] = []
+    detectors = document.get("detectors")
+    if not isinstance(detectors, list):
+        return violations
+
+    declared_classes = {
+        c.get("class_id")
+        for c in (document.get("taxonomy") or [])
+        if isinstance(c, dict)
+    }
+    declared_classes.add("unknown")
+
+    seen: set[str] = set()
+    for position, declaration in enumerate(detectors):
+        if not isinstance(declaration, dict):
+            violations.append(f"detectors[{position}] must be a mapping")
+            continue
+        detector_id = declaration.get("detector_id")
+        if not detector_id:
+            violations.append(f"detectors[{position}].detector_id is required")
+            continue
+        if detector_id in seen:
+            violations.append(f"duplicate detector_id '{detector_id}'")
+        seen.add(detector_id)
+
+        for required in (
+            "adapter_id",
+            "model_id",
+            "model_version",
+            "artifact_uri",
+            "artifact_hash",
+        ):
+            if not declaration.get(required):
+                violations.append(f"detectors['{detector_id}'].{required} is required")
+
+        policy = declaration.get("unmapped_policy", "drop")
+        if policy not in ("drop", "emit_as_unknown"):
+            violations.append(
+                f"detectors['{detector_id}'].unmapped_policy must be one of "
+                f"['drop', 'emit_as_unknown'], got {policy!r}"
+            )
+
+        precision = declaration.get("precision", "fp32")
+        if precision not in ("fp32", "fp16", "int8", "int4"):
+            violations.append(
+                f"detectors['{detector_id}'].precision must be one of "
+                f"['fp32', 'fp16', 'int8', 'int4'], got {precision!r}"
+            )
+
+        for entry in declaration.get("mappings", ()) or ():
+            if not isinstance(entry, dict):
+                violations.append(f"detectors['{detector_id}'] has a malformed mapping entry")
+                continue
+            class_id = entry.get("class_id")
+            if class_id and declared_classes and class_id not in declared_classes:
+                violations.append(
+                    f"detectors['{detector_id}'] maps '{entry.get('native_label')}' to "
+                    f"undeclared taxonomy class '{class_id}'. A mapping is validated at "
+                    f"load, not at first frame."
+                )
+
+    return violations
 
 
 def _valid_enum(enum_type: type[enum.Enum], value: Any) -> bool:

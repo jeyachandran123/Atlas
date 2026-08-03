@@ -39,15 +39,20 @@ from .schema import (
     CameraDeclaration,
     ClockMode,
     DeploymentProfile,
+    DetectionSection,
+    DetectorDeclaration,
     EffectiveConfig,
     HealthSection,
+    MappingEntryDeclaration,
     MetricsSection,
+    ModelsSection,
     PlatformSection,
     ProfileDeclaration,
     RegionDeclaration,
     RuntimeSection,
     SchedulerSection,
     SourceSection,
+    TaxonomyClassDeclaration,
     validate,
 )
 
@@ -99,7 +104,17 @@ class OverrideHandle:
 
 #: Sections whose changes cannot take effect without a restart (08_RUNTIME §7.2).
 NON_RELOADABLE_SECTIONS: frozenset[str] = frozenset({"platform", "buffer", "runtime"})
-NON_RELOADABLE_KEYS: frozenset[str] = frozenset({"metrics.max_label_cardinality"})
+NON_RELOADABLE_KEYS: frozenset[str] = frozenset(
+    {
+        "metrics.max_label_cardinality",
+        # Detection's execution substrate is built at boot: changing queue depth
+        # or worker batching mid-flight would strand in-flight requests.
+        "detection.queue_capacity",
+        "detection.max_batch_size",
+        "models.artifact_cache_dir",
+        "models.allow_cpu_fallback",
+    }
+)
 
 
 class ConfigurationManager:
@@ -262,6 +277,18 @@ class ConfigurationManager:
     def runtime(self) -> RuntimeSection:
         return self.effective().runtime
 
+    def detection(self) -> DetectionSection:
+        return self.effective().detection
+
+    def models(self) -> ModelsSection:
+        return self.effective().models
+
+    def taxonomy(self) -> tuple[TaxonomyClassDeclaration, ...]:
+        return self.effective().taxonomy
+
+    def detectors(self) -> tuple[DetectorDeclaration, ...]:
+        return self.effective().detectors
+
     def cameras(self) -> tuple[CameraDeclaration, ...]:
         return self.effective().cameras
 
@@ -417,9 +444,58 @@ def _build_effective(merged: dict[str, Any]) -> EffectiveConfig:
         health=sections["health"],
         metrics=sections["metrics"],
         runtime=sections["runtime"],
+        detection=sections["detection"],
+        models=sections["models"],
         profiles=tuple(_build_profile(p) for p in merged.get("profiles", []) or []),
         regions=tuple(_build_region(r) for r in merged.get("regions", []) or []),
         cameras=tuple(_build_camera(c) for c in merged.get("cameras", []) or []),
+        taxonomy=tuple(
+            _build_taxonomy_class(t) for t in merged.get("taxonomy", []) or []
+        ),
+        detectors=tuple(_build_detector(d) for d in merged.get("detectors", []) or []),
+    )
+
+
+def _build_taxonomy_class(raw: dict[str, Any]) -> TaxonomyClassDeclaration:
+    return TaxonomyClassDeclaration(
+        class_id=raw["class_id"],
+        geometry_kinds=tuple(raw.get("geometry_kinds", ("box",)) or ("box",)),
+        description=raw.get("description", ""),
+        status=raw.get("status", "active"),
+        superseded_by=raw.get("superseded_by"),
+    )
+
+
+def _build_detector(raw: dict[str, Any]) -> DetectorDeclaration:
+    return DetectorDeclaration(
+        detector_id=raw["detector_id"],
+        adapter_id=raw["adapter_id"],
+        model_id=raw["model_id"],
+        model_version=raw["model_version"],
+        artifact_uri=raw["artifact_uri"],
+        artifact_hash=raw["artifact_hash"],
+        role=raw.get("role", "primary_detector"),
+        precision=raw.get("precision", "fp32"),
+        device_kind=raw.get("device_kind", "cpu"),
+        vram_bytes=int(raw.get("vram_bytes", 0)),
+        licence=raw.get("licence", "unspecified"),
+        permitted_contexts=tuple(raw.get("permitted_contexts", ()) or ()),
+        native_label_space=raw.get("native_label_space", ""),
+        unmapped_policy=raw.get("unmapped_policy", "drop"),
+        mappings=tuple(
+            MappingEntryDeclaration(
+                native_label=entry["native_label"],
+                class_id=entry["class_id"],
+                mapping_confidence=float(entry.get("mapping_confidence", 1.0)),
+                notes=entry.get("notes", ""),
+            )
+            for entry in raw.get("mappings", ()) or ()
+        ),
+        calibration_id=raw.get("calibration_id"),
+        runtime_options=tuple(
+            (str(k), str(v)) for k, v in (raw.get("runtime_options", {}) or {}).items()
+        ),
+        enabled=bool(raw.get("enabled", True)),
     )
 
 

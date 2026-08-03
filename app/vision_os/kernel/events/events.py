@@ -249,6 +249,131 @@ class Gap(Event):
     reason: str = ""
 
 
+# --- models (M18, Flow 2) -------------------------------------------------- #
+
+
+@dataclass(frozen=True, slots=True)
+class ModelLoaded(Event):
+    event_type: ClassVar[str] = "model.loaded"
+    model_id: str = ""
+    version: str = ""
+    device_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ModelEvicted(Event):
+    event_type: ClassVar[str] = "model.evicted"
+    model_id: str = ""
+    version: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ModelSwapped(Event):
+    """A role's bound version changed.
+
+    A fallback that is never noticed becomes permanent, and the platform quietly
+    runs on its worst model forever. This event is how that gets noticed.
+    """
+
+    event_type: ClassVar[str] = "model.swapped"
+    role: str = ""
+    model_id: str = ""
+    version: str = ""
+    previous: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class DevicePressure(Event):
+    event_type: ClassVar[str] = "model.device_pressure"
+    device_id: str = ""
+    utilization: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class CanaryPromoted(Event):
+    event_type: ClassVar[str] = "model.canary_promoted"
+    role: str = ""
+    model_id: str = ""
+    version: str = ""
+
+
+# --- detection (M5, Flow 2) ------------------------------------------------ #
+
+
+@dataclass(frozen=True, slots=True)
+class DetectionCompleted(Event):
+    """A frame was detected on. Carries counts, never pixels (invariant V12)."""
+
+    event_type: ClassVar[str] = "detection.completed"
+    camera_id: CameraId = CameraId("")
+    frame_ref: str = ""
+    detection_count: int = 0
+    inference_ms: float = 0.0
+    batch_size: int = 1
+    model_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class DetectionFailed(Event):
+    """Detection could not produce a result.
+
+    Distinct from a completed detection with zero results: "nothing was there"
+    and "we could not look" are different facts (port obligation D5).
+    """
+
+    event_type: ClassVar[str] = "detection.failed"
+    camera_id: CameraId = CameraId("")
+    frame_ref: str = ""
+    reason: str = ""
+    failure_class: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class DetectorLoaded(Event):
+    event_type: ClassVar[str] = "detection.detector_loaded"
+    adapter_id: str = ""
+    model_id: str = ""
+    producible_classes: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class DetectorUnloaded(Event):
+    event_type: ClassVar[str] = "detection.detector_unloaded"
+    adapter_id: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ThresholdExceeded(Event):
+    """A configured operating bound was crossed.
+
+    Names the bound and both values, so the reader never has to guess which
+    threshold or by how much.
+    """
+
+    event_type: ClassVar[str] = "detection.threshold_exceeded"
+    camera_id: CameraId = CameraId("")
+    threshold_name: str = ""
+    limit: float = 0.0
+    observed: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class PerformanceWarning(Event):
+    """Detection is slower than its declared profile.
+
+    A warning, not a verdict: it degrades nothing by itself and exists so an
+    operator sees drift before it becomes shedding.
+    """
+
+    event_type: ClassVar[str] = "detection.performance_warning"
+    camera_id: CameraId = CameraId("")
+    metric: str = ""
+    observed: float = 0.0
+    expected: float = 0.0
+
+
 ALL_EVENT_TYPES: tuple[type[Event], ...] = (
     StreamConnected,
     StreamLost,
@@ -272,4 +397,15 @@ ALL_EVENT_TYPES: tuple[type[Event], ...] = (
     PipelineAttached,
     PipelineDetached,
     Gap,
+    ModelLoaded,
+    ModelEvicted,
+    ModelSwapped,
+    DevicePressure,
+    CanaryPromoted,
+    DetectionCompleted,
+    DetectionFailed,
+    DetectorLoaded,
+    DetectorUnloaded,
+    ThresholdExceeded,
+    PerformanceWarning,
 )

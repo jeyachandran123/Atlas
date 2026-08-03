@@ -56,6 +56,44 @@ class MetricName:
     BLIND_TRANSITIONS: Final = "vision_os.coverage.blind_transitions"
     SILENT_FAILURE_SUSPECTED: Final = "vision_os.health.silent_failure_suspected"
 
+    # --- detection (Flow 2) ------------------------------------------------- #
+    DETECTION_FPS: Final = "vision_os.detection.fps"
+    DETECTION_INFERENCE_MS: Final = "vision_os.detection.inference_ms"
+    DETECTION_TOTAL_MS: Final = "vision_os.detection.total_ms"
+    DETECTION_QUEUE_MS: Final = "vision_os.detection.queue_ms"
+    DETECTIONS_EMITTED: Final = "vision_os.detection.emitted"
+    DETECTION_FRAMES_PROCESSED: Final = "vision_os.detection.frames_processed"
+    DETECTION_FRAMES_DROPPED: Final = "vision_os.detection.frames_dropped"
+    DETECTION_FAILURES: Final = "vision_os.detection.failures"
+    DETECTION_TIMEOUTS: Final = "vision_os.detection.timeouts"
+    DETECTION_QUEUE_DEPTH: Final = "vision_os.detection.queue_depth"
+    DETECTION_BATCH_SIZE: Final = "vision_os.detection.batch_size"
+    DETECTION_BATCH_EFFICIENCY: Final = "vision_os.detection.batch_efficiency"
+    DETECTION_IN_FLIGHT: Final = "vision_os.detection.in_flight"
+    DETECTORS_ACTIVE: Final = "vision_os.detection.detectors_active"
+    DETECTOR_WARMUP_MS: Final = "vision_os.detection.warmup_ms"
+
+    DETECTIONS_REJECTED: Final = "vision_os.detection.rejected"
+    """Detections the platform refused, by ``reason``.
+
+    Deliberately **not** a "false detection" counter. Whether a detection is
+    false is a judgment requiring ground truth the platform does not have;
+    claiming otherwise would violate the Semantic Ceiling (invariant V1). What
+    the platform *can* count is what it rejected and why: below threshold, out of
+    normalized range, unmapped label, contract violation.
+    """
+
+    # --- models (M18, Flow 2) ------------------------------------------------ #
+    MODELS_LOADED: Final = "vision_os.models.loaded"
+    MODEL_EVICTIONS: Final = "vision_os.models.evictions"
+    MODEL_LOAD_MS: Final = "vision_os.models.load_ms"
+    MODEL_WARMUP_MS: Final = "vision_os.models.warmup_ms"
+    MODEL_LOAD_FAILURES: Final = "vision_os.models.load_failures"
+    ARTIFACT_INTEGRITY_FAILURES: Final = "vision_os.models.artifact_integrity_failures"
+    DEVICE_UTILIZATION: Final = "vision_os.models.device_utilization"
+    DEVICE_RESERVATION_DENIED: Final = "vision_os.models.device_reservation_denied"
+    DEVICE_FALLBACKS: Final = "vision_os.models.device_fallbacks"
+
     # --- kernel ------------------------------------------------------------ #
     EVENTS_PUBLISHED: Final = "vision_os.events.published"
     EVENTS_DROPPED: Final = "vision_os.events.dropped"
@@ -66,6 +104,12 @@ class MetricName:
     CONFORMANCE_FAILURES: Final = "vision_os.plugins.conformance_failures"
     PIPELINES_ATTACHED: Final = "vision_os.runtime.pipelines_attached"
     PIPELINE_RESTARTS: Final = "vision_os.runtime.pipeline_restarts"
+    PIPELINE_CONSUMER_FAILURES: Final = "vision_os.runtime.consumer_failures"
+    """A downstream consumer raised at the admitted-frame seam.
+
+    Should always be zero: the consumer contract forbids raising. A non-zero
+    value means a later flow is leaking failures into acquisition, which the
+    runtime absorbs but must not hide."""
 
 
 ALL_METRIC_NAMES: Final[tuple[str, ...]] = tuple(

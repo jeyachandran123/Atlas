@@ -31,7 +31,7 @@ from ...core.model.ids import PluginId, PortId
 from ...core.ports.clock import Clock
 from ..events import EventBus, PluginLoaded, PluginRejected
 from ..metrics import MetricName, MetricsEngine
-from .manifest import FLOW1_PORTS, PluginManifest
+from .manifest import BINDABLE_PORTS, PluginManifest
 
 #: The platform version adapters declare compatibility against.
 PLATFORM_VERSION = "1.0.0"
@@ -90,7 +90,7 @@ class PluginManager:
         verifier: SignatureVerifier | None = None,
         require_signatures: bool = False,
         require_conformance: bool = True,
-        bindable_ports: frozenset[PortId] = FLOW1_PORTS,
+        bindable_ports: frozenset[PortId] = BINDABLE_PORTS,
     ) -> None:
         self._clock = clock
         self._bus = bus
