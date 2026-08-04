@@ -343,31 +343,63 @@ class TestFlowScope:
     def test_the_tracker_port_is_bindable(self) -> None:
         assert PortCatalogue.TRACKER in BINDABLE_PORTS
 
-    def test_flow_four_and_later_ports_remain_unbindable(self) -> None:
+    def test_flow_six_and_later_ports_remain_unbindable(self) -> None:
         """The frontier moves one flow at a time."""
         for port in (
-            PortCatalogue.TRIGGER_POLICY,
-            PortCatalogue.QUALITY_ESTIMATOR,
-            PortCatalogue.CROP_STRATEGY,
             PortCatalogue.UNDERSTANDER,
+            PortCatalogue.OUTPUT_COERCION,
             PortCatalogue.PROMPT_SOURCE,
+            PortCatalogue.SUPPRESSION_POLICY,
             PortCatalogue.OBSERVATION_SINK,
             PortCatalogue.OBSERVATION_LOG,
-            PortCatalogue.STATE_STORE,
+            PortCatalogue.EVIDENCE_STORE,
             PortCatalogue.API_TRANSPORT,
         ):
             assert port not in BINDABLE_PORTS, f"{port} became bindable before its flow"
 
-    def test_no_crop_or_understanding_module_exists(self) -> None:
-        assert not (PERCEPTION / "cropping").exists()
+    def test_no_understanding_module_exists(self) -> None:
         assert not (PERCEPTION / "understanding").exists()
         assert not (ROOT / "synthesis").exists()
         assert not (ROOT / "state").exists()
 
-    def test_no_object_registry_module_exists(self) -> None:
-        """M7 is Flow 4+, and tracking must not grow into it."""
-        assert not (PERCEPTION / "registry").exists()
-        assert not (ROOT / "registry").exists()
+    def test_tracking_does_not_import_the_crop_manager(self) -> None:
+        """M8 ships, but M6 must not learn it exists.
+
+        The dependency runs cropping-to-tracking through the registry, never the
+        reverse: a tracker that knew what was being cropped would be making
+        attention decisions, which belong two layers up.
+        """
+        offenders: list[str] = []
+        for path in _files(TRACKING) + _files(ADAPTERS / "tracking"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module and "cropping" in node.module:
+                    offenders.append(f"{_module_of(path)} imports {node.module}")
+        assert not offenders, "\n".join(offenders)
+
+    def test_tracking_does_not_import_the_registry(self) -> None:
+        """M7 ships, but M6 must not learn it exists.
+
+        The dependency runs registry-to-tracking, never the reverse: a tracker
+        that knew about objects would be re-deciding identity, which is exactly
+        the fusion V10 exists to prevent.
+        """
+        offenders: list[str] = []
+        for path in _files(TRACKING) + _files(ADAPTERS / "tracking"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module and "registry" in node.module:
+                    offenders.append(f"{_module_of(path)} imports {node.module}")
+        assert not offenders, "\n".join(offenders)
+
+    def test_tracking_never_names_an_object_id(self) -> None:
+        """``ObjectId`` is minted by M7 alone (01_LAYERED section 8)."""
+        offenders: list[str] = []
+        for path in _files(TRACKING) + _files(ADAPTERS / "tracking"):
+            for identifier in _identifiers(path):
+                if identifier in ("ObjectId", "VisualObject", "ObjectRegistry"):
+                    offenders.append(f"{_module_of(path)}::{identifier}")
+        assert not offenders, "\n".join(offenders)
 
     def test_tracking_emits_no_observations(self) -> None:
         """The platform ``Observation`` type is Flow 6 and must not appear here.

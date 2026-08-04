@@ -367,6 +367,128 @@ class TrackerCapacityError(TrackingError):
     failure_class = FailureClass.SYSTEMIC
 
 
+class RegistryError(VisionOSError):
+    """Base for the Object Registry (M7)."""
+
+
+class ObjectNotFoundError(RegistryError):
+    """No object with this id exists in the addressed partition.
+
+    Distinct from a merged object, which *is* found and reports where it went —
+    history stays resolvable through ``merged_into`` (V5).
+    """
+
+    failure_class = FailureClass.PERSISTENT
+
+
+class RegistryCapacityError(RegistryError):
+    """The per-camera object population is at its cap.
+
+    Bounded by design (03_MODULES M7): a runaway registry is a memory leak with
+    a face. Provisional objects are shed first; when none remain, new objects
+    are refused and the condition is alarmed rather than absorbed.
+    """
+
+    failure_class = FailureClass.SYSTEMIC
+
+
+class OwnershipViolationError(RegistryError):
+    """Something other than the owning partition tried to write an object.
+
+    Byzantine rather than persistent: the registry is the sole writer by
+    construction, so reaching this means a caller has bypassed the public API.
+    """
+
+    failure_class = FailureClass.BYZANTINE
+
+
+class IdentityConflictError(RegistryError):
+    """A merge or split was requested that would corrupt history.
+
+    Merging an object into itself, merging across camera partitions
+    synchronously, or splitting at a time outside an object's lifetime. Refused
+    rather than repaired: silently fixing an identity error produces a plausible
+    object nobody can trace.
+    """
+
+    failure_class = FailureClass.BYZANTINE
+
+
+class AttributeRejectedError(RegistryError):
+    """An attribute failed the neutrality gate (02_VOM section 9.1).
+
+    The registry gate that operationalizes the Semantic Ceiling. ``is_employee``,
+    ``is_compliant`` and ``wait_time_excessive`` are rejected here, and the
+    rejection names the neutral counterpart to register instead.
+    """
+
+    failure_class = FailureClass.PERSISTENT
+
+
+class ObjectStoreError(RegistryError):
+    """Durable object state could not be read or written.
+
+    Transient: the hot path never blocks on persistence, so a store failure
+    degrades durability without stopping ingestion.
+    """
+
+    failure_class = FailureClass.TRANSIENT
+
+
+class CropError(VisionOSError):
+    """Base for the Crop Manager (M8)."""
+
+
+class GateRejectedError(CropError):
+    """A crop was refused by the quality gate.
+
+    **Not a failure.** Refusing to send a hopeless crop to an expensive model is
+    the gate working; the caller records the skip and retries when
+    ``QUALITY_IMPROVED`` fires (03_MODULES M8 failure handling).
+    """
+
+    failure_class = FailureClass.TRANSIENT
+
+
+class BudgetExhaustedError(CropError):
+    """The understanding budget is spent for this window.
+
+    Systemic: retrying makes it worse. The caller sheds by priority and publishes
+    coverage so consumers know attributes are thinned rather than absent (V8).
+    """
+
+    failure_class = FailureClass.SYSTEMIC
+
+
+class CropExtractionError(CropError):
+    """Pixels could not be turned into a crop.
+
+    Distinct from a gate rejection, which is a *judgment about quality*, and from
+    ``FrameUnavailableError``, which is an *eviction*. This is a genuine fault in
+    the extraction path.
+    """
+
+    failure_class = FailureClass.TRANSIENT
+
+
+class DemandRejectedError(CropError):
+    """A demand cannot be registered.
+
+    The outermost ring of Semantic Ceiling enforcement: a demand naming an
+    unregistered attribute is refused at registration with a pointer to the
+    registration process, rather than accepted and silently never served
+    (09_API_CONTRACTS section 4.2).
+    """
+
+    failure_class = FailureClass.PERSISTENT
+
+
+class DemandNotFoundError(CropError):
+    """No demand with this id is registered."""
+
+    failure_class = FailureClass.PERSISTENT
+
+
 class EmbeddingUnavailableError(TrackingError):
     """A tracker requiring appearance embeddings has no provider configured.
 

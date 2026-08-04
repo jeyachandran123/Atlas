@@ -38,6 +38,7 @@ from .schema import (
     CalibrationDeclaration,
     CameraDeclaration,
     ClockMode,
+    CroppingSection,
     DeploymentProfile,
     DetectionSection,
     DetectorDeclaration,
@@ -49,6 +50,7 @@ from .schema import (
     PlatformSection,
     ProfileDeclaration,
     RegionDeclaration,
+    RegistrySection,
     RuntimeSection,
     SchedulerSection,
     SourceSection,
@@ -287,6 +289,12 @@ class ConfigurationManager:
     def tracking(self) -> TrackingSection:
         return self.effective().tracking
 
+    def registry(self) -> RegistrySection:
+        return self.effective().registry
+
+    def cropping(self) -> CroppingSection:
+        return self.effective().cropping
+
     def taxonomy(self) -> tuple[TaxonomyClassDeclaration, ...]:
         return self.effective().taxonomy
 
@@ -451,6 +459,8 @@ def _build_effective(merged: dict[str, Any]) -> EffectiveConfig:
         detection=sections["detection"],
         models=sections["models"],
         tracking=sections["tracking"],
+        registry=sections["registry"],
+        cropping=sections["cropping"],
         profiles=tuple(_build_profile(p) for p in merged.get("profiles", []) or []),
         regions=tuple(_build_region(r) for r in merged.get("regions", []) or []),
         cameras=tuple(_build_camera(c) for c in merged.get("cameras", []) or []),

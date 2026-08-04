@@ -114,10 +114,45 @@ FLOW2_PORTS: frozenset[PortId] = frozenset(
 #: frontier exists to prevent.
 FLOW3_PORTS: frozenset[PortId] = frozenset({PortCatalogue.TRACKER})
 
+#: Ports implemented by Flow 4 — the Object Registry's durable state.
+#:
+#: ``IDENTITY_RESOLVER`` (P11) is deliberately **absent**. 15_ROADMAP section 3:
+#: *"already specified, no implementations in Phase 1"*. M7's native
+#: spatio-temporal binding is mandatory behaviour that needs no adapter; P11 is
+#: the seam for replacing it with appearance-based or cross-camera strategies,
+#: and cross-camera identity is classified C2 and policy-gated.
+#:
+#: ``STATE_STORE`` is bound here for the narrow purpose 07_STATE section 9.3
+#: requires — persisting the object population so identity survives a restart.
+#: It is not the Vision State projection, which is M13 at L6.
+FLOW4_PORTS: frozenset[PortId] = frozenset({PortCatalogue.STATE_STORE})
+
+#: Ports implemented by Flow 5 — the Crop Manager's attention machinery.
+#:
+#: All three ship with default adapters, unlike P11. §M8's Extension Points
+#: section names each as replaceable: the trigger set is *"a default policy,
+#: fully replaceable"*, quality estimation is *"heuristic sharpness/scale today;
+#: learned quality predictors later"*, and crop strategies extend to multi-scale
+#: and part-focused geometry.
+#:
+#: ``EVIDENCE_STORE`` (P22) is deliberately **absent**. M8 decides retention
+#: *policy* and stamps it on the crop; persisting imagery is a different module's
+#: job, and binding a store here would put a durable side effect inside the
+#: platform's cheapest, hottest path.
+FLOW5_PORTS: frozenset[PortId] = frozenset(
+    {
+        PortCatalogue.TRIGGER_POLICY,
+        PortCatalogue.QUALITY_ESTIMATOR,
+        PortCatalogue.CROP_STRATEGY,
+    }
+)
+
 #: Everything currently bindable. Binding anything else is rejected, because a
 #: plugin for a port whose owning module does not exist yet cannot be activated —
 #: which is how "no future flow is implemented early" stays enforceable.
-BINDABLE_PORTS: frozenset[PortId] = FLOW1_PORTS | FLOW2_PORTS | FLOW3_PORTS
+BINDABLE_PORTS: frozenset[PortId] = (
+    FLOW1_PORTS | FLOW2_PORTS | FLOW3_PORTS | FLOW4_PORTS | FLOW5_PORTS
+)
 
 
 @dataclass(frozen=True, slots=True)

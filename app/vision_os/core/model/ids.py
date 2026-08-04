@@ -62,6 +62,43 @@ appearing to continue a track it has nothing to do with."""
 LocalTrackId = NewType("LocalTrackId", int)
 """A tracker's own counter, meaningful only inside one ``(camera, epoch)``."""
 
+# --- registry identifiers (Flow 4) ---------------------------------------- #
+
+ObjectId = NewType("ObjectId", str)
+"""A ULID, **site-scoped and durable** (02_VOM section 4.1).
+
+A ULID rather than a sequence because object identity must be mintable by any
+partition on any node without coordination, and must sort by creation time for
+efficient range queries. A central sequence would make the registry a distributed
+bottleneck at exactly the scale where it must not be.
+
+Minted by the Object Registry and by nothing else (01_LAYERED section 8:
+*"Exactly one module may mint or retire an object identity"*)."""
+
+BindingId = NewType("BindingId", str)
+"""Identifies one track-to-object binding assertion, so a later revision can
+supersede a specific claim rather than the whole object's history."""
+
+AttributeKey = NewType("AttributeKey", str)
+"""A registered attribute name. Registration is gated on visual neutrality
+(02_VOM section 9.1)."""
+
+# --- crop identifiers (Flow 5) -------------------------------------------- #
+
+CropId = NewType("CropId", str)
+"""**A content hash of the normalized crop pixels** (02_VOM section 4.1).
+
+Content-addressed, not sequential, and the choice does real work: the same pixels
+cropped twice must be one crop. That gives free deduplication, free cache keys,
+free integrity checking, and an evidence reference that survives storage
+migration. A sequential id would give none of those and would make two runs over
+the same footage produce different evidence."""
+
+DemandId = NewType("DemandId", str)
+"""One consumer's declared need for attributes, in a scope, at a freshness."""
+
+SubscriberId = NewType("SubscriberId", str)
+
 
 # --- ULID ---------------------------------------------------------------- #
 

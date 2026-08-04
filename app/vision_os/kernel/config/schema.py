@@ -300,6 +300,279 @@ class TrackingSection:
 
 
 @dataclass(frozen=True, slots=True)
+class RegistrySection:
+    """Object Registry operating envelope (M7, Flow 4).
+
+    Resource- and horizon-shaped only. There is no slot here for "treat objects
+    near the till as customers": the registry has no vocabulary for what a region
+    means, and adding one would breach the Semantic Ceiling (V1/V2).
+
+    Every horizon is finite. Section M7 calls an unbounded registry *"a memory
+    leak with a face"*, and the bounds below are what make that impossible rather
+    than merely unlikely.
+    """
+
+    enabled: bool = False
+    """Off unless a deployment opts in. Flow 3 behaviour is the default, so
+    adding the registry to a running site is an explicit act."""
+
+    # --- lifecycle horizons -------------------------------------------------- #
+    min_observations_to_confirm: int = 3
+    """Sightings before a provisional object is asserted as real. Below this it
+    is probably tracker noise, and confirming it would put a phantom into the
+    platform's first durable state."""
+
+    provisional_horizon_ms: int = 3_000
+    occlusion_horizon_ms: int = 10_000
+    """Believed-present without measurement. Past this the claim weakens from
+    ``occluded`` to ``dormant`` — still retained, no longer asserted present."""
+
+    dormant_horizon_ms: int = 120_000
+    retention_horizon_ms: int = 600_000
+    """How long a departed object is kept before expiry. The bound on the
+    registry's memory."""
+
+    max_objects_per_camera: int = 512
+
+    # --- binding ------------------------------------------------------------- #
+    max_reentry_distance: float = 0.25
+    max_reentry_gap_ms: int = 30_000
+    ambiguity_margin: float = 0.15
+    """Minimum score gap between the best and second-best re-entry candidate.
+    Below it the match is refused, a new object is minted, and the alternatives
+    are published — section M7's *"never guess silently"* as a number."""
+
+    min_binding_confidence: float = 0.3
+    epoch_rebind_penalty: float = 0.5
+    """Multiplier applied when re-binding across a tracker epoch. 07_STATE
+    section 9.3 requires re-binding after a restart carry *explicitly reduced
+    confidence*."""
+
+    class_must_match: bool = True
+
+    # --- bounded history ------------------------------------------------------ #
+    spatial_history_length: int = 64
+    class_history_length: int = 32
+    """Both are rings. Unbounded history here is the most likely long-run memory
+    leak in the platform, which is why bounding is structural rather than a
+    tuning parameter (section M7 Performance)."""
+
+    # --- geometry -------------------------------------------------------------- #
+    edge_margin: float = 0.02
+    """How close to a frame edge counts as having left the field of view. This is
+    what separates ``active -> dormant`` from ``active -> occluded``: an object
+    that walks out of frame is a different claim from one that stops being
+    measurable in place."""
+
+    # --- durability ------------------------------------------------------------ #
+    persistence_enabled: bool = True
+    persistence_interval_ms: int = 5_000
+    """Durable writes are batched and asynchronous; the hot path updates memory
+    and enqueues, never blocking on I/O (section M7 Performance)."""
+
+    expiry_interval_ms: int = 1_000
+    """How often horizons are advanced for cameras that have gone quiet. Without
+    it, a camera that stops sending frames would freeze its objects forever."""
+
+    slow_frame_warn_ms: int = 5
+
+    def __post_init__(self) -> None:
+        if self.min_observations_to_confirm < 1:
+            raise ValidationError("registry.min_observations_to_confirm must be >= 1")
+        for name in (
+            "provisional_horizon_ms",
+            "occlusion_horizon_ms",
+            "dormant_horizon_ms",
+            "retention_horizon_ms",
+            "max_reentry_gap_ms",
+            "persistence_interval_ms",
+            "expiry_interval_ms",
+        ):
+            if getattr(self, name) <= 0:
+                raise ValidationError(f"registry.{name} must be positive")
+        if self.max_objects_per_camera < 1:
+            raise ValidationError("registry.max_objects_per_camera must be >= 1")
+        for name in (
+            "max_reentry_distance",
+            "ambiguity_margin",
+            "min_binding_confidence",
+            "edge_margin",
+        ):
+            value = getattr(self, name)
+            if not 0.0 <= value <= 1.0:
+                raise ValidationError(f"registry.{name} must be in [0,1]")
+        if not 0.0 < self.epoch_rebind_penalty <= 1.0:
+            raise ValidationError("registry.epoch_rebind_penalty must be in (0,1]")
+        if self.spatial_history_length < 1 or self.class_history_length < 1:
+            raise ValidationError("registry history lengths must be >= 1")
+        if self.occlusion_horizon_ms >= self.dormant_horizon_ms:
+            raise ValidationError(
+                "registry.occlusion_horizon_ms must be shorter than "
+                "dormant_horizon_ms; an object cannot become dormant before it "
+                "has finished being occluded"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class CroppingSection:
+    """Crop Manager operating envelope (M8, Flow 5).
+
+    Budget-, quality- and geometry-shaped only. There is no slot here for "always
+    analyse people near the entrance": M8 has no vocabulary for what a region
+    means, and a priority class below is an **opaque string** the platform orders
+    by and never interprets (V1/V2).
+
+    Note what the defaults encode. ``understanding_calls_per_hour`` is the single
+    most important number in a deployment's cost model — §M8 calls this *"the
+    single most important cost-control point in the platform"* — and it is a hard
+    ceiling rather than a target, because a budget that can be exceeded under
+    load is not a budget.
+    """
+
+    enabled: bool = False
+    """Off unless a deployment opts in. Flow 4 behaviour is the default, so
+    adding crop management to a running site is an explicit act."""
+
+    # --- budget ---------------------------------------------------------------- #
+    understanding_calls_per_hour: float = 36_000.0
+    """The ceiling. 10/s sustained — §M8's worked cost model puts a realistic
+    100-camera site at 10–15 calls/second, so this is one GPU's worth."""
+
+    budget_window_ms: int = 60_000
+    """Reconciliation window. Shorter means tighter enforcement and more
+    contention; longer allows burstier spending within the same hourly rate."""
+
+    priority_classes: tuple[str, ...] = ()
+    """Ordering, highest first. **Opaque.** The platform sorts by position and
+    never asks what a class means. An unlisted class sorts last, so a consumer
+    typo degrades one demand rather than stopping the pipeline."""
+
+    # --- triggering ------------------------------------------------------------ #
+    trigger_policy: str = "trigger.default"
+    appearance_change_threshold: float = 0.25
+    low_confidence_threshold: float = 0.5
+    periodic_refresh_ms: int = 300_000
+    """Cadence floor — the longest a demanded object goes without a look."""
+
+    max_candidates_per_frame: int = 128
+    """Bounds the per-frame evaluation cost. Beyond this, the lowest-priority
+    candidates are skipped with ``PRIORITY_PREEMPTED`` rather than silently
+    truncated (V8)."""
+
+    # --- quality --------------------------------------------------------------- #
+    quality_estimator: str = "quality.heuristic"
+    min_scale_pixels: float = 48.0
+    """The gate's scale floor — §M8 names scale *"the strongest single
+    predictor"* of whether a claim will be usable."""
+
+    good_scale_pixels: float = 160.0
+    max_truncation: float = 0.5
+    max_occlusion: float = 0.7
+    max_blur: float = 0.85
+    max_crowding: float = 0.9
+    reject_extreme_exposure: bool = False
+
+    # --- crop geometry --------------------------------------------------------- #
+    crop_strategy: str = "crop.padded"
+    crop_padding: float = 0.15
+    crop_width: int = 224
+    crop_height: int = 224
+    """The canonical crop size. **One format for every model** — §M8: *"No YOLO
+    crop. No CLIP crop. No Florence crop."* A model wanting something else
+    resizes down in its own adapter."""
+
+    preserve_aspect: bool = True
+    """Letterbox rather than squash. A squashed crop produces attributes about a
+    distorted object and the distortion is invisible in the output."""
+
+    interpolation: str = "nearest"
+    colour_space: str = "bgr24"
+
+    # --- retention ------------------------------------------------------------- #
+    retention_mode: str = "ephemeral"
+    """``ephemeral`` | ``evidence`` | ``never_persist``. 12_SECURITY section 2.3's
+    no-evidence mode is ``never_persist``."""
+
+    evidence_ttl_ms: int = 86_400_000
+    """24 hours. 12_SECURITY section 3 bounds C1 imagery at 24–72 hours."""
+
+    # --- caching --------------------------------------------------------------- #
+    dedup_cache_size: int = 4_096
+    """Bounded LRU. §M8's failure table names cache growth as a failure mode: an
+    unbounded dedup cache is a memory leak that looks like a hit-rate win."""
+
+    # --- alarms ---------------------------------------------------------------- #
+    gate_rejection_spike_threshold: float = 0.5
+    gate_rejection_sample_size: int = 20
+    """Rejections observed before a spike may be declared. A small sample would
+    alarm on ordinary variance and train operators to ignore the alarm."""
+
+    capability_gap_threshold: int = 50
+    """Consecutive unsatisfiable attempts before a capability gap is published.
+    High, because telling a consumer to stop waiting is a claim about the future
+    and should be slow to make."""
+
+    slow_frame_warn_ms: int = 10
+
+    def __post_init__(self) -> None:
+        if self.understanding_calls_per_hour < 0:
+            raise ValidationError(
+                "cropping.understanding_calls_per_hour must be non-negative"
+            )
+        for name in (
+            "budget_window_ms",
+            "periodic_refresh_ms",
+            "evidence_ttl_ms",
+        ):
+            if getattr(self, name) <= 0:
+                raise ValidationError(f"cropping.{name} must be positive")
+        for name in (
+            "appearance_change_threshold",
+            "low_confidence_threshold",
+            "max_truncation",
+            "max_occlusion",
+            "max_blur",
+            "max_crowding",
+        ):
+            value = getattr(self, name)
+            if not 0.0 <= value <= 1.0:
+                raise ValidationError(f"cropping.{name} must be in [0,1]")
+        if self.min_scale_pixels < 0:
+            raise ValidationError("cropping.min_scale_pixels must be non-negative")
+        if self.good_scale_pixels < self.min_scale_pixels:
+            raise ValidationError(
+                "cropping.good_scale_pixels must be >= min_scale_pixels; a crop "
+                "cannot be 'good' at a scale the gate already rejects"
+            )
+        if not 0.0 <= self.crop_padding <= 4.0:
+            raise ValidationError("cropping.crop_padding must be in [0,4]")
+        if self.crop_width < 1 or self.crop_height < 1:
+            raise ValidationError("cropping crop dimensions must be >= 1")
+        if self.max_candidates_per_frame < 1:
+            raise ValidationError("cropping.max_candidates_per_frame must be >= 1")
+        if self.dedup_cache_size < 1:
+            raise ValidationError("cropping.dedup_cache_size must be >= 1")
+        if self.retention_mode not in ("ephemeral", "evidence", "never_persist"):
+            raise ValidationError(
+                f"cropping.retention_mode must be ephemeral, evidence or "
+                f"never_persist, got '{self.retention_mode}'"
+            )
+        if not 0.0 <= self.gate_rejection_spike_threshold <= 1.0:
+            raise ValidationError(
+                "cropping.gate_rejection_spike_threshold must be in [0,1]"
+            )
+        if self.gate_rejection_sample_size < 1:
+            raise ValidationError("cropping.gate_rejection_sample_size must be >= 1")
+        if self.capability_gap_threshold < 1:
+            raise ValidationError("cropping.capability_gap_threshold must be >= 1")
+        if len(set(self.priority_classes)) != len(self.priority_classes):
+            raise ValidationError(
+                "cropping.priority_classes must not repeat a class; a duplicate "
+                "makes the ordering ambiguous and shedding non-deterministic"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class ModelsSection:
     """Model artifact and device policy (M18, Flow 2)."""
 
@@ -458,6 +731,8 @@ class EffectiveConfig:
     detection: DetectionSection = DetectionSection()
     models: ModelsSection = ModelsSection()
     tracking: TrackingSection = TrackingSection()
+    registry: RegistrySection = RegistrySection()
+    cropping: CroppingSection = CroppingSection()
     profiles: tuple[ProfileDeclaration, ...] = ()
     regions: tuple[RegionDeclaration, ...] = ()
     cameras: tuple[CameraDeclaration, ...] = ()
@@ -478,6 +753,8 @@ SECTION_TYPES: dict[str, type] = {
     "detection": DetectionSection,
     "models": ModelsSection,
     "tracking": TrackingSection,
+    "registry": RegistrySection,
+    "cropping": CroppingSection,
 }
 
 LIST_SECTIONS: frozenset[str] = frozenset(

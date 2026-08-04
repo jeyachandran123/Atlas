@@ -122,6 +122,115 @@ class MetricName:
     """Times the platform dropped to ``tracker.iou`` because the configured
     tracker failed. Degradation is visible, never silent (invariant V9)."""
 
+    # --- object registry (M7, Flow 4) ---------------------------------------- #
+    OBJECTS_ACTIVE: Final = "vision_os.registry.active"
+    """Objects believed present — provisional, active or occluded."""
+
+    OBJECTS_TOTAL: Final = "vision_os.registry.total"
+    """Every object held, terminal ones included. The memory-shaped number."""
+
+    OBJECTS_CREATED: Final = "vision_os.registry.created"
+    OBJECTS_CONFIRMED: Final = "vision_os.registry.confirmed"
+    OBJECTS_EXPIRED: Final = "vision_os.registry.expired"
+    OBJECTS_MERGED: Final = "vision_os.registry.merged"
+    OBJECTS_SPLIT: Final = "vision_os.registry.split"
+    OBJECTS_SHED: Final = "vision_os.registry.shed"
+    """Provisional objects evicted under population pressure. Confirmed objects
+    are never shed: withdrawing an assertion to save memory would make the
+    platform's claims a function of its load."""
+
+    OBJECT_LIFETIME_MS: Final = "vision_os.registry.lifetime_ms"
+    OBJECT_STALENESS_MS: Final = "vision_os.registry.staleness_ms"
+    """Time since the last **measured** sighting, per object. The object-level
+    expression of V8."""
+
+    IDENTITY_ASSERTIONS: Final = "vision_os.registry.identity_assertions"
+    IDENTITY_AMBIGUITIES: Final = "vision_os.registry.identity_ambiguities"
+    """Re-entries where candidates were too close to separate, so a new object was
+    minted and the alternatives published.
+
+    Deliberately **not** an "identity error" counter: whether a binding was wrong
+    needs ground truth the platform does not have. What it can count is where it
+    declined to decide (invariant V1)."""
+
+    IDENTITY_REBINDS: Final = "vision_os.registry.rebinds"
+    EPOCH_REBINDS: Final = "vision_os.registry.epoch_rebinds"
+    """Re-bindings across a tracker epoch, carrying reduced confidence."""
+
+    REGION_TRANSITIONS: Final = "vision_os.registry.region_transitions"
+    REGION_OCCUPANCY: Final = "vision_os.registry.region_occupancy"
+    REGION_DWELL_MS: Final = "vision_os.registry.region_dwell_ms"
+
+    ATTRIBUTES_APPLIED: Final = "vision_os.registry.attributes_applied"
+    ATTRIBUTES_REJECTED: Final = "vision_os.registry.attributes_rejected"
+    """Attributes refused by the neutrality gate, labelled by reason. The V1
+    enforcement point inside M7 (02_VOM section 9.1)."""
+
+    ATTRIBUTES_STALE: Final = "vision_os.registry.attributes_stale"
+
+    REGISTRY_FRAMES_PROCESSED: Final = "vision_os.registry.frames_processed"
+    REGISTRY_LATENCY_MS: Final = "vision_os.registry.latency_ms"
+    REGISTRY_FAILURES: Final = "vision_os.registry.failures"
+    REGISTRY_SATURATION: Final = "vision_os.registry.saturation"
+    REGISTRY_CAPACITY_REFUSALS: Final = "vision_os.registry.capacity_refusals"
+    REGISTRY_PARTITIONS: Final = "vision_os.registry.partitions"
+
+    OBJECT_STORE_WRITES: Final = "vision_os.registry.store_writes"
+    OBJECT_STORE_FAILURES: Final = "vision_os.registry.store_failures"
+    OBJECT_STORE_LATENCY_MS: Final = "vision_os.registry.store_latency_ms"
+    OBJECTS_RELOADED: Final = "vision_os.registry.reloaded"
+    """Objects recovered from durable state after a restart. 07_STATE section
+    9.3: object identity survives, tracks do not."""
+
+    # --- crop manager (M8, Flow 5) ------------------------------------------- #
+    CROPS_REQUESTED: Final = "vision_os.cropping.requested"
+    """Candidates that fired a trigger. Labelled by ``reason``, so the mix of the
+    nine trigger reasons is visible — a deployment where everything is
+    ``periodic_refresh`` is paying a cadence tax rather than reacting to change."""
+
+    CROPS_PRODUCED: Final = "vision_os.cropping.produced"
+    CROPS_SKIPPED: Final = "vision_os.cropping.skipped"
+    """Labelled by ``reason``. The V8 counter: a consumer must be able to tell
+    'nothing was there' from 'we could not afford to look'."""
+
+    CROPS_GATE_REJECTED: Final = "vision_os.cropping.gate_rejected"
+    """Labelled by ``reason``. Turns *"the VLM never answers for far-away
+    people"* into a statistic with a name (02_VOM section 10.7)."""
+
+    CROPS_DEDUPLICATED: Final = "vision_os.cropping.deduplicated"
+    CROP_EXTRACTION_MS: Final = "vision_os.cropping.extraction_ms"
+    CROP_EXTRACTION_FAILURES: Final = "vision_os.cropping.extraction_failures"
+    CROP_SCALE_PIXELS: Final = "vision_os.cropping.scale_pixels"
+    """Distribution of graded object height. The camera-placement diagnostic:
+    a site whose objects cluster below the gate floor has a mounting problem, not
+    a model problem."""
+
+    CROP_QUALITY_GRADE: Final = "vision_os.cropping.quality_grade"
+    """Labelled by ``overall``. The four-level verdict's distribution."""
+
+    CROP_TRIGGER_LATENCY_MS: Final = "vision_os.cropping.trigger_latency_ms"
+    CROP_CANDIDATES_EVALUATED: Final = "vision_os.cropping.candidates_evaluated"
+    CROP_FRAME_UNAVAILABLE: Final = "vision_os.cropping.frame_unavailable"
+    """Frames evicted before their crop could be taken. Diagnoses pin TTL and
+    buffer depth rather than leaving a hole nobody can explain."""
+
+    UNDERSTANDING_BUDGET_SPENT: Final = "vision_os.cropping.budget_spent"
+    UNDERSTANDING_BUDGET_SHED: Final = "vision_os.cropping.budget_shed"
+    UNDERSTANDING_BUDGET_PRESSURE: Final = "vision_os.cropping.budget_pressure"
+    """Spend over ceiling. Above 1.0 the platform is thinning attributes, which
+    consumers learn from coverage rather than from silence (V8)."""
+
+    DEMANDS_ACTIVE: Final = "vision_os.cropping.demands_active"
+    DEMANDS_REGISTERED: Final = "vision_os.cropping.demands_registered"
+    DEMANDS_REVOKED: Final = "vision_os.cropping.demands_revoked"
+    DEMANDS_UNSATISFIABLE: Final = "vision_os.cropping.demands_unsatisfiable"
+    """Demands the platform accepted and cannot serve — the honest answer to a
+    request for an attribute no bound model produces."""
+
+    DEMAND_THROTTLED: Final = "vision_os.cropping.demands_throttled"
+    CROP_CACHE_HITS: Final = "vision_os.cropping.cache_hits"
+    CROP_CACHE_EVICTIONS: Final = "vision_os.cropping.cache_evictions"
+
     # --- models (M18, Flow 2) ------------------------------------------------ #
     MODELS_LOADED: Final = "vision_os.models.loaded"
     MODEL_EVICTIONS: Final = "vision_os.models.evictions"

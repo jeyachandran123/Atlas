@@ -595,6 +595,7 @@ def platform_registry() -> ConformanceRegistry:
     """
     from .detector_kit import DETECTOR_KIT
     from .model_kits import ARTIFACT_STORE_KIT, DEVICE_KIT, MODEL_RUNTIME_KIT
+    from .registry_kits import OBJECT_STORE_KIT
     from .tracker_kit import TRACKER_KIT
 
     registry = flow1_registry()
@@ -604,8 +605,12 @@ def platform_registry() -> ConformanceRegistry:
         MODEL_RUNTIME_KIT,
         DEVICE_KIT,
         TRACKER_KIT,
+        OBJECT_STORE_KIT,
     ):
         registry.register(kit)
+    # IDENTITY_RESOLVER_KIT is deliberately not registered: P11 has no
+    # implementations in Phase 1, and registering a kit for it would suggest one
+    # is expected (15_ROADMAP section 3).
     return registry
 
 

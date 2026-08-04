@@ -72,3 +72,35 @@ class DetectionConsumer(Protocol):
     async def on_detected(self, outcome: DetectionOutcome) -> None:
         """Consume one frame's detection outcome, in per-camera frame order."""
         ...
+
+
+@runtime_checkable
+class RegistryConsumer(Protocol):
+    """Resumes the pipeline after the Object Registry — the L2-to-L3 handoff.
+
+    The Flow 5 seam, declared in the Flow 4 report's extension-point table. The
+    Crop Manager attaches here exactly as the registry attached to tracking.
+
+    It carries objects rather than pixels, for the same reason
+    ``AdmittedFrameConsumer`` carries a ``FrameRef``: attention is a
+    **control-plane** decision about metadata. Only the small subset that
+    survives trigger evaluation ever leases pixels, which is what lets one node
+    evaluate thousands of candidates a second (invariant V12, §M8 Performance).
+
+    **Every update is delivered, including empty and failed ones**, for the same
+    reason detection outcomes are: an empty population is when trigger state
+    ages and demands go unserved, and ``failed`` must never be
+    indistinguishable from "nothing was there" (invariant V8).
+
+    Implementations **must not raise**.
+    """
+
+    async def on_registered(self, update: object) -> None:
+        """Consume one camera's registry update, in per-camera frame order.
+
+        The parameter is typed ``object`` because ``RegistryUpdate`` lives in
+        ``perception.registry`` and ``core`` may not import a perception module —
+        the dependency would point the wrong way through the layers (01_LAYERED
+        section 2). Implementations narrow it.
+        """
+        ...

@@ -374,18 +374,18 @@ class TestPluginCompatibility:
     def test_later_flow_port_is_not_bindable(self, plugins: PluginManager) -> None:
         """A plugin for a port whose owning module does not exist yet cannot bind.
 
-        ``CropStrategyPort`` belongs to Flow 4. ``TrackerPort`` became bindable
-        in Flow 3, so this guard tracks the current frontier rather than a
-        boundary already crossed.
+        ``UnderstanderPort`` belongs to Flow 6. ``CropStrategyPort`` became
+        bindable in Flow 5, so this guard tracks the current frontier rather than
+        a boundary already crossed.
         """
         plugins.register(
             PluginDescriptor(
-                _manifest(plugin_id="crop.centre", port=PortCatalogue.CROP_STRATEGY),
+                _manifest(plugin_id="vlm.local", port=PortCatalogue.UNDERSTANDER),
                 _GoodAllocator,
             )
         )
         with pytest.raises(PortIncompatibleError, match="not bindable"):
-            plugins.load(PluginId("crop.centre"))
+            plugins.load(PluginId("vlm.local"))
 
     def test_the_embedding_port_is_never_bindable(self, plugins: PluginManager) -> None:
         """Not a frontier guard — a standing one.

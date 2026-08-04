@@ -32,14 +32,38 @@ class ExposureLevel(enum.Enum):
     OVER = "over"
 
 
+class QualityLevel(enum.Enum):
+    """The overall verdict of 02_VOM section 10.8.
+
+    Four levels, not a score, because the consumer of this field is a **gate**
+    and a human reading a report. ``insufficient`` is the only one that stops
+    work; the rest are context that travels with the claim.
+    """
+
+    EXCELLENT = "excellent"
+    GOOD = "good"
+    MARGINAL = "marginal"
+    INSUFFICIENT = "insufficient"
+
+    @property
+    def is_usable(self) -> bool:
+        """Whether a defensible claim can rest on input of this quality."""
+        return self is not QualityLevel.INSUFFICIENT
+
+
 @dataclass(frozen=True, slots=True)
 class QualityGrades:
-    """Input quality, insofar as it is derivable at this stage (02_VOM section 10.8).
+    """Input quality (02_VOM section 10.8).
 
-    Detection populates ``scale`` and ``truncation`` (port obligation D8). The
-    remaining grades — occlusion, blur, crowding — require either neighbour
-    context or a crop, and belong to Flow 4. They are ``None`` here rather than
-    zero, because "not measured" and "measured as zero" are different claims.
+    > *"Quality is computed once, in the Crop Manager, and travels with
+    > everything derived from it."*
+
+    Detection populates ``scale_pixels`` and ``truncation`` (port obligation D8)
+    — the two it can derive from a box alone. The rest need a crop or neighbour
+    context and are computed by **M8**. They are ``None`` here rather than zero,
+    because "not measured" and "measured as zero" are different claims, and a
+    consumer that cannot tell them apart will read an unmeasured grade as a good
+    one.
     """
 
     scale_pixels: float | None = None
@@ -54,13 +78,22 @@ class QualityGrades:
     crowding: float | None = None
     exposure: ExposureLevel | None = None
 
+    overall: QualityLevel | None = None
+    """The gate's verdict. Computed by M8 from the grades above; ``None`` until
+    a crop exists to compute it from."""
+
     def __post_init__(self) -> None:
-        for name in ("truncation", "occlusion", "blur"):
+        for name in ("truncation", "occlusion", "blur", "crowding"):
             value = getattr(self, name)
             if value is not None and not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be in [0,1], got {value}")
         if self.scale_pixels is not None and self.scale_pixels < 0:
             raise ValueError(f"scale_pixels must be non-negative, got {self.scale_pixels}")
+
+    @property
+    def is_graded(self) -> bool:
+        """Whether M8 has assessed this input."""
+        return self.overall is not None
 
 
 class DecisionStep(enum.Enum):

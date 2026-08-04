@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | **Architecture** | Frozen at v1.0 (foundational). 16 documents — this index + 15 specifications. |
-| **Implementation** | Flows 1–3 of 8 complete. See [implementation status](#implementation-status). |
+| **Implementation** | Flows 1–4 of 8 complete. See [implementation status](#implementation-status). |
 | **Sibling** | Cognitive Intelligence Platform — `docs/architecture/COGNITIVE_*.md` |
 
 ---
@@ -95,10 +95,10 @@ Code lives in `backend/app/vision_os/`.
 | **1** | Infrastructure & Acquisition | ✅ complete | [Flow 1 report](./IMPLEMENTATION_FLOW_1.md) |
 | **2** | Detection | ✅ complete | [Flow 2 report](./IMPLEMENTATION_FLOW_2.md) |
 | **3** | Tracking | ✅ complete | [Flow 3 report](./IMPLEMENTATION_FLOW_3.md) · [compliance review](./FLOW_3_COMPLIANCE_REVIEW.md) |
-| 4 | Crop Management | pending | |
-| 5 | Vision Understanding | pending | |
-| 6 | Observation Builder | pending | |
-| 7 | Vision State | pending | |
+| **4** | Object Registry (M7) | ✅ complete | [Flow 4 report](./IMPLEMENTATION_FLOW_4.md) · [compliance review](./FLOW_4_COMPLIANCE_REVIEW.md) |
+| **5** | Crop Manager (M8) | ✅ complete | [Flow 5 report](./IMPLEMENTATION_FLOW_5.md) · [compliance review](./FLOW_5_COMPLIANCE_REVIEW.md) |
+| 6 | Vision Understanding (M9) | pending | |
+| 7 | Observation Builder & Vision State | pending | |
 | 8 | Observation API | pending | |
 
 **Frontier discipline.** `BINDABLE_PORTS` names exactly the ports the implemented

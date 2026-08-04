@@ -29,13 +29,22 @@ class Event:
     detail: dict[str, Any] = field(default_factory=dict)
 
     def payload(self) -> dict[str, Any]:
-        """Flat, transport-ready representation."""
-        return {
+        """Flat, transport-ready representation.
+
+        Several subclasses narrow ``detail`` to a human-readable ``str`` — an
+        alarm's cause reads better as a sentence than as a bag of keys. Both
+        shapes are handled here rather than at each call site, because a
+        transport that raised on one event type would drop that event and only
+        that event, which is the hardest kind of observability gap to notice.
+        """
+        base = {
             "event_type": type(self).event_type,
             "occurred_at_ns": self.occurred_at.ns,
             "partition_key": self.partition_key,
-            **self.detail,
         }
+        if isinstance(self.detail, dict):
+            return {**base, **self.detail}
+        return {**base, "detail": self.detail} if self.detail else base
 
 
 # --- stream lifecycle (M2) ----------------------------------------------- #
@@ -513,6 +522,195 @@ class TrackerEpochAdvanced(Event):
     discarded_tracks: int = 0
 
 
+# --- object registry (M7, Flow 4) ------------------------------------------ #
+#
+# Exactly the five types named by M7's ``subscribe()`` (03_MODULES section M7),
+# plus the population alarm its failure table requires. No semantic or business
+# event exists here: the registry publishes what happened to an object, never
+# what it means.
+
+
+@dataclass(frozen=True, slots=True)
+class ObjectCreated(Event):
+    """A new canonical object was minted.
+
+    ``object_id`` is a site-scoped ULID. The registry is the only module that may
+    mint one (01_LAYERED section 8).
+    """
+
+    event_type: ClassVar[str] = "registry.object_created"
+    camera_id: CameraId = CameraId("")
+    object_id: str = ""
+    track_id: str = ""
+    class_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ObjectLifecycleChanged(Event):
+    """An object moved between lifecycle states (02_VOM section 10.6).
+
+    Every transition is observable. ``merged_into`` and ``expired`` appear here
+    like any other state — an object is never silently removed, because a
+    consumer that saw it must be able to see it end.
+    """
+
+    event_type: ClassVar[str] = "registry.lifecycle_changed"
+    camera_id: CameraId = CameraId("")
+    object_id: str = ""
+    previous: str = ""
+    current: str = ""
+    trigger: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class IdentityAsserted(Event):
+    """A track was claimed to continue an object.
+
+    A **claim**, not a truth (02_VOM section 4.2). ``ambiguous`` with a non-zero
+    ``alternatives`` is the case section M7 cares most about: candidates existed
+    but none was decisive, so a new object was minted and the alternatives are
+    published rather than one being guessed.
+    """
+
+    event_type: ClassVar[str] = "registry.identity_asserted"
+    camera_id: CameraId = CameraId("")
+    object_id: str = ""
+    track_id: str = ""
+    binding_id: str = ""
+    method: str = ""
+    confidence: float = 0.0
+    ambiguous: bool = False
+    alternatives: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class IdentityRevised(Event):
+    """An earlier identity claim was superseded — a merge or a split.
+
+    History is never rewritten (V5). The correction is a new fact carrying
+    ``supersedes``; the prior record survives and stays resolvable.
+    """
+
+    event_type: ClassVar[str] = "registry.identity_revised"
+    camera_id: CameraId = CameraId("")
+    object_id: str = ""
+    successor_id: str = ""
+    """Merge target, or the new object minted by a split."""
+
+    reason: str = ""
+    supersedes: str = ""
+    evidence: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class RegionTransition(Event):
+    """An object entered or left a region. **Pure geometry.**
+
+    ``dwell_ms`` on exit is computed from ``t_capture``, never processing time
+    (V11): a dwell of 45 s means the object was present for 45 s in the world,
+    regardless of whether the platform was keeping up.
+
+    Deliberately absent: any judgment about what the dwell *means*. There is no
+    `exceeded_threshold`, because the threshold is a business decision (V1).
+    """
+
+    event_type: ClassVar[str] = "registry.region_transition"
+    camera_id: CameraId = CameraId("")
+    object_id: str = ""
+    region_id: str = ""
+    geometry_version: str = ""
+    entered: bool = True
+    dwell_ms: float = 0.0
+    method: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ObjectPopulationCapped(Event):
+    """The per-camera object population hit its bound.
+
+    03_MODULES section M7 failure handling requires this be alarmed: *"Cap
+    per-camera population; shed `provisional` objects first; **alarm** — a
+    runaway registry is a memory leak with a face."*
+    """
+
+    event_type: ClassVar[str] = "registry.population_capped"
+    camera_id: CameraId = CameraId("")
+    population: int = 0
+    capacity: int = 0
+    shed: int = 0
+    detail: str = ""
+
+
+# --- crop manager (M8, Flow 5) --------------------------------------------- #
+#
+# ``subscribe()`` names exactly two (03_MODULES section M8). ``CapabilityGap`` is
+# the third, required by the same section's failure table: *"publish a capability
+# gap so the consumer stops waiting for data that will never arrive."*
+#
+# Note what is absent. There is no `CropProduced`: a crop is data-plane evidence
+# and the Event Bus is a lossy control-plane notifier (01_LAYERED). Announcing
+# every crop would put megabyte-scale traffic on a bus designed for kilobytes and
+# would make a dropped notification look like a missing crop.
+
+
+@dataclass(frozen=True, slots=True)
+class BudgetExhausted(Event):
+    """The understanding budget is spent; requests are being shed by priority.
+
+    Distinct from ``BudgetExceeded``, which is M3's per-node frame budget. Both
+    are real and they fail differently: exceeding the frame budget drops frames,
+    exhausting this one thins **attributes**, and a consumer told the wrong one
+    would tune the wrong knob.
+
+    Always accompanied by a coverage change, so a consumer learns its attributes
+    are thinned rather than inferring it from silence (V8).
+    """
+
+    event_type: ClassVar[str] = "cropping.budget_exhausted"
+    ceiling_per_hour: float = 0.0
+    spent_in_window: int = 0
+    shed_in_window: int = 0
+    pressure: float = 0.0
+    detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class GateRejectionSpike(Event):
+    """Gate rejections rose sharply for one camera, with the dominant reason.
+
+    Almost always a **physical** problem: a camera nudged, a lens fouled, a light
+    failed. Carrying ``reason`` is what turns this from "understanding stopped
+    working" into "objects at camera-7 are now 30 px tall", which is actionable
+    on the first read.
+    """
+
+    event_type: ClassVar[str] = "cropping.gate_rejection_spike"
+    camera_id: CameraId = CameraId("")
+    reason: str = ""
+    rejection_rate: float = 0.0
+    sample_size: int = 0
+    detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityGap(Event):
+    """A demand that cannot be satisfied at this camera, persistently.
+
+    §M8: *"Detect the persistent pattern, publish a capability gap so the
+    consumer stops waiting for data that will never arrive."* Silence would make
+    an impossible demand indistinguishable from a slow one — and the consumer
+    would wait forever for either.
+    """
+
+    event_type: ClassVar[str] = "cropping.capability_gap"
+    camera_id: CameraId = CameraId("")
+    demand_id: str = ""
+    attribute_key: str = ""
+    reason: str = ""
+    consecutive_failures: int = 0
+    detail: str = ""
+
+
 ALL_EVENT_TYPES: tuple[type[Event], ...] = (
     StreamConnected,
     StreamLost,
@@ -557,4 +755,13 @@ ALL_EVENT_TYPES: tuple[type[Event], ...] = (
     TrackerLoaded,
     TrackerUnloaded,
     TrackerEpochAdvanced,
+    ObjectCreated,
+    ObjectLifecycleChanged,
+    IdentityAsserted,
+    IdentityRevised,
+    RegionTransition,
+    ObjectPopulationCapped,
+    BudgetExhausted,
+    GateRejectionSpike,
+    CapabilityGap,
 )
