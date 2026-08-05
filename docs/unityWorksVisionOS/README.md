@@ -97,9 +97,9 @@ Code lives in `backend/app/vision_os/`.
 | **3** | Tracking | ✅ complete | [Flow 3 report](./IMPLEMENTATION_FLOW_3.md) · [compliance review](./FLOW_3_COMPLIANCE_REVIEW.md) |
 | **4** | Object Registry (M7) | ✅ complete | [Flow 4 report](./IMPLEMENTATION_FLOW_4.md) · [compliance review](./FLOW_4_COMPLIANCE_REVIEW.md) |
 | **5** | Crop Manager (M8) | ✅ complete | [Flow 5 report](./IMPLEMENTATION_FLOW_5.md) · [compliance review](./FLOW_5_COMPLIANCE_REVIEW.md) |
-| 6 | Vision Understanding (M9) | pending | |
-| 7 | Observation Builder & Vision State | pending | |
-| 8 | Observation API | pending | |
+| **6** | Vision Understanding (M9) | ✅ complete | [Flow 6 report](./IMPLEMENTATION_FLOW_6.md) · [compliance review](./FLOW_6_COMPLIANCE_REVIEW.md) |
+| 7 | Prompt Manager & Observation Builder (M10, M11) | pending | |
+| 8 | Vision State & Observation API (M12–M14) | pending | |
 
 **Frontier discipline.** `BINDABLE_PORTS` names exactly the ports the implemented
 flows may bind. Every later-flow port is defined in the catalogue and deliberately

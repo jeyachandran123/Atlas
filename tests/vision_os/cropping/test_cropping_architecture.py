@@ -411,10 +411,9 @@ class TestFlowScope:
         ):
             assert port in BINDABLE_PORTS
 
-    def test_understanding_ports_remain_unbindable(self) -> None:
+    def test_synthesis_ports_remain_unbindable(self) -> None:
+        """The frontier moved to Flow 7 when the Understanding Engine shipped."""
         for port in (
-            PortCatalogue.UNDERSTANDER,
-            PortCatalogue.OUTPUT_COERCION,
             PortCatalogue.PROMPT_SOURCE,
             PortCatalogue.SUPPRESSION_POLICY,
             PortCatalogue.OBSERVATION_SINK,
@@ -436,11 +435,29 @@ class TestFlowScope:
         assert PortCatalogue.EMBEDDING not in BINDABLE_PORTS
         assert PortCatalogue.IDENTITY_RESOLVER not in BINDABLE_PORTS
 
-    def test_no_understanding_module_exists(self) -> None:
-        assert not (PERCEPTION / "understanding").exists()
+    def test_no_synthesis_module_exists(self) -> None:
         assert not (ROOT / "synthesis").exists()
         assert not (ROOT / "state").exists()
         assert not (ROOT / "api").exists()
+
+    def test_cropping_does_not_import_understanding(self) -> None:
+        """M9 ships, but M8 must not learn it exists.
+
+        The dependency runs cropping-to-understanding, never the reverse: a crop
+        manager that knew what a model concluded would be making attention
+        decisions on semantic grounds, which is the ceiling breached from below.
+        """
+        offenders: list[str] = []
+        for path in _files(CROPPING) + _files(ADAPTERS):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.ImportFrom)
+                    and node.module
+                    and "understanding" in node.module
+                ):
+                    offenders.append(f"{_module_of(path)} imports {node.module}")
+        assert not offenders, "\n".join(offenders)
 
 
 class TestEarlierFlowsUnchanged:

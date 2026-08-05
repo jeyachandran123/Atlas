@@ -231,6 +231,58 @@ class MetricName:
     CROP_CACHE_HITS: Final = "vision_os.cropping.cache_hits"
     CROP_CACHE_EVICTIONS: Final = "vision_os.cropping.cache_evictions"
 
+    # --- understanding (M9, Flow 6) ------------------------------------------ #
+    UNDERSTANDING_RESULTS: Final = "vision_os.understanding.results"
+    """Labelled by ``outcome``. The distribution across the six outcomes is the
+    single most informative number about M9: a healthy deployment is dominated by
+    ``succeeded``, and any other shape names its own problem."""
+
+    UNDERSTANDING_LATENCY_MS: Final = "vision_os.understanding.latency_ms"
+    UNDERSTANDING_QUEUE_DEPTH: Final = "vision_os.understanding.queue_depth"
+    UNDERSTANDING_BATCH_SIZE: Final = "vision_os.understanding.batch_size"
+    """Batch efficiency. 04_MODULES section M9 puts request batching among its
+    main levers, and a batch size stuck at 1 means the lever is not engaged."""
+
+    UNDERSTANDING_CACHE_HITS: Final = "vision_os.understanding.cache_hits"
+    UNDERSTANDING_CACHE_MISSES: Final = "vision_os.understanding.cache_misses"
+    UNDERSTANDING_CACHE_EVICTIONS: Final = "vision_os.understanding.cache_evictions"
+
+    UNDERSTANDING_TIMEOUTS: Final = "vision_os.understanding.timeouts"
+    UNDERSTANDING_RETRIES: Final = "vision_os.understanding.retries"
+    UNDERSTANDING_FALLBACKS: Final = "vision_os.understanding.fallbacks"
+    """Times a fallback answered. 10_RELIABILITY section 7.2: a fallback that is
+    never noticed becomes permanent, and the platform quietly runs on its worst
+    model forever."""
+
+    UNDERSTANDING_CIRCUIT_OPEN: Final = "vision_os.understanding.circuit_open"
+    UNDERSTANDING_REFUSALS: Final = "vision_os.understanding.refusals"
+    """Model safety-filter refusals. Recorded as evidence, never as an error."""
+
+    UNDERSTANDING_FAILURES: Final = "vision_os.understanding.failures"
+    UNDERSTANDING_ADAPTER_ERRORS: Final = "vision_os.understanding.adapter_errors"
+    UNDERSTANDING_UNSUPPORTED: Final = "vision_os.understanding.unsupported"
+    """Requests naming attributes no bound understander can produce. A capability
+    gap made countable (V8)."""
+
+    UNDERSTANDING_CONCURRENCY_REJECTED: Final = "vision_os.understanding.concurrency_rejected"
+    UNDERSTANDING_IN_FLIGHT: Final = "vision_os.understanding.in_flight"
+    UNDERSTANDING_COST_UNITS: Final = "vision_os.understanding.cost_units"
+    """Relative cost spent. The number 11_PERFORMANCE section 7's VLM-to-
+    specialized-head migration is measured in."""
+
+    ATTRIBUTES_PRODUCED: Final = "vision_os.understanding.attributes_produced"
+    ATTRIBUTES_SCHEMA_REJECTED: Final = "vision_os.understanding.attributes_rejected"
+    """Labelled by ``reason``. ``unregistered_key`` is the Semantic Ceiling doing
+    its job, and is counted apart from ordinary type and domain mismatches
+    because it calls for a different response — a prompt change, not a model
+    change."""
+
+    ATTRIBUTES_QUARANTINED: Final = "vision_os.understanding.quarantined"
+    """Responses where nothing survived coercion and the output went to
+    ``unstructured_note`` (02_VOM section 9.3)."""
+
+    SCHEMA_DRIFT_ALARMS: Final = "vision_os.understanding.schema_drift_alarms"
+
     # --- models (M18, Flow 2) ------------------------------------------------ #
     MODELS_LOADED: Final = "vision_os.models.loaded"
     MODEL_EVICTIONS: Final = "vision_os.models.evictions"

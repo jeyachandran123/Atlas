@@ -34,6 +34,7 @@ from .events import (
     LeaseLeaked,
     MaskFailure,
     ModelEvicted,
+    ModelFallbackEngaged,
     ModelLoaded,
     ModelSwapped,
     ObjectCreated,
@@ -46,6 +47,7 @@ from .events import (
     PluginRejected,
     PoolPressure,
     RegionTransition,
+    SchemaDriftSuspected,
     SilentFailureSuspected,
     StreamConnected,
     StreamLost,
@@ -60,6 +62,7 @@ from .events import (
     TrackRecovered,
     TrackTerminated,
     TrackUpdated,
+    UnderstandingFailed,
     ViewpointDriftSuspected,
 )
 
@@ -94,6 +97,7 @@ __all__ = [
     "LeaseLeaked",
     "MaskFailure",
     "ModelEvicted",
+    "ModelFallbackEngaged",
     "ModelLoaded",
     "ModelSwapped",
     "ObjectCreated",
@@ -107,6 +111,7 @@ __all__ = [
     "PluginRejected",
     "PoolPressure",
     "RegionTransition",
+    "SchemaDriftSuspected",
     "SilentFailureSuspected",
     "StreamConnected",
     "StreamLost",
@@ -122,5 +127,6 @@ __all__ = [
     "TrackerLoaded",
     "TrackerUnloaded",
     "TrackingWarning",
+    "UnderstandingFailed",
     "ViewpointDriftSuspected",
 ]

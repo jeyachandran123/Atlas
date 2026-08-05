@@ -29,9 +29,15 @@ from .model_kits import (
 )
 from .registry_kits import IDENTITY_RESOLVER_KIT, OBJECT_STORE_KIT
 from .tracker_kit import DETERMINISM_CHECK, TRACKER_KIT
+from .understanding_kits import (
+    ALL_UNDERSTANDING_KITS,
+    OUTPUT_COERCION_KIT,
+    UNDERSTANDER_KIT,
+)
 
 __all__ = [
     "ALL_CROPPING_KITS",
+    "ALL_UNDERSTANDING_KITS",
     "ALL_FLOW1_KITS",
     "ALL_MODEL_KITS",
     "ARTIFACT_STORE_KIT",
@@ -42,9 +48,11 @@ __all__ = [
     "IDENTITY_RESOLVER_KIT",
     "MODEL_RUNTIME_KIT",
     "OBJECT_STORE_KIT",
+    "OUTPUT_COERCION_KIT",
     "QUALITY_ESTIMATOR_KIT",
     "TRACKER_KIT",
     "TRIGGER_POLICY_KIT",
+    "UNDERSTANDER_KIT",
     "ConformanceCheck",
     "ConformanceKit",
     "ConformanceRegistry",

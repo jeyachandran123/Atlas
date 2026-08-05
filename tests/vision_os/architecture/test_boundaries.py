@@ -27,6 +27,7 @@ from app.vision_os.kernel.plugins.manifest import (
     FLOW3_PORTS,
     FLOW4_PORTS,
     FLOW5_PORTS,
+    FLOW6_PORTS,
 )
 
 ROOT = Path(vision_os_pkg.__file__).parent
@@ -365,9 +366,10 @@ class TestSemanticCeiling:
 class TestFlowScope:
     """No flow may implement responsibilities belonging to a later one.
 
-    These assertions move forward exactly one flow at a time. Flow 5 shipped the
-    Crop Manager, so the frontier is now Flow 6 (understanding) — and the guards
-    below police *that* boundary, not the ones already crossed.
+    These assertions move forward exactly one flow at a time. Flow 6 shipped the
+    Understanding Engine, so the frontier is now Flow 7 (observation building and
+    state) — and the guards below police *that* boundary, not the ones already
+    crossed.
     """
 
     def test_only_implemented_ports_are_bindable(self) -> None:
@@ -376,16 +378,21 @@ class TestFlowScope:
         assert len(FLOW3_PORTS) == 1
         assert len(FLOW4_PORTS) == 1
         assert len(FLOW5_PORTS) == 3
+        assert len(FLOW6_PORTS) == 2
         assert BINDABLE_PORTS == (
-            FLOW1_PORTS | FLOW2_PORTS | FLOW3_PORTS | FLOW4_PORTS | FLOW5_PORTS
+            FLOW1_PORTS
+            | FLOW2_PORTS
+            | FLOW3_PORTS
+            | FLOW4_PORTS
+            | FLOW5_PORTS
+            | FLOW6_PORTS
         )
 
         later_flow_ports = {
             "P10.EmbeddingPort",
             "P11.IdentityResolverPort",
-            "P15.UnderstanderPort",
-            "P16.OutputCoercionPort",
             "P17.PromptSourcePort",
+            "P18.SuppressionPolicyPort",
             "P19.ObservationSinkPort",
             "P20.ObservationLogPort",
             "P22.EvidenceStorePort",
@@ -433,13 +440,13 @@ class TestFlowScope:
             )
 
     def test_no_later_flow_modules_exist(self) -> None:
-        for absent in ("understanding", "state", "api", "observation", "crop", "synthesis"):
+        for absent in ("state", "api", "observation", "synthesis"):
             assert not (ROOT / absent).exists(), (
                 f"package '{absent}' belongs to a later flow"
             )
-        for absent in ("crop", "understanding"):
+        for absent in ("synthesis", "state"):
             assert not (ROOT / "perception" / absent).exists(), (
-                f"perception/{absent} belongs to Flow 5 or later"
+                f"perception/{absent} belongs to Flow 7 or later"
             )
 
     def test_detection_holds_no_temporal_state(self) -> None:

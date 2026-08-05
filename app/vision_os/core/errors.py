@@ -489,6 +489,102 @@ class DemandNotFoundError(CropError):
     failure_class = FailureClass.PERSISTENT
 
 
+# --- understanding (M9) --------------------------------------------------- #
+
+
+class UnderstandingError(VisionOSError):
+    """Base for the Understanding Engine (M9).
+
+    Every subclass answers *"why did no attribute arrive"* with something a
+    consumer can act on. 04_MODULES section M9 states the governing property:
+    **understanding failure is never pipeline failure** — detection, tracking,
+    identity and spatial observations continue unaffected, and only enrichment is
+    lost.
+    """
+
+
+class UnderstandingFailedError(UnderstandingError):
+    """The request could not be completed after retries and fallbacks.
+
+    Carries the outcome so the caller records the right skip rather than
+    inventing one. **Never** carries a value: a failed understanding that produced
+    an attribute would be fabrication, which port obligation U2 calls *"the single
+    most dangerous failure mode for a VLM-based system"*.
+    """
+
+    failure_class = FailureClass.TRANSIENT
+
+
+class UnderstanderTimeoutError(UnderstandingError):
+    """A model call exceeded its deadline.
+
+    Transient by classification: 10_RELIABILITY section 4.3 retries once with
+    backoff, then falls back, then gives up. The object simply has no attribute
+    this round, and the skip is recorded.
+    """
+
+    failure_class = FailureClass.TRANSIENT
+
+
+class UnderstanderUnavailableError(UnderstandingError):
+    """No understander could be reached — circuit open or chain exhausted.
+
+    Systemic: retrying makes it worse. 10_RELIABILITY section 7.2 requires the
+    last link in a fallback chain to be **explicit unavailability, never a
+    guess**, and this is that link.
+    """
+
+    failure_class = FailureClass.SYSTEMIC
+
+
+class UnsupportedCapabilityError(UnderstandingError):
+    """No bound understander declares the requested attributes.
+
+    A **capability gap**, not a fault. The honest answer to a demand the platform
+    cannot serve, so the consumer stops waiting for data that will never arrive
+    (invariant V8).
+    """
+
+    failure_class = FailureClass.PERSISTENT
+
+
+class OutputCoercionError(UnderstandingError):
+    """Model output could not be parsed into the declared schema.
+
+    Classified **POISON**. 04_MODULES section M9's table labels this *"Data"*,
+    which is not one of the six canonical classes in 10_RELIABILITY section 2;
+    ``POISON`` is the class whose documented response is exactly what M9 does —
+    *"quarantine the input, continue the stream"*. The output goes to
+    ``unstructured_note`` and **zero** attributes are emitted (02_VOM section
+    9.3), while every other camera and every other object keeps working.
+    """
+
+    failure_class = FailureClass.POISON
+
+
+class SchemaViolationError(UnderstandingError):
+    """A field violates the attribute schema it claims to satisfy.
+
+    Distinct from ``AttributeRejectedError``, which refuses an unregistered
+    *key*. This refuses a registered key carrying an illegal *value* — a
+    different operator response, because one means a prompt drifted and the other
+    means a model formats badly.
+    """
+
+    failure_class = FailureClass.POISON
+
+
+class PromptUnavailableError(UnderstandingError):
+    """No prompt exists for the requested attribute set.
+
+    04_MODULES section M10 returns ``NoSuitablePrompt`` here and M8 records a
+    capability gap, so the consumer learns the demand is unsatisfiable rather
+    than waiting on an answer nobody can render.
+    """
+
+    failure_class = FailureClass.PERSISTENT
+
+
 class EmbeddingUnavailableError(TrackingError):
     """A tracker requiring appearance embeddings has no provider configured.
 

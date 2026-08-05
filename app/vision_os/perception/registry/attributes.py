@@ -143,6 +143,119 @@ class AttributeSchema:
     def is_active(self) -> bool:
         return self.status is SchemaStatus.ACTIVE
 
+    def accepts(self, value: object) -> str | None:
+        """Whether a value conforms. Returns ``None`` on success, else the reason.
+
+        Added in Flow 6, where M9 must *"coerce raw model output into the declared
+        schema, and quarantine what does not fit"* (04_MODULES section M9
+        responsibility 4). The check lives here, on the schema, rather than in M9
+        — a second implementation of "fits" would drift from this one, and the
+        drift would show up as attributes the registry considers illegal sitting
+        in the observation log.
+
+        A **string** rather than a boolean, because the caller records *why* a
+        field was refused: 04_MODULES section M9 makes a sustained rejection rate
+        the signal that a prompt has drifted, and that is only diagnosable if the
+        reason is attributed.
+        """
+        # ``VECTOR`` is the one type whose *single* value is itself a sequence, so
+        # the cardinality check cannot be applied to it structurally. Without this
+        # branch a vector attribute at the default SINGLE cardinality could never
+        # be accepted at all — the value would always look like a multi-value.
+        if self.value_type is AttributeValueType.VECTOR:
+            if self.cardinality is Cardinality.MULTI:
+                if not isinstance(value, list | tuple) or not all(
+                    isinstance(item, list | tuple) for item in value
+                ):
+                    return "expected a sequence of vectors"
+                for item in value:
+                    reason = self._accepts_one(item)
+                    if reason is not None:
+                        return reason
+                return None
+            return self._accepts_one(value)
+
+        if self.cardinality is Cardinality.MULTI:
+            if not isinstance(value, list | tuple):
+                return "expected a sequence for a multi-valued attribute"
+            for item in value:
+                reason = self._accepts_one(item)
+                if reason is not None:
+                    return reason
+            return None
+        if isinstance(value, list | tuple):
+            return "expected a single value, got a sequence"
+        return self._accepts_one(value)
+
+    def _accepts_one(self, value: object) -> str | None:
+        kind = self.value_type
+
+        if kind is AttributeValueType.BOOL:
+            # ``bool`` before ``int``: in Python ``True`` is an ``int``, and a
+            # model returning 1 for a boolean is guessing at the encoding rather
+            # than answering the question.
+            return None if isinstance(value, bool) else "expected a boolean"
+
+        if kind is AttributeValueType.ENUM:
+            if not isinstance(value, str):
+                return "expected a string for an enum attribute"
+            if value not in self.domain:
+                return f"'{value}' is outside the declared domain {list(self.domain)}"
+            return None
+
+        if kind is AttributeValueType.SCALAR:
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                return "expected a number"
+            return self._within_range(float(value))
+
+        if kind is AttributeValueType.COUNT:
+            if isinstance(value, bool) or not isinstance(value, int):
+                return "expected an integer count"
+            if value < 0:
+                return f"count must be non-negative, got {value}"
+            return self._within_range(float(value))
+
+        if kind is AttributeValueType.TEXT:
+            return None if isinstance(value, str) else "expected text"
+
+        if kind is AttributeValueType.RELATION:
+            if not isinstance(value, str) or not value:
+                return "expected a referent identifier"
+            if self.domain and value not in self.domain:
+                return (
+                    f"'{value}' is outside the declared domain "
+                    f"{list(self.domain)} of referent classes"
+                )
+            return None
+
+        if kind is AttributeValueType.VECTOR:
+            if not isinstance(value, list | tuple) or not value:
+                return "expected a non-empty numeric vector"
+            if any(isinstance(v, bool) or not isinstance(v, int | float) for v in value):
+                return "vector components must be numbers"
+            return None
+
+        return f"unhandled value type {kind.value}"  # pragma: no cover - closed enum
+
+    def _within_range(self, value: float) -> str | None:
+        """Apply a ``min:max`` domain when one is declared.
+
+        The domain is text for every type except ``ENUM``, so a numeric range is
+        expressed as a single ``"0:1"`` entry. An unparseable range is treated as
+        *no constraint* rather than as a failure: a malformed schema must not
+        silently reject every value a model produces.
+        """
+        if len(self.domain) != 1 or ":" not in self.domain[0]:
+            return None
+        low_text, _, high_text = self.domain[0].partition(":")
+        try:
+            low, high = float(low_text), float(high_text)
+        except ValueError:
+            return None
+        if not low <= value <= high:
+            return f"{value} is outside the declared range [{low}, {high}]"
+        return None
+
 
 def _tokens(key: str) -> set[str]:
     return {part for part in re.split(r"[_.\-]", key.lower()) if part}

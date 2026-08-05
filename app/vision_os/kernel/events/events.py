@@ -711,6 +711,67 @@ class CapabilityGap(Event):
     detail: str = ""
 
 
+# --- understanding (M9, Flow 6) --------------------------------------------- #
+#
+# Note what is absent. There is no `UnderstandingSucceeded` and no event carrying
+# an attribute value: attributes reach consumers through observations built by
+# M11, not through a lossy control-plane bus. Announcing every result would put
+# the platform's highest-volume enrichment traffic on a notifier designed for
+# alarms — and a dropped notification would look like a missing attribute.
+
+
+@dataclass(frozen=True, slots=True)
+class UnderstandingFailed(Event):
+    """A request could not be answered after retries and fallbacks.
+
+    Published rather than silently counted because *"understanding failure is
+    never pipeline failure"* cuts both ways: the pipeline keeps running, so
+    nothing else will make the loss visible. ``outcome`` distinguishes a timeout
+    from an exhausted chain from an unsupported capability — three different
+    operator responses.
+    """
+
+    event_type: ClassVar[str] = "understanding.failed"
+    camera_id: CameraId = CameraId("")
+    outcome: str = ""
+    detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ModelFallbackEngaged(Event):
+    """The primary understander was unavailable and a fallback answered.
+
+    `10_RELIABILITY` §7.2 rule 1: *"A fallback is never silent."* Without this
+    event a fallback *"becomes permanent, and the platform quietly runs on its
+    worst model forever"* — one of the silent failures §5.1 names.
+    """
+
+    event_type: ClassVar[str] = "understanding.fallback_engaged"
+    camera_id: CameraId = CameraId("")
+    primary_model: str = ""
+    fallback_model: str = ""
+    detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class SchemaDriftSuspected(Event):
+    """Sustained unregistered-key rejections from a model.
+
+    04_MODULES §M9: *"If the rate is sustained, alarm — this means a prompt has
+    drifted beyond its declared schema."* A deploy-time problem surfacing at
+    inference time, and the only signal that it is happening at all.
+
+    Deliberately *suspected* rather than *detected*: the platform observes a rate,
+    and whether the prompt or the model changed is a question for a human.
+    """
+
+    event_type: ClassVar[str] = "understanding.schema_drift_suspected"
+    camera_id: CameraId = CameraId("")
+    rejection_rate: float = 0.0
+    sample_size: int = 0
+    detail: str = ""
+
+
 ALL_EVENT_TYPES: tuple[type[Event], ...] = (
     StreamConnected,
     StreamLost,
@@ -764,4 +825,7 @@ ALL_EVENT_TYPES: tuple[type[Event], ...] = (
     BudgetExhausted,
     GateRejectionSpike,
     CapabilityGap,
+    UnderstandingFailed,
+    ModelFallbackEngaged,
+    SchemaDriftSuspected,
 )

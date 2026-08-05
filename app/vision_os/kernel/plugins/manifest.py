@@ -147,11 +147,31 @@ FLOW5_PORTS: frozenset[PortId] = frozenset(
     }
 )
 
+#: Ports implemented by Flow 6 — the Understanding Engine.
+#:
+#: ``UNDERSTANDER`` is one of the four ports 06_PORTS bolds as *"the ports that
+#: make the platform a platform"*. Binding it is what lets a 7-billion-parameter
+#: VLM and a 2-megabyte attribute head be interchangeable.
+#:
+#: ``PROMPT_SOURCE`` (P17) is deliberately **absent**: it belongs to M10, which
+#: Flow 6 does not implement. M9 consumes prompts through a module seam, not
+#: through a port it owns.
+#:
+#: ``EVIDENCE_STORE`` (P22) is also absent. M9 content-addresses its raw output
+#: and carries the bytes; persisting them is M13's job, and binding a store here
+#: would put a durable write inside the platform's most expensive path.
+FLOW6_PORTS: frozenset[PortId] = frozenset(
+    {
+        PortCatalogue.UNDERSTANDER,
+        PortCatalogue.OUTPUT_COERCION,
+    }
+)
+
 #: Everything currently bindable. Binding anything else is rejected, because a
 #: plugin for a port whose owning module does not exist yet cannot be activated —
 #: which is how "no future flow is implemented early" stays enforceable.
 BINDABLE_PORTS: frozenset[PortId] = (
-    FLOW1_PORTS | FLOW2_PORTS | FLOW3_PORTS | FLOW4_PORTS | FLOW5_PORTS
+    FLOW1_PORTS | FLOW2_PORTS | FLOW3_PORTS | FLOW4_PORTS | FLOW5_PORTS | FLOW6_PORTS
 )
 
 

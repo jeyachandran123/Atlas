@@ -573,6 +573,150 @@ class CroppingSection:
 
 
 @dataclass(frozen=True, slots=True)
+class UnderstandingSection:
+    """Understanding Engine operating envelope (M9, Flow 6).
+
+    Resource-, reliability- and routing-shaped only. There is no slot here for
+    "ask whether the person looks suspicious": the *question* lives in a prompt
+    asset owned by M10, and the *vocabulary* lives in the Attribute Schema
+    Registry. Both are outside this file on purpose — a business question
+    reachable from configuration would bypass two of the ceiling's three
+    enforcement points (00_CHARTER section 4.3).
+
+    Note what is also absent: any model name. Routing is by declared capability,
+    so adding a model is binding an adapter, never editing a setting.
+    """
+
+    enabled: bool = False
+    """Off unless a deployment opts in. Flow 5 behaviour is the default, so adding
+    understanding to a running site is an explicit act."""
+
+    # --- reliability ----------------------------------------------------------- #
+    timeout_ms: int = 2_000
+    """Per-call deadline. 11_PERFORMANCE section 1.1 puts a VLM call at ~200 ms,
+    so this is an order of magnitude of headroom before the call is abandoned."""
+
+    max_retries: int = 1
+    """10_RELIABILITY section 4.3: *"Retry once with backoff; then fallback
+    model; then fail the request."* One, not three — a transient blip resolves on
+    the first retry and a real outage does not resolve on the third."""
+
+    retry_backoff_ms: int = 100
+    circuit_breaker_threshold: int = 3
+    circuit_breaker_cooldown_ms: int = 30_000
+    """Consecutive failures before a model is shed, and how long for. An adapter
+    crash is classified **systemic**, and retrying a systemic failure makes it
+    worse."""
+
+    fallback_depth: int = 2
+    """How many fallbacks to try. The chain terminates in explicit
+    unavailability, never in a guess (10_RELIABILITY section 7.2)."""
+
+    # --- concurrency ------------------------------------------------------------ #
+    max_concurrency: int = 4
+    """In-flight calls per local model. 08_RUNTIME section 4.4: *"Long VLM calls
+    are not preempted; instead concurrency is capped so that the detector's
+    latency budget is protected."*"""
+
+    remote_concurrency: int = 2
+    """Remote adapters get their own, tighter budget — a cloud endpoint's rate
+    limit is a different constraint from a local GPU's memory, and one number
+    cannot express both."""
+
+    max_batch_size: int = 4
+    batch_max_wait_ms: int = 10
+    """Dual trigger with ``max_batch_size``. **0 flushes immediately**, which is
+    what deterministic mode requires: batch composition must not depend on
+    arrival timing (08_RUNTIME section 4.3)."""
+
+    # --- routing ---------------------------------------------------------------- #
+    prefer_local_models: bool = True
+    """A site with a data-residency policy must not ship imagery to a remote
+    endpoint because it was marginally cheaper (12_SECURITY)."""
+
+    prefer_deterministic_models: bool = False
+    prefer_coverage: bool = True
+    """Prefer one understander covering the whole request over a cheaper one
+    covering part. Section M9 puts attribute batching in one prompt at a
+    *"3-5x saving"*."""
+
+    allow_remote_understanders: bool = True
+    """When false, an adapter declaring remote residency is refused at binding
+    rather than discovered in an export audit."""
+
+    # --- inference -------------------------------------------------------------- #
+    temperature: float = 0.0
+    """Zero by default: a deterministic answer is worth more to this platform
+    than a fluent one, and V13 wants a replay to reproduce."""
+
+    coercion_strategy: str = "coercion.json"
+
+    # --- cache ------------------------------------------------------------------- #
+    cache_capacity: int = 2_048
+    cache_ttl_ms: int = 3_600_000
+    """Bounded and TTL'd. The key is correct by construction, so the TTL exists
+    for age rather than for correctness — a consumer reading a six-hour-old
+    answer should be told it is six hours old."""
+
+    # --- evidence ---------------------------------------------------------------- #
+    evidence_retention: str = "evidence"
+    max_unstructured_note_chars: int = 4_096
+    """02_VOM section 9.3 requires the preserved note be bounded."""
+
+    # --- alarms ------------------------------------------------------------------- #
+    schema_drift_window: int = 20
+    schema_drift_threshold: float = 0.5
+    """Fraction of recent results carrying a ceiling violation before a drift
+    alarm fires. Section M9: *"If the rate is sustained, alarm — this means a
+    prompt has drifted beyond its declared schema."*"""
+
+    slow_call_warn_ms: int = 1_000
+
+    def __post_init__(self) -> None:
+        for name in (
+            "timeout_ms",
+            "retry_backoff_ms",
+            "circuit_breaker_cooldown_ms",
+            "cache_ttl_ms",
+        ):
+            if getattr(self, name) <= 0:
+                raise ValidationError(f"understanding.{name} must be positive")
+        if self.max_retries < 0:
+            raise ValidationError("understanding.max_retries must be >= 0")
+        if self.circuit_breaker_threshold < 1:
+            raise ValidationError(
+                "understanding.circuit_breaker_threshold must be >= 1"
+            )
+        if self.fallback_depth < 0:
+            raise ValidationError("understanding.fallback_depth must be >= 0")
+        if self.max_concurrency < 1 or self.remote_concurrency < 1:
+            raise ValidationError("understanding concurrency limits must be >= 1")
+        if self.max_batch_size < 1:
+            raise ValidationError("understanding.max_batch_size must be >= 1")
+        if self.batch_max_wait_ms < 0:
+            raise ValidationError("understanding.batch_max_wait_ms must be >= 0")
+        if not 0.0 <= self.temperature <= 2.0:
+            raise ValidationError("understanding.temperature must be in [0,2]")
+        if self.cache_capacity < 1:
+            raise ValidationError("understanding.cache_capacity must be >= 1")
+        if self.schema_drift_window < 1:
+            raise ValidationError("understanding.schema_drift_window must be >= 1")
+        if not 0.0 <= self.schema_drift_threshold <= 1.0:
+            raise ValidationError(
+                "understanding.schema_drift_threshold must be in [0,1]"
+            )
+        if self.max_unstructured_note_chars < 1:
+            raise ValidationError(
+                "understanding.max_unstructured_note_chars must be >= 1"
+            )
+        if self.evidence_retention not in ("ephemeral", "evidence", "never_persist"):
+            raise ValidationError(
+                f"understanding.evidence_retention must be ephemeral, evidence or "
+                f"never_persist, got '{self.evidence_retention}'"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class ModelsSection:
     """Model artifact and device policy (M18, Flow 2)."""
 
@@ -733,6 +877,7 @@ class EffectiveConfig:
     tracking: TrackingSection = TrackingSection()
     registry: RegistrySection = RegistrySection()
     cropping: CroppingSection = CroppingSection()
+    understanding: UnderstandingSection = UnderstandingSection()
     profiles: tuple[ProfileDeclaration, ...] = ()
     regions: tuple[RegionDeclaration, ...] = ()
     cameras: tuple[CameraDeclaration, ...] = ()
@@ -755,6 +900,7 @@ SECTION_TYPES: dict[str, type] = {
     "tracking": TrackingSection,
     "registry": RegistrySection,
     "cropping": CroppingSection,
+    "understanding": UnderstandingSection,
 }
 
 LIST_SECTIONS: frozenset[str] = frozenset(

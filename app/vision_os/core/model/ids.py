@@ -100,6 +100,61 @@ DemandId = NewType("DemandId", str)
 SubscriberId = NewType("SubscriberId", str)
 
 
+# --- understanding identifiers (Flow 6) ----------------------------------- #
+
+RequestId = NewType("RequestId", str)
+"""One understanding request. Correlates a batch entry with its response.
+
+Deliberately *not* derived from the crop: two demands may want different
+attribute sets from the same crop, and they are different requests with different
+costs, different prompts and different cache entries."""
+
+PromptId = NewType("PromptId", str)
+"""A prompt template, owned and versioned by M10.
+
+The pair ``(prompt_id, version)`` is immutable once published — 04_MODULES §M10:
+*"provenance is worthless if `prompt@3.2.0` means different things on different
+days."*"""
+
+PackId = NewType("PackId", str)
+"""A prompt pack — the unit M10 loads and validates. A vertical's domain
+knowledge enters the platform through packs, as **assets, not code**."""
+
+BlobRef = NewType("BlobRef", str)
+"""**A content hash of a stored byte payload** (02_VOM section 10.9).
+
+Content-addressed for the same reasons as ``CropId``: identical model output
+stored twice is one blob, the reference survives storage migration, and the
+reference is valid the moment a store exists to resolve it. Flow 6 computes these
+and carries the bytes; persisting them is M13's job through P22."""
+
+EvidenceId = NewType("EvidenceId", str)
+"""One evidence record. Minted by the producer of the evidence."""
+
+
+# --- observation and state identifiers (Flow 7) --------------------------- #
+
+ObservationId = NewType("ObservationId", str)
+"""A ULID, **time-sortable** (02_VOM section 11).
+
+Time-sortable because the observation log is the system of record and is read by
+range: a lexicographic scan over ids is a chronological scan over facts, with no
+secondary index. Minted by the Observation Builder and by nothing else — an
+observation is a published fact, and only the choke point may publish."""
+
+LogPosition = NewType("LogPosition", int)
+"""A partition-local, monotonically increasing offset into the observation log.
+
+07_STATE section 3.2 calls it *the projection watermark*: it makes "is the
+projection caught up?" answerable, makes rebuild resumable, and makes snapshot
+consistency expressible."""
+
+PartitionVersion = NewType("PartitionVersion", int)
+"""Monotonic per camera partition. Bumped on every applied observation, so a
+reader holding a snapshot can say exactly which version it holds (07_STATE
+section 5)."""
+
+
 # --- ULID ---------------------------------------------------------------- #
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"

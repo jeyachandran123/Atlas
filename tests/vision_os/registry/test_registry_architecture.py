@@ -411,11 +411,9 @@ class TestFlowScope:
     def test_the_state_store_port_is_bindable(self) -> None:
         assert PortCatalogue.STATE_STORE in BINDABLE_PORTS
 
-    def test_flow_six_and_later_ports_remain_unbindable(self) -> None:
+    def test_flow_seven_and_later_ports_remain_unbindable(self) -> None:
         for port in (
-            PortCatalogue.UNDERSTANDER,
-            PortCatalogue.OUTPUT_COERCION,
-            PortCatalogue.PROMPT_SOURCE,
+                                    PortCatalogue.PROMPT_SOURCE,
             PortCatalogue.SUPPRESSION_POLICY,
             PortCatalogue.OBSERVATION_SINK,
             PortCatalogue.OBSERVATION_LOG,
@@ -424,8 +422,7 @@ class TestFlowScope:
         ):
             assert port not in BINDABLE_PORTS, f"{port} became bindable before its flow"
 
-    def test_no_understanding_module_exists(self) -> None:
-        assert not (PERCEPTION / "understanding").exists()
+    def test_no_synthesis_module_exists(self) -> None:
         assert not (ROOT / "synthesis").exists()
         assert not (ROOT / "state").exists()
         assert not (ROOT / "api").exists()
