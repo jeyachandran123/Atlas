@@ -29,6 +29,7 @@ from app.vision_os.kernel.plugins.manifest import (
     FLOW5_PORTS,
     FLOW6_PORTS,
     FLOW7_PORTS,
+    FLOW8_PORTS,
 )
 
 ROOT = Path(vision_os_pkg.__file__).parent
@@ -381,6 +382,7 @@ class TestFlowScope:
         assert len(FLOW5_PORTS) == 3
         assert len(FLOW6_PORTS) == 2
         assert len(FLOW7_PORTS) == 3
+        assert len(FLOW8_PORTS) == 3
         assert BINDABLE_PORTS == (
             FLOW1_PORTS
             | FLOW2_PORTS
@@ -389,19 +391,21 @@ class TestFlowScope:
             | FLOW5_PORTS
             | FLOW6_PORTS
             | FLOW7_PORTS
+            | FLOW8_PORTS
         )
+        assert len(BINDABLE_PORTS) == 28, "28 of the catalogue's 32 ports are bound"
 
-        later_flow_ports = {
+        # Phase 1 is complete, so these four are no longer "later flow" — they
+        # are what Phase 1 deliberately omits (15_ROADMAP section 2), each with
+        # its port already defined and unused.
+        deliberately_unbound = {
             "P10.EmbeddingPort",
             "P11.IdentityResolverPort",
             "P17.PromptSourcePort",
-            "P22.EvidenceStorePort",
             "P28.CalibrationPort",
-            "P31.AuthorizationPort",
-            "P32.ApiTransportPort",
         }
-        assert not (later_flow_ports & set(BINDABLE_PORTS)), (
-            "a port whose owning module does not exist cannot be bindable"
+        assert not (deliberately_unbound & set(BINDABLE_PORTS)), (
+            "a port Phase 1 deliberately omits became bindable"
         )
 
     def test_identity_resolution_stays_unbindable_though_the_registry_ships(
@@ -449,13 +453,19 @@ class TestFlowScope:
                 "ceiling forbids the platform from holding one"
             )
 
-    def test_no_later_flow_modules_exist(self) -> None:
-        """Flow 7 shipped ``synthesis`` and ``state``; ``api`` is Flow 8."""
+    def test_no_out_of_scope_module_exists(self) -> None:
+        """Every Phase 1 layer ships. What stays absent is what V1 forbids.
+
+        ``reasoning``, ``analytics``, ``learning`` and ``rules`` are not later
+        flows — they are conclusions, and 07_STATE section 10 places every one of
+        them in a consumer system. No phase of this platform adds them.
+        """
         assert (ROOT / "synthesis").exists(), "Flow 7 implements the Observation Builder"
         assert (ROOT / "state").exists(), "Flow 7 implements Vision State"
-        for absent in ("api", "exposure", "reasoning", "analytics"):
+        assert (ROOT / "exposure").exists(), "Flow 8 implements the Observation API"
+        for absent in ("reasoning", "analytics", "learning", "rules", "alerts"):
             assert not (ROOT / absent).exists(), (
-                f"package '{absent}' belongs to a later flow"
+                f"package '{absent}' names a conclusion the platform may never draw"
             )
         for absent in ("synthesis", "state"):
             assert not (ROOT / "perception" / absent).exists(), (

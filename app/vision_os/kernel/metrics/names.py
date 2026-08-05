@@ -376,6 +376,56 @@ class MetricName:
     value means a later flow is leaking failures into acquisition, which the
     runtime absorbs but must not hide."""
 
+    # --- M13 storage (Flow 8) -------------------------------------------- #
+    EVIDENCE_STORED: Final = "vision_os.evidence.stored"
+    EVIDENCE_DEDUPED: Final = "vision_os.evidence.deduped"
+    EVIDENCE_FETCHED: Final = "vision_os.evidence.fetched"
+    EVIDENCE_MISSES: Final = "vision_os.evidence.misses"
+    """Labelled by status. An ``expired`` miss is retention working; a
+    ``not_found`` miss means something minted a reference to a blob that was
+    never stored, and the two must never be counted together."""
+
+    EVIDENCE_EXPIRED: Final = "vision_os.evidence.expired"
+    EVIDENCE_ERASED: Final = "vision_os.evidence.erased"
+    EVIDENCE_BYTES: Final = "vision_os.evidence.bytes_used"
+    EVIDENCE_REJECTED: Final = "vision_os.evidence.rejected"
+    """A write refused — quota, oversize, or ``never_persist``."""
+
+    # --- M14 exposure (Flow 8) -------------------------------------------- #
+    API_QUERIES: Final = "vision_os.api.queries"
+    API_QUERY_MS: Final = "vision_os.api.query_ms"
+    API_OBSERVATIONS_SERVED: Final = "vision_os.api.observations_served"
+    API_ERRORS: Final = "vision_os.api.errors"
+    API_DENIALS: Final = "vision_os.api.denials"
+    """Labelled by action. A rising count on one action is an integration
+    problem; a rising count of ``tenant_scope_violation`` is an incident."""
+
+    API_AUDIT_RECORDS: Final = "vision_os.api.audit_records"
+    API_AUDIT_FAILURES: Final = "vision_os.api.audit_failures"
+    """Non-zero means the platform is serving requests it cannot prove it
+    served."""
+
+    API_SUBSCRIPTIONS: Final = "vision_os.api.subscriptions"
+    API_MESSAGES_DELIVERED: Final = "vision_os.api.messages_delivered"
+    API_MESSAGES_DROPPED: Final = "vision_os.api.messages_dropped"
+    API_GAPS_EMITTED: Final = "vision_os.api.gaps_emitted"
+    """Every drop must be accompanied by a gap. A dropped count exceeding the
+    gap count over time means a drop path forgot to record itself."""
+
+    API_RATE_LIMITED: Final = "vision_os.api.rate_limited"
+    API_DEMANDS_REGISTERED: Final = "vision_os.api.demands_registered"
+    API_DEMANDS_REJECTED: Final = "vision_os.api.demands_rejected"
+    API_VERSION_REJECTED: Final = "vision_os.api.version_rejected"
+
+    # --- replay (Flow 8) --------------------------------------------------- #
+    REPLAY_RUNS: Final = "vision_os.replay.runs"
+    REPLAY_OBSERVATIONS: Final = "vision_os.replay.observations"
+    REPLAY_MS: Final = "vision_os.replay.duration_ms"
+    REPLAY_MISMATCHES: Final = "vision_os.replay.mismatches"
+    """Must be zero. A non-zero value means a rebuild produced a different world
+    from the live run, which invalidates every recovery guarantee in 07_STATE
+    section 9.1."""
+
 
 ALL_METRIC_NAMES: Final[tuple[str, ...]] = tuple(
     value

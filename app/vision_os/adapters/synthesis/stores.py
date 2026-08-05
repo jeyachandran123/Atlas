@@ -91,6 +91,20 @@ class InMemoryObservationLog:
         finish = int(end) if end is not None else len(records)
         return iter(records[begin:finish][:limit])
 
+    def tail(
+        self, partition: CameraId, *, start: LogPosition | None = None, limit: int = 1000
+    ) -> Iterator[Observation]:
+        """Follow from ``start`` to the current end (L7).
+
+        A snapshot of the tail at call time, not a live cursor: the caller polls,
+        advancing ``start`` by what it received. That keeps the adapter free of
+        any notion of a waiting subscriber, which is what lets a file, a Kafka
+        topic and an in-memory list all satisfy the same contract.
+        """
+        with self._lock:
+            records = list(self._records.get(partition, ()))
+        return iter(records[int(start or 0) :][:limit])
+
     def position(self, partition: CameraId) -> LogPosition:
         with self._lock:
             return LogPosition(len(self._records.get(partition, ())))
@@ -248,6 +262,18 @@ class FileObservationLog:
                 if decoded is not None:
                     out.append(decoded)
         return iter(out)
+
+    def tail(
+        self, partition: CameraId, *, start: LogPosition | None = None, limit: int = 1000
+    ) -> Iterator[Observation]:
+        """Follow from ``start`` to the end of the file (L7).
+
+        Delegates to ``read`` with no upper bound. A production adapter would
+        hold the file open and follow appends; re-scanning is honest for a
+        reference implementation and costs a caller nothing it cannot see, since
+        ``limit`` bounds every call.
+        """
+        return self.read(partition, start=start, end=None, limit=limit)
 
     def position(self, partition: CameraId) -> LogPosition:
         with self._lock:

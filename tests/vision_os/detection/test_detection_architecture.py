@@ -265,23 +265,34 @@ class TestFlowScope:
         ):
             assert port in BINDABLE_PORTS
 
-    def test_flow_eight_ports_remain_unbindable(self) -> None:
-        """The frontier moved to Flow 8 when the Observation Builder shipped.
+    def test_phase_two_ports_remain_unbindable(self) -> None:
+        """Phase 1 is complete. These four stay unbound, each for its own reason.
 
-        ``EMBEDDING`` and ``IDENTITY_RESOLVER`` stay unbindable regardless of
-        flow: they are the biometric and cross-camera-identity capabilities,
-        disabled by default (12_SECURITY section 4.3, 15_ROADMAP Phase 2).
+        ``EMBEDDING`` and ``IDENTITY_RESOLVER`` are the biometric and
+        cross-camera-identity capabilities, disabled by default (12_SECURITY
+        section 4.3, 15_ROADMAP Phase 2). ``PROMPT_SOURCE`` belongs to M10, which
+        no flow implemented. ``CALIBRATION`` belongs to M1 and M18.
         """
         for port in (
             PortCatalogue.EMBEDDING,
             PortCatalogue.IDENTITY_RESOLVER,
             PortCatalogue.PROMPT_SOURCE,
-            PortCatalogue.API_TRANSPORT,
+            PortCatalogue.CALIBRATION,
         ):
             assert port not in BINDABLE_PORTS
 
-    def test_no_exposure_module_exists(self) -> None:
-        assert not (ROOT / "api").exists()
+    def test_detection_does_not_import_exposure(self) -> None:
+        """L2 must never learn L7 exists.
+
+        The API reads state; detection produces boxes. An import here would be
+        the sharpest possible violation of the dependency law.
+        """
+        offenders = [
+            path.name
+            for path in (ROOT / "perception" / "detection").rglob("*.py")
+            if "exposure" in path.read_text(encoding="utf-8")
+        ]
+        assert not offenders, "; ".join(offenders)
 
     def test_detection_does_not_import_tracking(self) -> None:
         """Flow 2 must not learn that Flow 3 exists."""

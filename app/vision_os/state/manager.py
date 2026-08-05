@@ -554,6 +554,38 @@ class VisionStateManager:
         matches.sort(key=lambda o: o.t_capture.ns)
         return tuple(matches[-limit:])
 
+    def observations_in(
+        self,
+        camera_id: CameraId,
+        *,
+        since: Instant,
+        until: Instant,
+        limit: int = 10_000,
+    ) -> tuple[Observation, ...]:
+        """Observations for one partition over a window, read from the **log**.
+
+        The L6 → L7 seam for 09_API §2.2's historical query. M14 reads through
+        M12 rather than holding P20 itself: §M14's Dependencies name the Vision
+        State Manager, not the log, and giving L7 a storage port would let a
+        query bypass the layer that owns partitioning and consistency.
+
+        Against ``t_capture``, never ingest time (V11, §2.2) — a window against
+        ingest time would return different results depending on how backed up the
+        pipeline happened to be.
+
+        Ordered by ``(t_capture, observation_id)``, which §2.2 requires be *"total
+        and stable"*: total because two observations can share a capture instant,
+        stable because a cursor over an immutable log must land in the same place
+        every time.
+        """
+        matches = [
+            observation
+            for observation in self._log.read(camera_id, limit=limit)
+            if since.ns <= observation.t_capture.ns <= until.ns
+        ]
+        matches.sort(key=lambda o: (o.t_capture.ns, str(o.observation_id)))
+        return tuple(matches)
+
     def coverage(self, scope: Sequence[CameraId] | None = None) -> CoverageMap:
         """Live coverage — *"can we see right now?"* (07_STATE §7.3)."""
         cameras = tuple(scope) if scope is not None else tuple(self._partitions)

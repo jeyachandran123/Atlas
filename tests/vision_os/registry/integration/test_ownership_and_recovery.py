@@ -81,6 +81,10 @@ class TestCanonicalOwnership:
           P20 log record carries the id the registry minted, and reading it back
           off disk reconstructs it. Named as a single file rather than a
           directory so the rest of the synthesis adapters stay guarded.
+        * ``adapters/persistence/evidence.py`` reconstructs the ``object_id`` an
+          evidence record was indexed by, so 07_STATE §8.2's *"erasure by
+          object"* survives a restart. Again reconstruction, not creation — the
+          id was minted by the registry and written down.
         * ``conformance`` builds **fixtures** to exercise a port; those ids never
           enter a pipeline.
 
@@ -97,6 +101,7 @@ class TestCanonicalOwnership:
             "perception/registry/",
             "adapters/registry/",
             "adapters/synthesis/decode.py",
+            "adapters/persistence/evidence.py",
             "conformance/",
         )
         offenders = []

@@ -1010,6 +1010,138 @@ class DetectorDeclaration:
 
 
 @dataclass(frozen=True, slots=True)
+class StorageSection:
+    """M13's adapter selection and retention policy (Flow 8).
+
+    §M13's purpose is that an edge box and a cloud cluster *"differ only in
+    adapter selection"*, and this section is where that selection happens. No
+    field here describes *how* a store works — only which one is bound and how
+    long it keeps things.
+
+    07_STATE §8.1 gives ranges rather than constants, because how long imagery
+    may be kept is a regulator's answer, not the platform's.
+    """
+
+    evidence_store: str = "evidence.memory"
+    """``evidence.memory`` | ``evidence.file`` | ``evidence.null``.
+
+    A site operating 12_SECURITY §2.3's no-evidence mode binds ``evidence.null``
+    explicitly, so the choice appears in configuration rather than as an absence
+    somebody has to notice."""
+
+    evidence_path: str = ""
+    evidence_ttl_ms: int = 172_800_000
+    """48 hours — the middle of 07_STATE §8.1's 24-72 hour range for crops.
+    Evidence has the shortest tier deliberately: it is the only one containing
+    imagery, so retention here is a privacy decision rather than an engineering
+    one."""
+
+    raw_output_ttl_ms: int = 604_800_000
+    """7 days (§8.1). Longer than imagery because it is text."""
+
+    evidence_max_bytes: int = 4 * 1024 * 1024 * 1024
+    evidence_max_blobs: int = 100_000
+    evidence_max_blob_bytes: int = 32 * 1024 * 1024
+    """Bounded, always. An unbounded evidence store is a memory leak whose fuse
+    burns for exactly as long as the disk has space."""
+
+    expiry_interval_ms: int = 3_600_000
+    """How often retention runs. A store whose expiry silently stops looks
+    identical to one working correctly until capacity is reached."""
+
+    def __post_init__(self) -> None:
+        if self.evidence_store not in (
+            "evidence.memory",
+            "evidence.file",
+            "evidence.null",
+        ):
+            raise ValidationError(
+                f"unknown evidence store '{self.evidence_store}'; known stores are "
+                f"evidence.memory, evidence.file, evidence.null"
+            )
+        if self.evidence_store == "evidence.file" and not self.evidence_path:
+            raise ValidationError(
+                "storage.evidence_path is required for evidence.file; a durable "
+                "store with nowhere to write would fail at the first crop rather "
+                "than at boot"
+            )
+        for name in (
+            "evidence_ttl_ms",
+            "raw_output_ttl_ms",
+            "evidence_max_bytes",
+            "evidence_max_blobs",
+            "evidence_max_blob_bytes",
+            "expiry_interval_ms",
+        ):
+            if getattr(self, name) < 1:
+                raise ValidationError(f"storage.{name} must be positive")
+
+
+@dataclass(frozen=True, slots=True)
+class ApiSection:
+    """M14's operating envelope (Flow 8).
+
+    Every bound here exists so one consumer cannot degrade the platform for the
+    rest — §M14: *"Reject with a bound and a cursor rather than degrading the
+    service for everyone."*
+
+    There is no field describing what to serve, only how much. What the API
+    serves is fixed by 09_API's contract, and a configurable answer would make
+    the contract a per-deployment negotiation rather than a promise.
+    """
+
+    enabled: bool = False
+
+    authorizer: str = "authz.deny_all"
+    """Defaults to denying everything. A platform that served data until somebody
+    remembered to configure a policy has exactly one failure mode and it is a
+    breach (obligation Z5)."""
+
+    transport: str = "transport.in_process"
+
+    # --- bounds ------------------------------------------------------------- #
+    queries_per_minute: int = 600
+    evidence_per_minute: int = 60
+    """Tighter than queries. 09_API §6: evidence payloads are *"large and
+    sensitive"*, and a consumer able to pull imagery as fast as facts has
+    effectively been granted bulk imagery export."""
+
+    subscribes_per_minute: int = 60
+    max_page_size: int = 1_000
+    max_window_ms: int = 86_400_000
+    max_subscriptions_per_principal: int = 32
+
+    # --- subscriptions ------------------------------------------------------- #
+    subscription_queue_capacity: int = 1_024
+    """Bounded, always. 09_API §3.4: *"Never: unbounded buffering."*"""
+
+    heartbeat_ms: int = 10_000
+    """§3.1's default. Without it a healthy subscription over a quiet camera and
+    a dead connection produce identical silence."""
+
+    # --- audit ---------------------------------------------------------------- #
+    audit_capacity: int = 1_000
+    require_evidence_purpose: bool = True
+    """12_SECURITY §5.4. Configurable only so a deployment can state the choice
+    explicitly rather than discovering it."""
+
+    def __post_init__(self) -> None:
+        for name in (
+            "queries_per_minute",
+            "evidence_per_minute",
+            "subscribes_per_minute",
+            "max_page_size",
+            "max_window_ms",
+            "max_subscriptions_per_principal",
+            "subscription_queue_capacity",
+            "heartbeat_ms",
+            "audit_capacity",
+        ):
+            if getattr(self, name) < 1:
+                raise ValidationError(f"api.{name} must be positive")
+
+
+@dataclass(frozen=True, slots=True)
 class EffectiveConfig:
     """The fully resolved, validated configuration tree."""
 
@@ -1028,6 +1160,8 @@ class EffectiveConfig:
     understanding: UnderstandingSection = UnderstandingSection()
     synthesis: SynthesisSection = SynthesisSection()
     state: StateSection = StateSection()
+    storage: StorageSection = StorageSection()
+    api: ApiSection = ApiSection()
     profiles: tuple[ProfileDeclaration, ...] = ()
     regions: tuple[RegionDeclaration, ...] = ()
     cameras: tuple[CameraDeclaration, ...] = ()
@@ -1053,6 +1187,8 @@ SECTION_TYPES: dict[str, type] = {
     "understanding": UnderstandingSection,
     "synthesis": SynthesisSection,
     "state": StateSection,
+    "storage": StorageSection,
+    "api": ApiSection,
 }
 
 LIST_SECTIONS: frozenset[str] = frozenset(

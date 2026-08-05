@@ -279,24 +279,43 @@ class TestPortsNotImplementations:
 class TestFlowEightRemainsUnbuilt:
     """The frontier moved to Flow 8; these guard *that* boundary."""
 
-    def test_exposure_ports_remain_unbindable(self) -> None:
+    def test_phase_two_ports_remain_unbindable(self) -> None:
+        """Phase 1 is complete; the frontier has stopped moving.
+
+        Four ports stay unbound, and none of them is waiting for a flow:
+        ``EMBEDDING`` and ``IDENTITY_RESOLVER`` are Phase 2 and policy-gated,
+        ``PROMPT_SOURCE`` belongs to M10, ``CALIBRATION`` to M1 and M18.
+        """
         for port in (
-            PortCatalogue.API_TRANSPORT,
-            PortCatalogue.AUTHORIZATION,
-            PortCatalogue.EVIDENCE_STORE,
+            PortCatalogue.EMBEDDING,
+            PortCatalogue.IDENTITY_RESOLVER,
             PortCatalogue.PROMPT_SOURCE,
             PortCatalogue.CALIBRATION,
         ):
             assert port not in BINDABLE_PORTS, f"{port} became bindable early"
 
     def test_the_biometric_ports_stay_unbindable(self) -> None:
-        """A standing guard, not a frontier one (12_SECURITY §4.3)."""
+        """A standing guard, and now a permanent one (12_SECURITY §4.3).
+
+        Every flow has shipped. If these were ever going to become bindable in
+        Phase 1, it would have happened by now — so this stops being a frontier
+        guard and becomes the boundary itself.
+        """
         assert PortCatalogue.EMBEDDING not in BINDABLE_PORTS
         assert PortCatalogue.IDENTITY_RESOLVER not in BINDABLE_PORTS
 
-    def test_no_exposure_module_exists(self) -> None:
-        assert not (ROOT / "api").exists()
-        assert not (ROOT / "exposure").exists()
+    def test_synthesis_does_not_import_exposure(self) -> None:
+        """L5 must not learn L7 exists.
+
+        M11 publishes facts. Whether anyone is subscribed is not its concern, and
+        an import here would let suppression start depending on who is listening.
+        """
+        offenders = [
+            f"{path.name}: exposure"
+            for path, text in sources(SYNTHESIS, STATE)
+            if "exposure" in text
+        ]
+        assert not offenders, "\n".join(offenders)
 
     def test_state_exposes_no_transport(self) -> None:
         """M14 serves state over a wire. M12 returns values.

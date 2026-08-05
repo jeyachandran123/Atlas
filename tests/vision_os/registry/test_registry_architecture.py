@@ -411,18 +411,24 @@ class TestFlowScope:
     def test_the_state_store_port_is_bindable(self) -> None:
         assert PortCatalogue.STATE_STORE in BINDABLE_PORTS
 
-    def test_flow_eight_and_later_ports_remain_unbindable(self) -> None:
+    def test_phase_two_ports_remain_unbindable(self) -> None:
+        """Phase 1 is complete; these are what it deliberately omits."""
         for port in (
+            PortCatalogue.EMBEDDING,
+            PortCatalogue.IDENTITY_RESOLVER,
             PortCatalogue.PROMPT_SOURCE,
-            PortCatalogue.EVIDENCE_STORE,
             PortCatalogue.CALIBRATION,
-            PortCatalogue.AUTHORIZATION,
-            PortCatalogue.API_TRANSPORT,
         ):
             assert port not in BINDABLE_PORTS, f"{port} became bindable before its flow"
 
-    def test_no_exposure_module_exists(self) -> None:
-        assert not (ROOT / "api").exists()
+    def test_the_registry_does_not_import_exposure(self) -> None:
+        """M7 gained a second consumer in Flow 8 and must still not have noticed."""
+        offenders = [
+            path.name
+            for path in (ROOT / "perception" / "registry").rglob("*.py")
+            if "exposure" in path.read_text(encoding="utf-8")
+        ]
+        assert not offenders, "; ".join(offenders)
 
     def test_the_registry_does_not_import_synthesis(self) -> None:
         """M7 gained a consumer in Flow 7 and must not have noticed.

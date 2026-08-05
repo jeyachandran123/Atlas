@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | **Architecture** | Frozen at v1.0 (foundational). 16 documents — this index + 15 specifications. |
-| **Implementation** | Flows 1–4 of 8 complete. See [implementation status](#implementation-status). |
+| **Implementation** | **Phase 1 complete** — all 8 flows, L0 through L7. See [implementation status](#implementation-status). |
 | **Sibling** | Cognitive Intelligence Platform — `docs/architecture/COGNITIVE_*.md` |
 
 ---
@@ -99,19 +99,29 @@ names. Code lives in `backend/app/vision_os/`.
 | **5** | Crop Manager (M8) | ✅ complete | [Flow 5 report](./IMPLEMENTATION_FLOW_5.md) · [compliance review](./FLOW_5_COMPLIANCE_REVIEW.md) |
 | **6** | Vision Understanding (M9) | ✅ complete | [Flow 6 report](./IMPLEMENTATION_FLOW_6.md) · [compliance review](./FLOW_6_COMPLIANCE_REVIEW.md) |
 | **7** | Observation Builder & Vision State (M11, M12) | ✅ complete | [Flow 7 report](./IMPLEMENTATION_FLOW_7.md) · [compliance review](./FLOW_7_COMPLIANCE_REVIEW.md) |
-| 8 | Observation API & Prompt Manager (M14, M10) | pending | |
+| **8** | Storage Interfaces & Observation API (M13, M14) | ✅ complete | [Flow 8 report](./IMPLEMENTATION_FLOW_8.md) · [compliance review](./FLOW_8_COMPLIANCE_REVIEW.md) |
 
-**M10 and M13 remain unimplemented, deliberately.** M9 consumes prompts through a
-module seam rather than a port it owns, so the Prompt Manager can arrive without
-disturbing understanding. §M13's single responsibility is *"describe what must
-persist and with what guarantees; **implement none of it**"* — Flow 7 realized its
-`ObservationLogPort` contract and shipped reference adapters, which is what M13
-asks for and not more.
+**Phase 1 is complete.** Every layer L0–L7 is implemented, assembled and verified
+end to end: a frame entering acquisition becomes a fact an authorized consumer can
+query, and the log it was recorded in rebuilds Vision State identically.
+
+**M10 remains unimplemented, deliberately.** M9 consumes prompts through a module
+seam rather than a port it owns, so the Prompt Manager can arrive without
+disturbing understanding — which is why P17 stayed unbound through eight flows
+without anything breaking.
+
+**Four ports remain unbindable**, and none is waiting for a flow: `EmbeddingPort`
+(P10) and `IdentityResolverPort` (P11) are the biometric and cross-camera-identity
+capabilities, disabled by default under 12_SECURITY §4.3 and deferred to Phase 2;
+`PromptSourcePort` (P17) belongs to M10; `CalibrationPort` (P28) to M1 and M18.
+28 of the catalogue's 32 ports are bound.
 
 **Frontier discipline.** `BINDABLE_PORTS` names exactly the ports the implemented
-flows may bind. Every later-flow port is defined in the catalogue and deliberately
-unbindable, and an architecture test fails if that changes ahead of its flow. A
-port becomes bindable when its flow is implemented — never before.
+flows may bind. Every unimplemented port is defined in the catalogue and
+deliberately unbindable, and an architecture test fails if that changes. A port
+becomes bindable when its owning module is implemented — never before. With Phase
+1 complete the frontier has stopped moving, and the guards now police what Phase 1
+*omits* rather than what a later flow will add.
 
 ---
 

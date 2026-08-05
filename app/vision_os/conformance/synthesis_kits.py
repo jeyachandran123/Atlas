@@ -37,6 +37,7 @@ from ..core.model.ids import (
     ConfigRevision,
     FrameRef,
     FrameSeq,
+    LogPosition,
     ModuleId,
     ObjectId,
     ObservationId,
@@ -460,6 +461,41 @@ def _check_log_preserves_order(adapter) -> None:
     )
 
 
+def _check_log_tail_follows_without_blocking(adapter) -> None:
+    """Obligation L7. A follow must return, even with nothing to follow.
+
+    The failure this catches is a ``tail`` that waits for data. A camera
+    watching an empty corridor produces nothing for minutes at a time, and an
+    adapter that blocked there would make every subscriber's liveness depend on
+    the scene being busy.
+    """
+    camera = CameraId("kit-log-tail")
+    assert list(adapter.tail(camera)) == [], (
+        "tail on an empty partition must return immediately with nothing, not "
+        "block waiting for a first record"
+    )
+
+    written = [_observation(f"t{index}") for index in range(4)]
+    adapter.append(camera, written)
+
+    assert [o.observation_id for o in adapter.tail(camera)] == [
+        o.observation_id for o in written
+    ], "tail from the start must yield the whole partition in append order"
+
+    resumed = list(adapter.tail(camera, start=LogPosition(2)))
+    assert [o.observation_id for o in resumed] == [
+        o.observation_id for o in written[2:]
+    ], (
+        "tail from a position must yield only what followed it; a subscriber "
+        "resuming from a cursor would otherwise receive duplicates it cannot "
+        "distinguish from a genuine re-delivery"
+    )
+
+    assert list(adapter.tail(camera, start=LogPosition(len(written)))) == [], (
+        "tail from the current end must return empty rather than block"
+    )
+
+
 def _check_log_partitions_are_independent(adapter) -> None:
     """Obligation L6. One camera's traffic never appears in another's."""
     first = CameraId("kit-log-part-a")
@@ -519,6 +555,12 @@ OBSERVATION_LOG_KIT = ConformanceKit(
         ),
         ConformanceCheck(
             "preserves_order", KitSection.SEMANTICS, _check_log_preserves_order, obligation="L4"
+        ),
+        ConformanceCheck(
+            "tail_follows_without_blocking",
+            KitSection.SEMANTICS,
+            _check_log_tail_follows_without_blocking,
+            obligation="L7",
         ),
         ConformanceCheck(
             "partitions_are_independent",

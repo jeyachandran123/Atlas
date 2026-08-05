@@ -190,9 +190,35 @@ FLOW7_PORTS: frozenset[PortId] = frozenset(
     }
 )
 
+#: Ports implemented by Flow 8 — storage interfaces and exposure.
+#:
+#: ``EVIDENCE_STORE`` (P22) becomes bindable here and nowhere earlier. Flows 5, 6
+#: and 7 each left it unbound with a stated reason, and each reason was *"not this
+#: flow's job"* rather than *"never"* — Flow 6's note reads *"persisting them is
+#: M13's job."* Flow 8 **is** M13, so this is the earlier flows' expectation
+#: arriving on schedule rather than a boundary crossed early.
+#:
+#: ``CALIBRATION`` (P28) stays **absent**. `06_PORTS` assigns it to M1 and M18,
+#: neither of which is Flow 8's, and the Camera Manager's declared calibration
+#: already satisfies 07_STATE without an adapter. Binding a port whose owning
+#: module is not in scope is exactly what the frontier discipline forbids.
+FLOW8_PORTS: frozenset[PortId] = frozenset(
+    {
+        PortCatalogue.EVIDENCE_STORE,
+        PortCatalogue.AUTHORIZATION,
+        PortCatalogue.API_TRANSPORT,
+    }
+)
+
 #: Everything currently bindable. Binding anything else is rejected, because a
 #: plugin for a port whose owning module does not exist yet cannot be activated —
 #: which is how "no future flow is implemented early" stays enforceable.
+#:
+#: Two ports remain permanently unbindable in Phase 1, and neither is a frontier
+#: matter: ``EMBEDDING`` (P10) and ``IDENTITY_RESOLVER`` (P11) are the biometric
+#: and cross-camera-identity capabilities, disabled by default under
+#: 12_SECURITY §4.3 and deferred to Phase 2 by 15_ROADMAP §3. ``PROMPT_SOURCE``
+#: (P17) belongs to M10, which no flow has implemented.
 BINDABLE_PORTS: frozenset[PortId] = (
     FLOW1_PORTS
     | FLOW2_PORTS
@@ -201,6 +227,7 @@ BINDABLE_PORTS: frozenset[PortId] = (
     | FLOW5_PORTS
     | FLOW6_PORTS
     | FLOW7_PORTS
+    | FLOW8_PORTS
 )
 
 

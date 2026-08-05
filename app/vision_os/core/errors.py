@@ -685,3 +685,151 @@ class EmbeddingUnavailableError(TrackingError):
     """
 
     failure_class = FailureClass.PERSISTENT
+
+
+# --- persistence (M13, Flow 8) -------------------------------------------- #
+
+
+class PersistenceError(VisionOSError):
+    """A storage contract failed.
+
+    Named for the contract rather than the technology: §M13's whole purpose is
+    that an edge box and a cloud cluster *"differ only in adapter selection"*, so
+    a caller must be able to handle a storage failure without knowing whether the
+    bytes were going to a disk or an object store.
+    """
+
+
+class EvidenceStoreError(PersistenceError):
+    """An evidence write or read failed for a reason that is not absence.
+
+    Absence is never an error: ``EvidenceStore.get`` reports ``NotFound``,
+    ``Expired`` and ``Erased`` as *answers* (§M13), because collapsing them into
+    an exception would make retention indistinguishable from data loss.
+    """
+
+
+class EvidenceQuotaExceededError(EvidenceStoreError):
+    """The store is at its declared bound.
+
+    Systemic rather than persistent: retrying makes it worse, and the correct
+    response is to shed or to run retention, not to try again.
+    """
+
+    failure_class = FailureClass.SYSTEMIC
+
+
+class ErasureFailedError(PersistenceError):
+    """An erasure request could not be completed.
+
+    Loud by necessity. A regulated deployment that believes an erasure succeeded
+    when it did not has a compliance failure it cannot see, which is worse than
+    an erasure that visibly failed and can be retried.
+    """
+
+
+# --- exposure (M14, Flow 8) ------------------------------------------------ #
+
+
+class ApiError(VisionOSError):
+    """Base for every failure a consumer can observe (09_API §8).
+
+    Every subclass carries a stable ``code``. §8: *"Consumers must never infer
+    retryability from a status code or a message string. Inferring it is how
+    retry storms begin."* — so ``retryable`` comes from ``failure_class`` and is
+    reported explicitly, never derived by the caller.
+    """
+
+    code: str = "INTERNAL"
+
+
+class UnauthenticatedError(ApiError):
+    """No valid credential was presented."""
+
+    code = "UNAUTHENTICATED"
+
+
+class ForbiddenError(ApiError):
+    """Authenticated, but not permitted this action on this scope.
+
+    12_SECURITY §5.3 separates ``read_observations`` from ``read_evidence``
+    deliberately: *"Reading 'a person was here' and viewing their image are
+    categorically different acts."*
+    """
+
+    code = "FORBIDDEN"
+
+
+class TenantScopeViolationError(ForbiddenError):
+    """A request reached outside its tenant.
+
+    Always audited and alarmed. 12_SECURITY §4.2 requires scope be applied at
+    query construction, so reaching this error means a code path constructed an
+    unscoped query — a defect, not a permission problem.
+    """
+
+    code = "TENANT_SCOPE_VIOLATION"
+
+
+class InvalidScopeError(ApiError):
+    """The requested scope is malformed or names nothing."""
+
+    code = "INVALID_SCOPE"
+
+
+class WindowTooLargeError(ApiError):
+    """The query window exceeds policy.
+
+    09_API §M14: *"Reject with a bound and a cursor rather than degrading the
+    service for everyone."*
+    """
+
+    code = "WINDOW_TOO_LARGE"
+
+
+class UnsupportedVersionError(ApiError):
+    """The consumer asked for a schema version this build does not serve.
+
+    §M14: *"Reject with the supported set; never guess."* Guessing would serve a
+    payload shaped for a contract the consumer does not implement.
+    """
+
+    code = "UNSUPPORTED_VERSION"
+
+
+class PartitionUnavailableError(ApiError):
+    """A partition in scope could not be read.
+
+    Transient: 09_API §8 classes availability failures as retryable, and a
+    consumer that backs off will usually succeed.
+    """
+
+    code = "PARTITION_UNAVAILABLE"
+    failure_class = FailureClass.TRANSIENT
+
+
+class OverloadedError(ApiError):
+    """The API is shedding load.
+
+    §M14: *"Shed load by priority; protect subscriptions over ad-hoc queries,
+    because subscriptions are how live consumers stay correct."*
+    """
+
+    code = "OVERLOADED"
+    failure_class = FailureClass.SYSTEMIC
+
+
+class EvidenceExpiredError(ApiError):
+    """The evidence existed and retention removed it.
+
+    A distinct code from ``NOT_FOUND`` all the way to the consumer, because §M13
+    refuses to let retention look like data loss at any layer.
+    """
+
+    code = "EXPIRED"
+
+
+class SubscriptionError(ApiError):
+    """A subscription could not be established or was terminated."""
+
+    code = "SUBSCRIPTION_FAILED"

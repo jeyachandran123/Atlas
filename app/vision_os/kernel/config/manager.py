@@ -34,6 +34,7 @@ from ...core.ports.clock import Clock
 from ...core.ports.configuration import ConfigSourcePort, SecretProviderPort
 from .schema import (
     SECTION_TYPES,
+    ApiSection,
     BufferSection,
     CalibrationDeclaration,
     CameraDeclaration,
@@ -55,6 +56,7 @@ from .schema import (
     SchedulerSection,
     SourceSection,
     StateSection,
+    StorageSection,
     SynthesisSection,
     TaxonomyClassDeclaration,
     TrackingSection,
@@ -307,6 +309,14 @@ class ConfigurationManager:
     def state(self) -> StateSection:
         return self.effective().state
 
+    def storage(self) -> StorageSection:
+        """M13's adapter selection and retention policy (Flow 8)."""
+        return self.effective().storage
+
+    def api(self) -> ApiSection:
+        """M14's operating envelope (Flow 8)."""
+        return self.effective().api
+
     def taxonomy(self) -> tuple[TaxonomyClassDeclaration, ...]:
         return self.effective().taxonomy
 
@@ -476,6 +486,8 @@ def _build_effective(merged: dict[str, Any]) -> EffectiveConfig:
         understanding=sections["understanding"],
         synthesis=sections["synthesis"],
         state=sections["state"],
+        storage=sections["storage"],
+        api=sections["api"],
         profiles=tuple(_build_profile(p) for p in merged.get("profiles", []) or []),
         regions=tuple(_build_region(r) for r in merged.get("regions", []) or []),
         cameras=tuple(_build_camera(c) for c in merged.get("cameras", []) or []),

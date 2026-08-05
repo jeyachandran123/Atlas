@@ -490,19 +490,26 @@ class TestFlowScope:
         assert PortCatalogue.UNDERSTANDER in BINDABLE_PORTS
         assert PortCatalogue.OUTPUT_COERCION in BINDABLE_PORTS
 
-    def test_exposure_ports_remain_unbindable(self) -> None:
+    def test_phase_two_ports_remain_unbindable(self) -> None:
+        """``PROMPT_SOURCE`` is M10's, and M10 was never implemented.
+
+        M9 consumes prompts through a module seam rather than a port it owns, so
+        the Prompt Manager can arrive without disturbing understanding — which is
+        why this port stayed unbound through eight flows without anything
+        breaking.
+        """
         for port in (
+            PortCatalogue.EMBEDDING,
+            PortCatalogue.IDENTITY_RESOLVER,
             PortCatalogue.PROMPT_SOURCE,
-            PortCatalogue.EVIDENCE_STORE,
             PortCatalogue.CALIBRATION,
-            PortCatalogue.AUTHORIZATION,
-            PortCatalogue.API_TRANSPORT,
         ):
             assert port not in BINDABLE_PORTS, f"{port} became bindable early"
 
-    def test_no_exposure_module_exists(self) -> None:
-        assert not (ROOT / "api").exists()
+    def test_no_perception_level_exposure_exists(self) -> None:
+        """L7 shipped, but never inside L2."""
         assert not (PERCEPTION / "synthesis").exists()
+        assert not (PERCEPTION / "exposure").exists()
 
     def test_understanding_does_not_import_synthesis(self) -> None:
         """M9 gained a consumer and must not have noticed.

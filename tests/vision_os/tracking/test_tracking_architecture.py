@@ -343,19 +343,23 @@ class TestFlowScope:
     def test_the_tracker_port_is_bindable(self) -> None:
         assert PortCatalogue.TRACKER in BINDABLE_PORTS
 
-    def test_flow_eight_and_later_ports_remain_unbindable(self) -> None:
-        """The frontier moves one flow at a time."""
+    def test_phase_two_ports_remain_unbindable(self) -> None:
+        """Phase 1 is complete; the frontier has stopped moving."""
         for port in (
+            PortCatalogue.EMBEDDING,
+            PortCatalogue.IDENTITY_RESOLVER,
             PortCatalogue.PROMPT_SOURCE,
-            PortCatalogue.EVIDENCE_STORE,
             PortCatalogue.CALIBRATION,
-            PortCatalogue.AUTHORIZATION,
-            PortCatalogue.API_TRANSPORT,
         ):
             assert port not in BINDABLE_PORTS, f"{port} became bindable before its flow"
 
-    def test_no_exposure_module_exists(self) -> None:
-        assert not (ROOT / "api").exists()
+    def test_tracking_does_not_import_exposure(self) -> None:
+        offenders = [
+            path.name
+            for path in (ROOT / "perception" / "tracking").rglob("*.py")
+            if "exposure" in path.read_text(encoding="utf-8")
+        ]
+        assert not offenders, "; ".join(offenders)
 
     def test_tracking_does_not_import_the_crop_manager(self) -> None:
         """M8 ships, but M6 must not learn it exists.

@@ -72,9 +72,28 @@ class TestObservationIsTheOnlyWritePath:
             if not name.startswith("_") and callable(getattr(VisionStateManager, name, None))
         }
         assert public - writers <= {
-            "snapshot", "object_state", "history", "coverage", "coverage_report",
-            "site_context", "health", "partitions", "quarantined", "buffer_depth",
-        }
+            "snapshot", "object_state", "history", "observations_in", "coverage",
+            "coverage_report", "site_context", "health", "partitions",
+            "quarantined", "buffer_depth",
+        }, (
+            "a new public method appeared on the state manager; if it writes, the "
+            "log is no longer the only write path"
+        )
+
+    def test_the_l7_read_seam_is_a_read(self) -> None:
+        """``observations_in`` was added in Flow 8 for 09_API §2.2's query.
+
+        Listed here deliberately: M14 reads history through M12 rather than
+        holding P20 itself, so the seam is a method on this class — and every
+        method added to this class has to be shown not to write.
+        """
+        import inspect
+
+        from app.vision_os.state import VisionStateManager
+
+        source = inspect.getsource(VisionStateManager.observations_in)
+        for mutator in ("self._partitions[", "self._log.append", "self._buffers["):
+            assert mutator not in source, f"the read seam calls {mutator}"
 
     def test_state_is_empty_until_an_observation_arrives(self, state) -> None:
         assert state.snapshot().partitions == {}

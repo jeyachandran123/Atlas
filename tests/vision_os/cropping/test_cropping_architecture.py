@@ -411,32 +411,49 @@ class TestFlowScope:
         ):
             assert port in BINDABLE_PORTS
 
-    def test_exposure_ports_remain_unbindable(self) -> None:
-        """The frontier moved to Flow 8 when the Observation Builder shipped."""
+    def test_phase_two_ports_remain_unbindable(self) -> None:
+        """Phase 1 is complete; these four are what it deliberately omits.
+
+        Not a moving frontier any more. 15_ROADMAP section 2 lists each as
+        omitted with the port already defined and unused.
+        """
         for port in (
+            PortCatalogue.EMBEDDING,
+            PortCatalogue.IDENTITY_RESOLVER,
             PortCatalogue.PROMPT_SOURCE,
             PortCatalogue.CALIBRATION,
-            PortCatalogue.AUTHORIZATION,
-            PortCatalogue.API_TRANSPORT,
         ):
             assert port not in BINDABLE_PORTS, f"{port} became bindable early"
 
-    def test_the_evidence_store_stays_unbound(self) -> None:
-        """M8 decides retention policy; persisting imagery is another module's job.
+    def test_cropping_does_not_bind_the_evidence_store_itself(self) -> None:
+        """M8 decides retention policy; persisting imagery is M13's job.
 
-        Binding a store here would put a durable side effect inside the
-        platform's cheapest, hottest path.
+        P22 became bindable in Flow 8, which is M13 — but M8 must still not reach
+        it. Binding a store *here* would put a durable side effect inside the
+        platform's cheapest, hottest path, which is what this guard has always
+        been about. The check moved from "the port is unbound" to "this layer
+        does not touch it", because the first stopped being true and the second
+        is what actually mattered.
         """
-        assert PortCatalogue.EVIDENCE_STORE not in BINDABLE_PORTS
+        offenders = [
+            path.name
+            for path in (ROOT / "perception" / "cropping").rglob("*.py")
+            if "EvidenceStore" in path.read_text(encoding="utf-8")
+        ]
+        assert not offenders, "; ".join(offenders)
 
     def test_the_biometric_ports_stay_unbindable(self) -> None:
         """A standing guard, not a frontier one (12_SECURITY section 4.3)."""
         assert PortCatalogue.EMBEDDING not in BINDABLE_PORTS
         assert PortCatalogue.IDENTITY_RESOLVER not in BINDABLE_PORTS
 
-    def test_no_exposure_module_exists(self) -> None:
-        assert not (ROOT / "api").exists()
-        assert not (ROOT / "exposure").exists()
+    def test_no_phase_two_module_exists(self) -> None:
+        """L7 shipped in Flow 8; what stays absent is Phase 2 and beyond."""
+        assert (ROOT / "exposure").exists(), "Flow 8 implements the Observation API"
+        for absent in ("reasoning", "analytics", "learning", "rules"):
+            assert not (ROOT / absent).exists(), (
+                f"package '{absent}' names a conclusion the platform may never draw"
+            )
 
     def test_cropping_does_not_import_synthesis(self) -> None:
         """M11 ships, but M8 must not learn it exists.

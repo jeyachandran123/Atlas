@@ -371,21 +371,22 @@ class TestPluginCompatibility:
         with pytest.raises(PortIncompatibleError, match="outside"):
             plugins.load(PluginId("allocator.host"))
 
-    def test_later_flow_port_is_not_bindable(self, plugins: PluginManager) -> None:
-        """A plugin for a port whose owning module does not exist yet cannot bind.
+    def test_an_unimplemented_port_is_not_bindable(self, plugins: PluginManager) -> None:
+        """A plugin for a port whose owning module does not exist cannot bind.
 
-        ``ApiTransportPort`` belongs to Flow 8. ``ObservationSinkPort`` became
-        bindable in Flow 7, so this guard tracks the current frontier rather than
-        a boundary already crossed.
+        ``PromptSourcePort`` belongs to M10, which no flow implemented — M9
+        consumes prompts through a module seam instead. ``ApiTransportPort``
+        became bindable in Flow 8, so this guard now tracks a port that is
+        genuinely unowned rather than one merely waiting its turn.
         """
         plugins.register(
             PluginDescriptor(
-                _manifest(plugin_id="api.http", port=PortCatalogue.API_TRANSPORT),
+                _manifest(plugin_id="prompts.git", port=PortCatalogue.PROMPT_SOURCE),
                 _GoodAllocator,
             )
         )
         with pytest.raises(PortIncompatibleError, match="not bindable"):
-            plugins.load(PluginId("api.http"))
+            plugins.load(PluginId("prompts.git"))
 
     def test_the_embedding_port_is_never_bindable(self, plugins: PluginManager) -> None:
         """Not a frontier guard — a standing one.

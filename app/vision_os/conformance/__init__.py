@@ -13,6 +13,12 @@ from .cropping_kits import (
     TRIGGER_POLICY_KIT,
 )
 from .detector_kit import DETECTOR_KIT, detector_kit_checks
+from .exposure_kits import (
+    ALL_EXPOSURE_KITS,
+    API_TRANSPORT_KIT,
+    AUTHORIZATION_KIT,
+    EVIDENCE_STORE_KIT,
+)
 from .flow1_kits import ALL_FLOW1_KITS, flow1_registry, platform_registry
 from .kit import (
     ConformanceCheck,
@@ -43,15 +49,19 @@ from .understanding_kits import (
 
 __all__ = [
     "ALL_CROPPING_KITS",
+    "ALL_EXPOSURE_KITS",
     "ALL_UNDERSTANDING_KITS",
     "ALL_FLOW1_KITS",
     "ALL_MODEL_KITS",
     "ALL_SYNTHESIS_KITS",
+    "API_TRANSPORT_KIT",
     "ARTIFACT_STORE_KIT",
+    "AUTHORIZATION_KIT",
     "CROP_STRATEGY_KIT",
     "DETECTOR_KIT",
     "DETERMINISM_CHECK",
     "DEVICE_KIT",
+    "EVIDENCE_STORE_KIT",
     "IDENTITY_RESOLVER_KIT",
     "MODEL_RUNTIME_KIT",
     "OBJECT_STORE_KIT",

@@ -213,6 +213,16 @@ class ObservationLogPort(Protocol):
     | **L4** | ``read`` returns observations in append order. Order is the log's contract; a set-like store cannot satisfy it. |
     | **L5** | Failure is a typed result, never a silent partial success. A partial append is reported as such. |
     | **L6** | Partitions are independent. An append to one camera never blocks or affects another (07_STATE §4). |
+    | **L7** | ``tail`` yields everything from a position onward and **never blocks on an empty partition**. A follow that hung on a quiet camera would make a subscription's liveness depend on the scene having something in it. |
+
+    ### Why ``tail`` is separate from ``read``
+
+    §M13's Public API lists both, and they answer different questions. ``read``
+    is a *range* — bounded at both ends, used by rebuild and by historical
+    queries. ``tail`` is a *follow* — bounded only at the start, used by
+    subscription resumption. Serving a follow through ``read`` would force the
+    caller to poll with a moving upper bound and to guess how far ahead the log
+    had advanced.
     """
 
     @property
@@ -234,6 +244,19 @@ class ObservationLogPort(Protocol):
         limit: int = 1000,
     ) -> Iterator[Observation]:
         """Range-read in append order (L4)."""
+        ...
+
+    def tail(
+        self, partition: CameraId, *, start: LogPosition | None = None, limit: int = 1000
+    ) -> Iterator[Observation]:
+        """Live follow from a position onward (L7).
+
+        §M13 specifies this alongside ``read`` because a subscription resuming
+        from a cursor needs everything *since* that point without knowing where
+        the log now ends. Returns immediately when there is nothing new — an
+        empty iterator, never a block, because a camera watching an empty
+        corridor is a normal state and not a reason to stall a subscriber.
+        """
         ...
 
     def position(self, partition: CameraId) -> LogPosition:
