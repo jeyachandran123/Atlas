@@ -167,11 +167,40 @@ FLOW6_PORTS: frozenset[PortId] = frozenset(
     }
 )
 
+#: Ports implemented by Flow 7 — synthesis and state.
+#:
+#: ``OBSERVATION_LOG`` (P20) is listed against M13 in the catalogue, and binding
+#: it here is not implementing M13: §M13's single responsibility is *"Describe
+#: what must persist and with what guarantees; **implement none of it**."* It
+#: owns no state and is a set of contracts. Flow 2 bound M18's storage ports the
+#: same way, and Flow 4 bound P21.
+#:
+#: ``EVIDENCE_STORE`` (P22) is deliberately **absent**. M11 stamps retention onto
+#: the evidence reference and M9 content-addresses the payload; writing imagery
+#: durably is still nobody's job in Phase 1, and binding a store here would put a
+#: blob write on the observation hot path.
+#:
+#: ``API_TRANSPORT`` (P32) is absent because M14 is Flow 8. State exposes read
+#: methods; exposing them over a wire is a different module's contract.
+FLOW7_PORTS: frozenset[PortId] = frozenset(
+    {
+        PortCatalogue.SUPPRESSION_POLICY,
+        PortCatalogue.OBSERVATION_SINK,
+        PortCatalogue.OBSERVATION_LOG,
+    }
+)
+
 #: Everything currently bindable. Binding anything else is rejected, because a
 #: plugin for a port whose owning module does not exist yet cannot be activated —
 #: which is how "no future flow is implemented early" stays enforceable.
 BINDABLE_PORTS: frozenset[PortId] = (
-    FLOW1_PORTS | FLOW2_PORTS | FLOW3_PORTS | FLOW4_PORTS | FLOW5_PORTS | FLOW6_PORTS
+    FLOW1_PORTS
+    | FLOW2_PORTS
+    | FLOW3_PORTS
+    | FLOW4_PORTS
+    | FLOW5_PORTS
+    | FLOW6_PORTS
+    | FLOW7_PORTS
 )
 
 

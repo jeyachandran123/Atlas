@@ -419,6 +419,14 @@ class UnderstandingResult:
     """What was asked for. The difference between this and ``attributes`` is the
     coverage gap, and a consumer needs both to compute it (V8)."""
 
+    demand_ids: tuple[str, ...] = ()
+    """Which consumer demands this work served.
+
+    Carried on the *result* rather than passed alongside it, because M11 receives
+    only the result: 02_VOM section 11's envelope has ``demand_ids``, and a
+    result that could not name its demands would force the handoff to carry two
+    things that must be kept in sync."""
+
     cache_hit: bool = False
     cost_units: float = 0.0
     """Relative cost of this call, in the adapter's declared units."""

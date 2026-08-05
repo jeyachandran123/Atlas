@@ -585,6 +585,96 @@ class PromptUnavailableError(UnderstandingError):
     failure_class = FailureClass.PERSISTENT
 
 
+# --- synthesis and state (M11, M12) --------------------------------------- #
+
+
+class ObservationError(VisionOSError):
+    """Base for the Observation Builder (M11)."""
+
+
+class ValidationFailedError(ObservationError):
+    """An observation was refused by the final semantic gate.
+
+    04_MODULES section M11 is precise about which failures kill the envelope:
+    missing provenance, timing or evidence. *"An unexplainable observation is
+    worse than no observation — it is a fact nobody can audit (V4)."*
+
+    An unregistered *attribute* does **not** raise this: the attribute is
+    dropped, the observation survives, and the rejection is counted. Two
+    failures, two responses.
+    """
+
+    failure_class = FailureClass.PERSISTENT
+
+
+class TaxonomyMismatchError(ObservationError):
+    """Producers disagree about the taxonomy version.
+
+    Section M11: *"Reject with a clear diagnostic; this indicates a partial
+    deployment and must be loud."* Two producers on different taxonomy versions
+    are describing different worlds, and merging their output silently would
+    produce observations nobody can interpret consistently.
+    """
+
+    failure_class = FailureClass.PERSISTENT
+
+
+class StateError(VisionOSError):
+    """Base for the Vision State Manager (M12)."""
+
+
+class CommitFailedError(StateError):
+    """Observations could not be appended to the log.
+
+    10_RELIABILITY section 4.4 step 4: when the local buffer fills, the partition
+    **stops accepting observations and is marked degraded** rather than dropping
+    facts silently. *"Losing observations invisibly is a V8 violation of the
+    worst kind."*
+    """
+
+    failure_class = FailureClass.SYSTEMIC
+
+
+class LogUnavailableError(StateError):
+    """The observation log cannot be reached.
+
+    Systemic: the log is the system of record, and retrying against a dead store
+    makes it worse. The partition degrades loudly.
+    """
+
+    failure_class = FailureClass.SYSTEMIC
+
+
+class ProjectionError(StateError):
+    """One observation could not be projected into state.
+
+    Section M12: *"Quarantine that observation, continue the projection, alarm.
+    One bad record must not stop the world."* Classified ``POISON`` because that
+    is exactly the documented response — quarantine the input, keep the stream.
+    """
+
+    failure_class = FailureClass.POISON
+
+
+class PartitionDegradedError(StateError):
+    """The partition has stopped accepting observations.
+
+    Raised on an attempt to append to a halted partition, so a caller learns the
+    facts are not being recorded rather than believing they were.
+    """
+
+    failure_class = FailureClass.SYSTEMIC
+
+
+class StateNotFoundError(NotFoundError):
+    """No state exists for the requested object or partition.
+
+    Distinct from a partition that exists and is empty: 07_STATE section 7.1 is
+    built around a consumer being able to tell *"nothing there"* from *"we cannot
+    see"*.
+    """
+
+
 class EmbeddingUnavailableError(TrackingError):
     """A tracker requiring appearance embeddings has no provider configured.
 

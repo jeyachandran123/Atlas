@@ -772,6 +772,114 @@ class SchemaDriftSuspected(Event):
     detail: str = ""
 
 
+# --- synthesis and state (M11, M12, Flow 7) --------------------------------- #
+#
+# Note what is absent. There is no `ObservationPublished`: observations reach
+# consumers through the observation log and the state projection, not through a
+# lossy control-plane bus. At 500-2000 observations/second (07_STATE §M12
+# Performance) announcing each one would put the platform's highest-volume
+# traffic on a notifier designed for alarms — and a dropped notification would
+# look like a missing fact.
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationRejected(Event):
+    """An observation was refused by the final semantic gate.
+
+    04_MODULES §M11: *"an unexplainable observation is worse than no observation
+    — it is a fact nobody can audit (V4)."* The refusal is published because a
+    silently refused observation is a fact that vanished, and the producer would
+    never learn its output is being discarded.
+    """
+
+    event_type: ClassVar[str] = "synthesis.observation_rejected"
+    camera_id: CameraId = CameraId("")
+    observation_type: str = ""
+    kind: str = ""
+    detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class SchemaViolationSpike(Event):
+    """Sustained ceiling violations at the final gate.
+
+    §M11: *"count, alarm on sustained rate."* One unregistered attribute is a
+    producer being creative; a sustained rate means a producer has drifted beyond
+    the registered vocabulary — a new prompt, a new model, or a partial
+    deployment — which is a deploy-time problem surfacing at publication time.
+    """
+
+    event_type: ClassVar[str] = "synthesis.schema_violation_spike"
+    camera_id: CameraId = CameraId("")
+    violation_rate: float = 0.0
+    sample_size: int = 0
+    detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class PartitionDegraded(Event):
+    """A state partition stopped accepting observations.
+
+    10_RELIABILITY §4.4 step 4 halts a partition loudly when its durability
+    buffer fills, because *"losing observations invisibly is a V8 violation of
+    the worst kind."* This event is the loudness.
+    """
+
+    event_type: ClassVar[str] = "state.partition_degraded"
+    camera_id: CameraId = CameraId("")
+    reason: str = ""
+    buffered: int = 0
+    detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class PartitionRecovered(Event):
+    """A degraded partition drained its buffer and resumed.
+
+    Paired with `PartitionDegraded` so a consumer can bound the gap rather than
+    inferring its end from the resumption of traffic. §4.4 step 5 also emits a
+    coverage observation for the window, so the gap is in the record as data.
+    """
+
+    event_type: ClassVar[str] = "state.partition_recovered"
+    camera_id: CameraId = CameraId("")
+    drained: int = 0
+    gap_ms: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationQuarantined(Event):
+    """An observation was appended but could not be projected.
+
+    §M12: *"Quarantine that observation, continue the projection, alarm. One bad
+    record must not stop the world."* Distinct from a rejection: this observation
+    **is** in the log and is therefore still part of the record — only the
+    projection could not absorb it, which is a projection bug rather than a
+    producer one.
+    """
+
+    event_type: ClassVar[str] = "state.observation_quarantined"
+    camera_id: CameraId = CameraId("")
+    observation_id: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class StateRebuilt(Event):
+    """A partition's projection was rebuilt from the log.
+
+    07_STATE §9.2: rebuild runs into a shadow projection and swaps atomically, so
+    *"consumers see a version change, never an outage."* Publishing it is what
+    lets a consumer holding a snapshot know why its version jumped.
+    """
+
+    event_type: ClassVar[str] = "state.rebuilt"
+    camera_id: CameraId = CameraId("")
+    observations_replayed: int = 0
+    from_position: int = 0
+    detail: str = ""
+
+
 ALL_EVENT_TYPES: tuple[type[Event], ...] = (
     StreamConnected,
     StreamLost,
@@ -828,4 +936,10 @@ ALL_EVENT_TYPES: tuple[type[Event], ...] = (
     UnderstandingFailed,
     ModelFallbackEngaged,
     SchemaDriftSuspected,
+    ObservationRejected,
+    SchemaViolationSpike,
+    PartitionDegraded,
+    PartitionRecovered,
+    ObservationQuarantined,
+    StateRebuilt,
 )

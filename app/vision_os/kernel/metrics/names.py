@@ -283,6 +283,71 @@ class MetricName:
 
     SCHEMA_DRIFT_ALARMS: Final = "vision_os.understanding.schema_drift_alarms"
 
+    # --- synthesis (M11, Flow 7) --------------------------------------------- #
+    OBSERVATIONS_BUILT: Final = "vision_os.synthesis.built"
+    """Labelled by ``observation_type``. The platform's output rate — the number
+    every capacity calculation in 11_PERFORMANCE starts from."""
+
+    OBSERVATIONS_SUPPRESSED: Final = "vision_os.synthesis.suppressed"
+    """Correctly not published because nothing changed. A **success**: section
+    M11 puts the typical reduction at 10-50x, and a suppression rate near zero
+    means the policy is not engaged."""
+
+    OBSERVATION_HEARTBEATS: Final = "vision_os.synthesis.heartbeats"
+    """Published on cadence despite no change. The V8 floor that lets a consumer
+    tell 'unchanged' from 'stopped observing'."""
+
+    OBSERVATIONS_REJECTED: Final = "vision_os.synthesis.rejected"
+    """Envelopes refused entirely. Labelled by type."""
+
+    OBSERVATIONS_SKIPPED: Final = "vision_os.synthesis.skipped"
+    """Understanding results that produced no observation — a failed or empty
+    understanding is not a published fact."""
+
+    OBSERVATION_VIOLATIONS: Final = "vision_os.synthesis.violations"
+    """Labelled by ``kind``. ``unregistered_attribute`` is the Semantic Ceiling
+    doing its job and is counted apart from ordinary schema mismatches, because
+    it calls for a different response — a producer change, not a model change."""
+
+    ATTRIBUTES_PUBLISHED: Final = "vision_os.synthesis.attributes_published"
+    ATTRIBUTES_DROPPED: Final = "vision_os.synthesis.attributes_dropped"
+    """Dropped at the final gate while the observation survived. Section M11's
+    prescribed response, made countable."""
+
+    SCHEMA_VIOLATION_ALARMS: Final = "vision_os.synthesis.violation_alarms"
+    OBSERVATION_BUILD_MS: Final = "vision_os.synthesis.build_ms"
+
+    # --- vision state (M12, Flow 7) ------------------------------------------ #
+    OBSERVATIONS_APPENDED: Final = "vision_os.state.appended"
+    OBSERVATIONS_DUPLICATE: Final = "vision_os.state.duplicates"
+    """Idempotent re-appends. A retry reporting duplicates is a **success** —
+    it is what makes at-least-once delivery workable end to end."""
+
+    OBSERVATIONS_QUARANTINED: Final = "vision_os.state.quarantined"
+    """In the log but unprojectable. A projection bug, not a producer one."""
+
+    STATE_COMMIT_MS: Final = "vision_os.state.commit_ms"
+    STATE_PROJECTION_MS: Final = "vision_os.state.projection_ms"
+    STATE_SNAPSHOT_MS: Final = "vision_os.state.snapshot_ms"
+    """Should stay flat as state grows: section 5.1 makes a snapshot O(1) through
+    structural sharing, and a rising curve here means something started copying."""
+
+    STATE_OBJECTS: Final = "vision_os.state.objects"
+    STATE_PARTITIONS: Final = "vision_os.state.partitions"
+    STATE_LOG_POSITION: Final = "vision_os.state.log_position"
+    STATE_BUFFER_DEPTH: Final = "vision_os.state.buffer_depth"
+    """Local durability buffer occupancy. Approaching capacity is the last
+    warning before a partition halts (10_RELIABILITY section 4.4 step 4)."""
+
+    STATE_PARTITIONS_DEGRADED: Final = "vision_os.state.partitions_degraded"
+    STATE_REBUILDS: Final = "vision_os.state.rebuilds"
+    STATE_HISTORY_EVICTIONS: Final = "vision_os.state.history_evictions"
+    """Ring-buffer evictions. Non-zero is normal and expected: it is the bound
+    working (07_STATE section 6.3)."""
+
+    COVERAGE_TRANSITIONS: Final = "vision_os.state.coverage_transitions"
+    STATE_SUBSCRIBER_DELTAS: Final = "vision_os.state.subscriber_deltas"
+
     # --- models (M18, Flow 2) ------------------------------------------------ #
     MODELS_LOADED: Final = "vision_os.models.loaded"
     MODEL_EVICTIONS: Final = "vision_os.models.evictions"

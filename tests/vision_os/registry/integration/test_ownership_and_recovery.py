@@ -73,10 +73,14 @@ class TestCanonicalOwnership:
     def test_only_the_registry_mints_object_ids(self) -> None:
         """01_LAYERED section 8: exactly one module may mint an identity.
 
-        Two constructions are not minting and are excluded by name:
+        Three constructions are not minting and are excluded by name:
 
         * ``adapters/registry`` **decodes** a persisted id — reconstruction of an
           identity the registry already minted, not creation of a new one.
+        * ``adapters/synthesis/decode.py`` decodes the same way, one layer up: a
+          P20 log record carries the id the registry minted, and reading it back
+          off disk reconstructs it. Named as a single file rather than a
+          directory so the rest of the synthesis adapters stay guarded.
         * ``conformance`` builds **fixtures** to exercise a port; those ids never
           enter a pipeline.
 
@@ -92,6 +96,7 @@ class TestCanonicalOwnership:
         allowed_prefixes = (
             "perception/registry/",
             "adapters/registry/",
+            "adapters/synthesis/decode.py",
             "conformance/",
         )
         offenders = []

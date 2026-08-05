@@ -374,18 +374,18 @@ class TestPluginCompatibility:
     def test_later_flow_port_is_not_bindable(self, plugins: PluginManager) -> None:
         """A plugin for a port whose owning module does not exist yet cannot bind.
 
-        ``ObservationSinkPort`` belongs to Flow 7. ``UnderstanderPort`` became
-        bindable in Flow 6, so this guard tracks the current frontier rather than
+        ``ApiTransportPort`` belongs to Flow 8. ``ObservationSinkPort`` became
+        bindable in Flow 7, so this guard tracks the current frontier rather than
         a boundary already crossed.
         """
         plugins.register(
             PluginDescriptor(
-                _manifest(plugin_id="sink.webhook", port=PortCatalogue.OBSERVATION_SINK),
+                _manifest(plugin_id="api.http", port=PortCatalogue.API_TRANSPORT),
                 _GoodAllocator,
             )
         )
         with pytest.raises(PortIncompatibleError, match="not bindable"):
-            plugins.load(PluginId("sink.webhook"))
+            plugins.load(PluginId("api.http"))
 
     def test_the_embedding_port_is_never_bindable(self, plugins: PluginManager) -> None:
         """Not a frontier guard — a standing one.

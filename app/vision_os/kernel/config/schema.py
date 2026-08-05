@@ -717,6 +717,154 @@ class UnderstandingSection:
 
 
 @dataclass(frozen=True, slots=True)
+class SynthesisSection:
+    """Observation Builder operating envelope (M11, Flow 7).
+
+    Suppression-, cadence- and alarm-shaped only. There is no slot here for
+    "publish an alert when dwell exceeds 5 minutes": the *threshold* is a
+    business judgment (V1) and the *attribute vocabulary* lives in the Attribute
+    Schema Registry. Both are outside this file on purpose — a business
+    conclusion reachable from configuration would bypass the ceiling's final
+    gate.
+    """
+
+    enabled: bool = False
+    """Off unless a deployment opts in. Flow 6 behaviour is the default, so
+    adding synthesis to a running site is an explicit act."""
+
+    # --- suppression ----------------------------------------------------------- #
+    suppression_policy: str = "suppression.exact"
+    heartbeat_ms: int = 30_000
+    """The V8 floor. §M11: *"a consumer must be able to distinguish 'unchanged'
+    from 'stopped observing,' so unchanged objects still publish at a slow floor
+    rate."* Suppression without a heartbeat makes a working camera and a dead one
+    produce the same silence."""
+
+    position_threshold: float = 0.01
+    """Normalized displacement below which a spatial observation says nothing
+    new. Used by ``suppression.threshold`` only."""
+
+    suppression_capacity: int = 4_096
+    """Tracked subjects per camera. Unbounded would grow with every object a
+    camera has ever seen; an evicted subject simply republishes, and §M11 is
+    explicit that *"brief duplication is harmless, missing data is not."*"""
+
+    # --- alarms ---------------------------------------------------------------- #
+    rejection_window: int = 20
+    rejection_alarm_rate: float = 0.5
+    """Fraction of recent observations rejected by the ceiling gate before an
+    alarm fires. §M11: *"count, alarm on sustained rate."* One rejection is a
+    producer being creative; a sustained rate means a producer has drifted.
+
+    Named for *rejection* rather than *violation* deliberately. A config key
+    reading ``violation_threshold`` is indistinguishable from a business rule —
+    the tuning knob for "how many safety violations before we alert" — and the
+    architecture guard that policed this namespace could not tell the two apart.
+    These count schema rejections, which is the platform's own enforcement of
+    V1 and the opposite of a business rule."""
+
+    # --- evidence -------------------------------------------------------------- #
+    evidence_retention: str = "evidence"
+    require_evidence_for_attributes: bool = True
+    """An attribute observation without evidence cannot be audited. Configurable
+    only so a forensic-free deployment can state that choice explicitly rather
+    than discovering it."""
+
+    slow_build_warn_ms: int = 5
+
+    def __post_init__(self) -> None:
+        if self.heartbeat_ms <= 0:
+            raise ValidationError("synthesis.heartbeat_ms must be positive")
+        if not 0.0 <= self.position_threshold <= 1.0:
+            raise ValidationError("synthesis.position_threshold must be in [0,1]")
+        if self.suppression_capacity < 1:
+            raise ValidationError("synthesis.suppression_capacity must be >= 1")
+        if self.rejection_window < 1:
+            raise ValidationError("synthesis.rejection_window must be >= 1")
+        if not 0.0 <= self.rejection_alarm_rate <= 1.0:
+            raise ValidationError("synthesis.rejection_alarm_rate must be in [0,1]")
+        if self.evidence_retention not in ("ephemeral", "evidence", "never_persist"):
+            raise ValidationError(
+                f"synthesis.evidence_retention must be ephemeral, evidence or "
+                f"never_persist, got '{self.evidence_retention}'"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class StateSection:
+    """Vision State operating envelope (M12, Flow 7).
+
+    Every history bound here is finite, and 07_STATE section 6.3 explains why
+    that is structural rather than a tuning choice: *"All in-memory history is
+    bounded by both count and time, and the bound is a structural property of the
+    ring buffers rather than a tunable that might be misconfigured to infinity."*
+    A node's steady-state memory is calculable before deployment because of these
+    numbers.
+
+    There is no slot for a business aggregate, an alert or a retention rule with
+    a business meaning. Section 10's test applies: *"would this field mean the
+    same thing in a hospital, a warehouse, and a city street?"*
+    """
+
+    enabled: bool = False
+
+    # --- projection ------------------------------------------------------------ #
+    max_objects_per_partition: int = 512
+    trajectory_points: int = 64
+    attribute_history: int = 8
+    class_history: int = 16
+    """All four are ring bounds. §6.3: *"Because every dimension is bounded, a
+    node's steady-state memory is calculable before deployment rather than
+    discovered in production."*"""
+
+    working_history_ms: int = 300_000
+    """~5 minutes. §6.2's working horizon — for perception continuity, not for
+    analytics. §6.1: *"History exists for perception, not for analytics."*"""
+
+    # --- durability ------------------------------------------------------------- #
+    log_buffer_capacity: int = 4_096
+    """Bounded local buffer for a storage outage. 10_RELIABILITY section 4.4 step
+    4: when it fills the partition **stops accepting observations** rather than
+    dropping facts silently."""
+
+    commit_batch_size: int = 64
+    commit_interval_ms: int = 100
+    """Append is *"sequential and batched — the cheapest possible durable write
+    pattern"* (§M12 Performance)."""
+
+    # --- retention -------------------------------------------------------------- #
+    log_retention_ms: int = 604_800_000
+    """7 days hot (07_STATE section 8.1). Archive tiers are a storage-adapter
+    concern, not a projection one."""
+
+    # --- coverage ---------------------------------------------------------------- #
+    stale_object_ms: int = 60_000
+    """How long without a measured sighting before an object is reported stale.
+    Descriptive only — the platform reports staleness and never decides what it
+    means."""
+
+    def __post_init__(self) -> None:
+        for name in (
+            "max_objects_per_partition",
+            "trajectory_points",
+            "attribute_history",
+            "class_history",
+            "log_buffer_capacity",
+            "commit_batch_size",
+        ):
+            if getattr(self, name) < 1:
+                raise ValidationError(f"state.{name} must be >= 1")
+        for name in (
+            "working_history_ms",
+            "commit_interval_ms",
+            "log_retention_ms",
+            "stale_object_ms",
+        ):
+            if getattr(self, name) <= 0:
+                raise ValidationError(f"state.{name} must be positive")
+
+
+@dataclass(frozen=True, slots=True)
 class ModelsSection:
     """Model artifact and device policy (M18, Flow 2)."""
 
@@ -878,6 +1026,8 @@ class EffectiveConfig:
     registry: RegistrySection = RegistrySection()
     cropping: CroppingSection = CroppingSection()
     understanding: UnderstandingSection = UnderstandingSection()
+    synthesis: SynthesisSection = SynthesisSection()
+    state: StateSection = StateSection()
     profiles: tuple[ProfileDeclaration, ...] = ()
     regions: tuple[RegionDeclaration, ...] = ()
     cameras: tuple[CameraDeclaration, ...] = ()
@@ -901,6 +1051,8 @@ SECTION_TYPES: dict[str, type] = {
     "registry": RegistrySection,
     "cropping": CroppingSection,
     "understanding": UnderstandingSection,
+    "synthesis": SynthesisSection,
+    "state": StateSection,
 }
 
 LIST_SECTIONS: frozenset[str] = frozenset(

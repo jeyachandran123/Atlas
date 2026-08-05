@@ -459,6 +459,11 @@ class Observation:
             raise ValueError("an observation requires an id")
 
         # V4. §M11: an unexplainable observation is worse than no observation.
+        if self.provenance is None:
+            raise ValueError(
+                "an observation requires provenance; a record nobody can trace "
+                "to a producer is not auditable (invariant V4)"
+            )
         if not self.provenance.producer_module:
             raise ValueError(
                 "an observation without a producer module cannot be audited; "

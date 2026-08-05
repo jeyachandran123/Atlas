@@ -28,6 +28,7 @@ from app.vision_os.kernel.plugins.manifest import (
     FLOW4_PORTS,
     FLOW5_PORTS,
     FLOW6_PORTS,
+    FLOW7_PORTS,
 )
 
 ROOT = Path(vision_os_pkg.__file__).parent
@@ -366,10 +367,10 @@ class TestSemanticCeiling:
 class TestFlowScope:
     """No flow may implement responsibilities belonging to a later one.
 
-    These assertions move forward exactly one flow at a time. Flow 6 shipped the
-    Understanding Engine, so the frontier is now Flow 7 (observation building and
-    state) — and the guards below police *that* boundary, not the ones already
-    crossed.
+    These assertions move forward exactly one flow at a time. Flow 7 shipped the
+    Observation Builder and Vision State, so the frontier is now Flow 8
+    (exposure) — and the guards below police *that* boundary, not the ones
+    already crossed.
     """
 
     def test_only_implemented_ports_are_bindable(self) -> None:
@@ -379,6 +380,7 @@ class TestFlowScope:
         assert len(FLOW4_PORTS) == 1
         assert len(FLOW5_PORTS) == 3
         assert len(FLOW6_PORTS) == 2
+        assert len(FLOW7_PORTS) == 3
         assert BINDABLE_PORTS == (
             FLOW1_PORTS
             | FLOW2_PORTS
@@ -386,16 +388,16 @@ class TestFlowScope:
             | FLOW4_PORTS
             | FLOW5_PORTS
             | FLOW6_PORTS
+            | FLOW7_PORTS
         )
 
         later_flow_ports = {
             "P10.EmbeddingPort",
             "P11.IdentityResolverPort",
             "P17.PromptSourcePort",
-            "P18.SuppressionPolicyPort",
-            "P19.ObservationSinkPort",
-            "P20.ObservationLogPort",
             "P22.EvidenceStorePort",
+            "P28.CalibrationPort",
+            "P31.AuthorizationPort",
             "P32.ApiTransportPort",
         }
         assert not (later_flow_ports & set(BINDABLE_PORTS)), (
@@ -423,30 +425,41 @@ class TestFlowScope:
         """
         assert "P10.EmbeddingPort" not in BINDABLE_PORTS
 
-    def test_no_later_flow_object_kinds_exist(self) -> None:
-        """Crop, Observation, VisionState belong to Flows 5-7.
+    def test_the_object_ontology_stays_closed(self) -> None:
+        """02_VOM's kinds are all present, and nothing beyond them is.
 
-        ``Detection``, ``Track`` and ``VisualObject`` are legitimately present as
-        of Flows 2, 3 and 4.
+        The earlier form of this guard tested ``hasattr(core.model, "Crop")``,
+        which passed for the wrong reason: the package's ``__init__`` never
+        re-exported those names, so the assertion held whether or not the kind
+        existed. It checks the modules now.
+
+        The forbidden names are the ones the semantic ceiling forbids outright
+        (V1). ``alert.py`` or ``incident.py`` appearing in the *core model* would
+        mean the platform had grown an opinion about what its observations mean,
+        and no flow may add one — not Flow 8, not ever.
         """
-        import app.vision_os.core.model as model
-
-        assert hasattr(model, "Detection"), "Flow 2 implements the Detection kind"
-        assert hasattr(model, "Track"), "Flow 3 implements the Track kind"
-        assert hasattr(model, "VisualObject"), "Flow 4 implements the VisualObject kind"
-        for absent in ("Crop", "Observation", "Evidence", "VisionState"):
-            assert not hasattr(model, absent), (
-                f"{absent} belongs to a later flow and must not exist yet"
+        model_dir = ROOT / "core" / "model"
+        for kind in ("detection", "track", "visual_object", "crop", "observation"):
+            assert (model_dir / f"{kind}.py").exists(), (
+                f"{kind}.py is a shipped object kind and must exist"
+            )
+        for forbidden in ("alert", "incident", "rule", "person", "employee", "vehicle"):
+            assert not (model_dir / f"{forbidden}.py").exists(), (
+                f"core/model/{forbidden}.py is a business concept; the semantic "
+                "ceiling forbids the platform from holding one"
             )
 
     def test_no_later_flow_modules_exist(self) -> None:
-        for absent in ("state", "api", "observation", "synthesis"):
+        """Flow 7 shipped ``synthesis`` and ``state``; ``api`` is Flow 8."""
+        assert (ROOT / "synthesis").exists(), "Flow 7 implements the Observation Builder"
+        assert (ROOT / "state").exists(), "Flow 7 implements Vision State"
+        for absent in ("api", "exposure", "reasoning", "analytics"):
             assert not (ROOT / absent).exists(), (
                 f"package '{absent}' belongs to a later flow"
             )
         for absent in ("synthesis", "state"):
             assert not (ROOT / "perception" / absent).exists(), (
-                f"perception/{absent} belongs to Flow 7 or later"
+                f"perception/{absent} would put an L5/L6 concern inside L2"
             )
 
     def test_detection_holds_no_temporal_state(self) -> None:

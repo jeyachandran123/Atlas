@@ -756,6 +756,7 @@ class UnderstandingEngine:
                 content_hash=prompt.content_hash,
             ),
             requested_attributes=tuple(request.requested_attributes),
+            demand_ids=tuple(request.demand_ids),
             cost_units=cost,
             raw_output=raw or None,
         )
@@ -791,6 +792,7 @@ class UnderstandingEngine:
             evidence=self._evidence(request, attempt, None, b"", detail or None, Timing()),
             provenance=self._provenance,
             requested_attributes=tuple(request.requested_attributes),
+            demand_ids=tuple(request.demand_ids),
         )
 
     def _evidence(

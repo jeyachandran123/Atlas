@@ -54,6 +54,8 @@ from .schema import (
     RuntimeSection,
     SchedulerSection,
     SourceSection,
+    StateSection,
+    SynthesisSection,
     TaxonomyClassDeclaration,
     TrackingSection,
     UnderstandingSection,
@@ -299,6 +301,12 @@ class ConfigurationManager:
     def understanding(self) -> UnderstandingSection:
         return self.effective().understanding
 
+    def synthesis(self) -> SynthesisSection:
+        return self.effective().synthesis
+
+    def state(self) -> StateSection:
+        return self.effective().state
+
     def taxonomy(self) -> tuple[TaxonomyClassDeclaration, ...]:
         return self.effective().taxonomy
 
@@ -466,6 +474,8 @@ def _build_effective(merged: dict[str, Any]) -> EffectiveConfig:
         registry=sections["registry"],
         cropping=sections["cropping"],
         understanding=sections["understanding"],
+        synthesis=sections["synthesis"],
+        state=sections["state"],
         profiles=tuple(_build_profile(p) for p in merged.get("profiles", []) or []),
         regions=tuple(_build_region(r) for r in merged.get("regions", []) or []),
         cameras=tuple(_build_camera(c) for c in merged.get("cameras", []) or []),

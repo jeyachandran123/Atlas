@@ -490,22 +490,37 @@ class TestFlowScope:
         assert PortCatalogue.UNDERSTANDER in BINDABLE_PORTS
         assert PortCatalogue.OUTPUT_COERCION in BINDABLE_PORTS
 
-    def test_synthesis_and_state_ports_remain_unbindable(self) -> None:
+    def test_exposure_ports_remain_unbindable(self) -> None:
         for port in (
             PortCatalogue.PROMPT_SOURCE,
-            PortCatalogue.SUPPRESSION_POLICY,
-            PortCatalogue.OBSERVATION_SINK,
-            PortCatalogue.OBSERVATION_LOG,
             PortCatalogue.EVIDENCE_STORE,
+            PortCatalogue.CALIBRATION,
+            PortCatalogue.AUTHORIZATION,
             PortCatalogue.API_TRANSPORT,
         ):
             assert port not in BINDABLE_PORTS, f"{port} became bindable early"
 
-    def test_no_synthesis_or_state_module_exists(self) -> None:
-        assert not (ROOT / "synthesis").exists()
-        assert not (ROOT / "state").exists()
+    def test_no_exposure_module_exists(self) -> None:
         assert not (ROOT / "api").exists()
         assert not (PERCEPTION / "synthesis").exists()
+
+    def test_understanding_does_not_import_synthesis(self) -> None:
+        """M9 gained a consumer and must not have noticed.
+
+        §M9's boundary is *"produces understanding results; does not decide what
+        they mean for the site"*. Importing the Observation Builder would let
+        understanding reach the module that makes that decision, and the first
+        convenience — asking the builder whether a result is worth publishing
+        before spending a model call on it — would put suppression policy inside
+        L4.
+        """
+        offenders = []
+        for path in (PERCEPTION / "understanding").rglob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            for forbidden in ("synthesis", "vision_state", "state.manager"):
+                if f"import {forbidden}" in source or f"{forbidden} import" in source:
+                    offenders.append(f"{path.name} imports {forbidden}")
+        assert not offenders, "\n".join(offenders)
 
     def test_no_temporal_adapter_is_bound(self) -> None:
         """Temporal understanding is Phase 3. The *contract* accepts a sequence;

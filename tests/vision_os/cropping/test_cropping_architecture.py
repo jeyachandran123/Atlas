@@ -411,13 +411,12 @@ class TestFlowScope:
         ):
             assert port in BINDABLE_PORTS
 
-    def test_synthesis_ports_remain_unbindable(self) -> None:
-        """The frontier moved to Flow 7 when the Understanding Engine shipped."""
+    def test_exposure_ports_remain_unbindable(self) -> None:
+        """The frontier moved to Flow 8 when the Observation Builder shipped."""
         for port in (
             PortCatalogue.PROMPT_SOURCE,
-            PortCatalogue.SUPPRESSION_POLICY,
-            PortCatalogue.OBSERVATION_SINK,
-            PortCatalogue.OBSERVATION_LOG,
+            PortCatalogue.CALIBRATION,
+            PortCatalogue.AUTHORIZATION,
             PortCatalogue.API_TRANSPORT,
         ):
             assert port not in BINDABLE_PORTS, f"{port} became bindable early"
@@ -435,10 +434,24 @@ class TestFlowScope:
         assert PortCatalogue.EMBEDDING not in BINDABLE_PORTS
         assert PortCatalogue.IDENTITY_RESOLVER not in BINDABLE_PORTS
 
-    def test_no_synthesis_module_exists(self) -> None:
-        assert not (ROOT / "synthesis").exists()
-        assert not (ROOT / "state").exists()
+    def test_no_exposure_module_exists(self) -> None:
         assert not (ROOT / "api").exists()
+        assert not (ROOT / "exposure").exists()
+
+    def test_cropping_does_not_import_synthesis(self) -> None:
+        """M11 ships, but M8 must not learn it exists.
+
+        L3 hands crops upward and never hears what became of them. An import
+        here would be the beginning of attention deciding what is worth
+        publishing, which is the Observation Builder's judgement, not M8's.
+        """
+        offenders = []
+        for path in (ROOT / "perception" / "cropping").rglob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            for forbidden in ("synthesis", "vision_state", "observation"):
+                if f"import {forbidden}" in source or f"from ...{forbidden}" in source:
+                    offenders.append(f"{path.name} imports {forbidden}")
+        assert not offenders, "\n".join(offenders)
 
     def test_cropping_does_not_import_understanding(self) -> None:
         """M9 ships, but M8 must not learn it exists.

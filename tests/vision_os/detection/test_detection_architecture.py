@@ -265,8 +265,8 @@ class TestFlowScope:
         ):
             assert port in BINDABLE_PORTS
 
-    def test_flow_seven_ports_remain_unbindable(self) -> None:
-        """The frontier moved to Flow 7 when the Understanding Engine shipped.
+    def test_flow_eight_ports_remain_unbindable(self) -> None:
+        """The frontier moved to Flow 8 when the Observation Builder shipped.
 
         ``EMBEDDING`` and ``IDENTITY_RESOLVER`` stay unbindable regardless of
         flow: they are the biometric and cross-camera-identity capabilities,
@@ -275,12 +275,13 @@ class TestFlowScope:
         for port in (
             PortCatalogue.EMBEDDING,
             PortCatalogue.IDENTITY_RESOLVER,
-                                    PortCatalogue.PROMPT_SOURCE,
+            PortCatalogue.PROMPT_SOURCE,
+            PortCatalogue.API_TRANSPORT,
         ):
             assert port not in BINDABLE_PORTS
 
-    def test_no_synthesis_module_exists(self) -> None:
-        assert not (ROOT / "synthesis").exists()
+    def test_no_exposure_module_exists(self) -> None:
+        assert not (ROOT / "api").exists()
 
     def test_detection_does_not_import_tracking(self) -> None:
         """Flow 2 must not learn that Flow 3 exists."""

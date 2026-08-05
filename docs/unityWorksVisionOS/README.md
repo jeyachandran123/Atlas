@@ -87,8 +87,8 @@ Failure Handling · Performance · Extension Points.
 ## Implementation status
 
 The architecture above is **frozen**. Implementation proceeds one flow at a time,
-in a fixed order, and each flow produces a report against the same nine headings.
-Code lives in `backend/app/vision_os/`.
+in a fixed order, and each flow produces a report against the headings its brief
+names. Code lives in `backend/app/vision_os/`.
 
 | Flow | Scope | Status | Report |
 |---|---|---|---|
@@ -98,8 +98,15 @@ Code lives in `backend/app/vision_os/`.
 | **4** | Object Registry (M7) | ✅ complete | [Flow 4 report](./IMPLEMENTATION_FLOW_4.md) · [compliance review](./FLOW_4_COMPLIANCE_REVIEW.md) |
 | **5** | Crop Manager (M8) | ✅ complete | [Flow 5 report](./IMPLEMENTATION_FLOW_5.md) · [compliance review](./FLOW_5_COMPLIANCE_REVIEW.md) |
 | **6** | Vision Understanding (M9) | ✅ complete | [Flow 6 report](./IMPLEMENTATION_FLOW_6.md) · [compliance review](./FLOW_6_COMPLIANCE_REVIEW.md) |
-| 7 | Prompt Manager & Observation Builder (M10, M11) | pending | |
-| 8 | Vision State & Observation API (M12–M14) | pending | |
+| **7** | Observation Builder & Vision State (M11, M12) | ✅ complete | [Flow 7 report](./IMPLEMENTATION_FLOW_7.md) · [compliance review](./FLOW_7_COMPLIANCE_REVIEW.md) |
+| 8 | Observation API & Prompt Manager (M14, M10) | pending | |
+
+**M10 and M13 remain unimplemented, deliberately.** M9 consumes prompts through a
+module seam rather than a port it owns, so the Prompt Manager can arrive without
+disturbing understanding. §M13's single responsibility is *"describe what must
+persist and with what guarantees; **implement none of it**"* — Flow 7 realized its
+`ObservationLogPort` contract and shipped reference adapters, which is what M13
+asks for and not more.
 
 **Frontier discipline.** `BINDABLE_PORTS` names exactly the ports the implemented
 flows may bind. Every later-flow port is defined in the catalogue and deliberately
