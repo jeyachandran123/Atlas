@@ -381,12 +381,51 @@ def _close_truncated(text: str, attempt: _Attempt) -> str | None:
     if not text.strip():
         return None
 
-    stack: list[str] = []
+    boundaries = _element_boundaries(text)
+    if boundaries is None:
+        return None  # nothing was left open; truncation is not the problem
+    if not boundaries:
+        return None
+
+    # Try the latest cut first and walk backwards. A single "best guess" cut
+    # fails whenever the model stopped somewhere the closers cannot be appended
+    # cleanly — mid-key, just after an opening brace, or on a trailing comma —
+    # which measured at roughly a third of all cut positions on a long invoice.
+    # Backtracking to the previous complete element costs one line item and
+    # turns those failures into answers.
+    for cut in reversed(boundaries[-MAX_TRUNCATION_BACKTRACKS:]):
+        head = text[:cut].rstrip().rstrip(",")
+        stack = _open_containers(head)
+        if stack is None:
+            continue
+        candidate = head + "".join(reversed(stack))
+        if _loads(candidate) is not _FAILED:
+            attempt.note("truncated_output_closed")
+            if cut != boundaries[-1]:
+                # The caller deserves to know the recovery cost a fragment that
+                # a naive close would have kept — silently dropping a line item
+                # is exactly the kind of quiet loss this module exists to avoid.
+                attempt.note("incomplete_trailing_element_dropped")
+            return candidate
+    return None
+
+
+MAX_TRUNCATION_BACKTRACKS = 64
+"""How far back to walk looking for a cut that closes cleanly. Each step gives
+up one array element or object member; sixty-four is far more than a truncated
+response ever needs and keeps a pathological input bounded."""
+
+
+def _element_boundaries(text: str) -> list[int] | None:
+    """Indices just past each completed element, outermost-last.
+
+    ``None`` means the text is not truncated at all (every container closed), in
+    which case closing it is not the repair being looked for.
+    """
+    stack = 0
     in_string = False
     escape = False
-    # Last index at which the document was structurally safe to truncate: just
-    # after a completed value, i.e. a closing bracket, quote, or literal end.
-    safe_cut = -1
+    boundaries: list[int] = []
 
     for index, ch in enumerate(text):
         if in_string:
@@ -396,7 +435,43 @@ def _close_truncated(text: str, attempt: _Attempt) -> str | None:
                 escape = True
             elif ch == '"':
                 in_string = False
-                safe_cut = index
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack += 1
+        elif ch in "}]":
+            stack -= 1
+            if stack < 0:
+                return None
+            boundaries.append(index + 1)
+        elif ch == ",":
+            # A comma proves whatever preceded it was a complete element.
+            boundaries.append(index)
+
+    if stack == 0 and not in_string:
+        return None
+    return boundaries
+
+
+def _open_containers(text: str) -> list[str] | None:
+    """Closers needed to balance ``text``, or ``None`` if it cannot be balanced.
+
+    Refuses a prefix that ends inside a string or on a dangling key: appending
+    brackets there produces syntax, not data.
+    """
+    stack: list[str] = []
+    in_string = False
+    escape = False
+
+    for ch in text:
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
             continue
         if ch == '"':
             in_string = True
@@ -406,23 +481,12 @@ def _close_truncated(text: str, attempt: _Attempt) -> str | None:
             if not stack:
                 return None
             stack.pop()
-            safe_cut = index
-        elif ch in "0123456789eE+-.":
-            safe_cut = index
-        elif ch in "eluas":  # tails of true / false / null
-            safe_cut = index
 
-    if not stack and not in_string:
-        return None  # nothing was left open; truncation is not the problem
-    if safe_cut < 0:
+    if in_string:
         return None
-
-    head = text[: safe_cut + 1]
-    # A dangling ``"key":`` or ``,`` before the cut would not survive closing.
-    head = re.sub(r'[,\s]*"[^"]*"\s*:\s*$', "", head).rstrip().rstrip(",")
-    closed = head + "".join(reversed(stack))
-    attempt.note("truncated_output_closed")
-    return closed
+    if re.search(r'"[^"]*"\s*:\s*$', text):
+        return None  # a key with no value; the next cut back will do better
+    return stack
 
 
 def _outside(text: str, start: int, end: int) -> str:

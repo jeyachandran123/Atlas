@@ -188,6 +188,13 @@ def create_app() -> FastAPI:
     app.include_router(chat_router, prefix=API_PREFIX)
     app.include_router(documents_router, prefix=API_PREFIX)
     app.include_router(document_extraction_router, prefix=API_PREFIX)  # additive: VLM invoice extraction
+
+    # Unauthenticated invoice-extraction probe for the demo app. Debug builds
+    # only — never mounted when APP_DEBUG is false.
+    if cfg.app_debug:
+        from app.api.v1.document_extraction.dev_router import router as document_dev_router
+
+        app.include_router(document_dev_router, prefix=API_PREFIX)
     app.include_router(conversations_router, prefix=API_PREFIX)
     app.include_router(generations_router, prefix=API_PREFIX)
     app.include_router(workspaces_router, prefix=API_PREFIX)

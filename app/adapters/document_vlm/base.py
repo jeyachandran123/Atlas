@@ -236,6 +236,13 @@ class HttpDocumentVLMAdapter(ABC):
                 provider=self.provider,
                 model=self._config.model,
                 request_id=request.request_id,
+                # Why it stopped and how much it produced separate the two
+                # explanations that look identical from the outside: a model
+                # that ran out of tokens mid-object, and one that answered in
+                # prose instead of JSON.
+                finish_reason=finish_reason,
+                response_chars=len(raw_text),
+                completion_tokens=usage.completion_tokens,
             )
 
         structured = self._as_object(parsed.value)
