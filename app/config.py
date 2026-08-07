@@ -145,6 +145,10 @@ class Settings(BaseSettings):
     # than guessed.
     nvidia_image_format: Literal["image_url", "inline_html"] = "image_url"
     nvidia_max_inline_image_bytes: int = 180_000
+    # Backstop for the model's multimodal embedding budget. Exceeding it returns
+    # an opaque HTTP 500, not a degraded answer, so the adapter caps rather than
+    # letting the whole extraction fail.
+    nvidia_max_images_per_request: int = 4
     # Cost estimation stays honest: unset means "unpriced", never a stale
     # hard-coded rate presented as fact.
     nvidia_price_per_million_input_tokens: float = 0.0
@@ -181,7 +185,12 @@ class Settings(BaseSettings):
     document_vlm_max_output_tokens: int = 8192
     document_vlm_temperature: float = 0.0      # extraction is not a creative task
     document_vlm_max_file_size_mb: int = 20
-    document_vlm_max_pages: int = 8            # pages sent to the model per request
+    # Pages sent to the model per request. Measured against Nemotron VL: each
+    # page image costs ~3,330 prompt tokens, and five pages exceed the server's
+    # multimodal embedding budget — the request fails outright rather than
+    # degrading. Four is what fits. Pages beyond this are reported as a warning
+    # on the response, never dropped silently.
+    document_vlm_max_pages: int = 4
     document_vlm_health_timeout_seconds: float = 10.0
     document_vlm_prompt_version: str = "1.0.0"
 

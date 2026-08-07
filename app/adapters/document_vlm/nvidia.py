@@ -25,10 +25,15 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+import httpx
 from loguru import logger
 
 from app.adapters.document_vlm.base import HttpDocumentVLMAdapter, VLMAdapterConfig
-from app.document_platform.vlm.errors import DocumentVLMInvalidResponseError
+from app.document_platform.vlm.errors import (
+    DocumentVLMBadRequestError,
+    DocumentVLMError,
+    DocumentVLMInvalidResponseError,
+)
 from app.document_platform.vlm.ports import (
     CostEstimate,
     TokenUsage,
@@ -46,6 +51,21 @@ IMAGE_FORMAT_INLINE = "inline_html"
 #: is a second protocol this adapter deliberately does not implement — see the
 #: degradation below, and the Known Limitations report.
 DEFAULT_MAX_INLINE_IMAGE_BYTES = 180_000
+
+#: Page images per request. Measured against
+#: ``nvidia/llama-3.1-nemotron-nano-vl-8b-v1``: one page costs ~3,330 prompt
+#: tokens, four fit in 13,992, and five overflow the server's multimodal
+#: embedding table — which fails the request rather than truncating it.
+DEFAULT_MAX_IMAGES = 4
+
+#: Phrases in a 5xx body that mean "this input will never work", not "try again".
+#: Retrying these spends three times the latency to fail three times.
+_PERMANENT_5XX_MARKERS = (
+    "prompt vocab size",
+    "max prompt vocab size",
+    "larger than max",
+    "number of input tokens",
+)
 
 
 class NvidiaDocumentVLMAdapter(HttpDocumentVLMAdapter):
@@ -132,8 +152,58 @@ class NvidiaDocumentVLMAdapter(HttpDocumentVLMAdapter):
                 f"{limit} byte inline limit and were not sent; extraction "
                 f"continues from the remaining pages and document text"
             )
-            return admissible
-        return images
+        else:
+            admissible = images
+
+        return self._within_embedding_budget(admissible)
+
+    def _within_embedding_budget(self, images: list[Any]) -> list[Any]:
+        """Cap page images at what the model's embedding table can hold.
+
+        A backstop, not the primary control: ``DOCUMENT_VLM_MAX_PAGES`` is where
+        a deployment decides how much of a document to send, and it produces a
+        warning the caller can see. This exists because exceeding the budget does
+        not degrade — the server returns an opaque HTTP 500 about *"prompt vocab
+        size"* and the whole extraction is lost. Losing the fifth page beats
+        losing all five.
+        """
+        limit = int(self._config.extra.get("max_images_per_request", DEFAULT_MAX_IMAGES))
+        if limit <= 0 or len(images) <= limit:
+            return images
+
+        logger.warning(
+            f"nvidia adapter: {len(images)} page images exceed this model's "
+            f"limit of {limit} per request; sending the first {limit}. Lower "
+            f"DOCUMENT_VLM_MAX_PAGES to {limit} so the caller is told which "
+            f"pages were read"
+        )
+        return images[:limit]
+
+    # ── classification ───────────────────────────────────────────────────────
+
+    def _classify(self, response: httpx.Response) -> DocumentVLMError:
+        """A 5xx about the input size is permanent, whatever its status code says.
+
+        NVIDIA reports "too many page images" as an inference-time HTTP 500,
+        which the generic rule treats as transient and retries twice — three
+        identical failures and triple the latency, because the input is what is
+        wrong. Detected by message rather than status, and turned into an error
+        that names the fix.
+        """
+        if response.status_code >= 500:
+            detail = self._error_detail(response).lower()
+            if any(marker in detail for marker in _PERMANENT_5XX_MARKERS):
+                return DocumentVLMBadRequestError(
+                    f"nvidia could not accept this request's size (HTTP "
+                    f"{response.status_code}): the document sent more page images "
+                    f"than the model's embedding budget allows. Lower "
+                    f"DOCUMENT_VLM_MAX_PAGES (this model accepts "
+                    f"{DEFAULT_MAX_IMAGES})",
+                    provider=self.provider,
+                    model=self._config.model,
+                    status_code=response.status_code,
+                )
+        return super()._classify(response)
 
     # ── response ─────────────────────────────────────────────────────────────
 
@@ -288,6 +358,9 @@ def build_nvidia_adapter(settings: Any, **kwargs: Any) -> NvidiaDocumentVLMAdapt
             "image_format": getattr(settings, "nvidia_image_format", IMAGE_FORMAT_URL),
             "max_inline_image_bytes": getattr(
                 settings, "nvidia_max_inline_image_bytes", DEFAULT_MAX_INLINE_IMAGE_BYTES
+            ),
+            "max_images_per_request": getattr(
+                settings, "nvidia_max_images_per_request", DEFAULT_MAX_IMAGES
             ),
             "price_per_million_input_tokens": getattr(
                 settings, "nvidia_price_per_million_input_tokens", 0.0

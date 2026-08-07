@@ -152,6 +152,88 @@ class TestRequestConstruction:
         assert isinstance(transport.last_body["messages"][1]["content"], str)
 
 
+class TestEmbeddingBudget:
+    """Measured against the live endpoint: one page image costs ~3,330 prompt
+    tokens, four fit in 13,992, and five overflow the model's multimodal
+    embedding table. Overflow does not degrade — the request fails outright."""
+
+    @staticmethod
+    def _pages(count: int):
+        from app.document_platform.vlm.ports import DocumentImage, DocumentPayload
+
+        return DocumentPayload(
+            images=tuple(
+                DocumentImage(data=PNG_BYTES, media_type="image/png", page=i + 1)
+                for i in range(count)
+            ),
+            filename="scan.pdf",
+            media_type="application/pdf",
+            page_count=count,
+        )
+
+    async def test_page_images_are_capped_at_what_the_model_accepts(
+        self, nvidia_config, transport, prompts
+    ) -> None:
+        from app.document_platform.vlm.ports import VLMExtractionRequest
+
+        transport.default = httpx.Response(200, json=nvidia_response())
+        payload = self._pages(8)
+        await build(nvidia_config, transport).extract_document(
+            VLMExtractionRequest(payload=payload, prompt=prompts.build(payload))
+        )
+        parts = transport.last_body["messages"][1]["content"]
+        images = [p for p in parts if p["type"] == "image_url"]
+        assert len(images) == 4, "a fifth page image fails the whole extraction"
+
+    async def test_a_document_within_the_budget_is_sent_whole(
+        self, nvidia_config, transport, prompts
+    ) -> None:
+        from app.document_platform.vlm.ports import VLMExtractionRequest
+
+        transport.default = httpx.Response(200, json=nvidia_response())
+        payload = self._pages(4)
+        await build(nvidia_config, transport).extract_document(
+            VLMExtractionRequest(payload=payload, prompt=prompts.build(payload))
+        )
+        parts = transport.last_body["messages"][1]["content"]
+        assert len([p for p in parts if p["type"] == "image_url"]) == 4
+
+    async def test_an_oversize_input_reported_as_a_500_is_not_retried(
+        self, nvidia_config, transport, extraction_request, recorded_sleeps
+    ) -> None:
+        """NVIDIA reports "too many page images" as an inference-time HTTP 500.
+        The generic rule calls 5xx transient and retries twice — three identical
+        failures for an input that is simply too big."""
+        transport.default = httpx.Response(
+            500,
+            json={
+                "error": {
+                    "message": "Encountered an error in forwardAsync function: "
+                    "Prompt vocab size 15616 is larger than max prompt vocab "
+                    "size of 13312."
+                }
+            },
+        )
+        with pytest.raises(DocumentVLMBadRequestError) as caught:
+            await build(nvidia_config, transport).extract_document(extraction_request)
+        assert caught.value.retryable is False
+        assert len(transport.requests) == 1, "retrying cannot make the input smaller"
+        assert "DOCUMENT_VLM_MAX_PAGES" in caught.value.message, "the error names the fix"
+
+    async def test_an_ordinary_500_is_still_retried(
+        self, nvidia_config, transport, extraction_request, fake_sleep
+    ) -> None:
+        """The narrow rule above must not turn every upstream blip permanent."""
+        transport.responses = [
+            httpx.Response(500, json={"error": {"message": "internal server error"}}),
+            httpx.Response(200, json=nvidia_response()),
+        ]
+        result = await build(nvidia_config, transport, sleep=fake_sleep).extract_document(
+            extraction_request
+        )
+        assert result.retry_count == 1
+
+
 class TestSuccessfulResponse:
     async def test_it_returns_the_parsed_structure_and_the_verbatim_text(
         self, nvidia_config, transport, extraction_request

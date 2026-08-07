@@ -70,10 +70,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     engine = get_engine()
     logger.info("Database engine ready")
 
-    # Verify Redis
-    r = get_redis()
-    await r.ping()
-    logger.info("Redis connection verified")
+    # Verify Redis — degraded, not fatal.
+    #
+    # Redis backs queues and session memory, not the request path of every
+    # route. Refusing to boot without it took the whole service down on a
+    # platform where the cache is a separately provisioned add-on, including
+    # the endpoints that never touch it. Chroma and Firebase above already
+    # degrade this way; Redis was the outlier.
+    #
+    # Features that genuinely need Redis now fail at request time, where the
+    # error names the missing dependency, instead of at boot where it reads as
+    # "the app is broken".
+    try:
+        r = get_redis()
+        await r.ping()
+        logger.info("Redis connection verified")
+    except Exception as e:
+        logger.warning(
+            f"Redis unavailable: {e} — queues and session memory will fail "
+            f"until it is reachable; other routes are unaffected"
+        )
 
     # Build the ChromaDB-backed orchestrator
     try:

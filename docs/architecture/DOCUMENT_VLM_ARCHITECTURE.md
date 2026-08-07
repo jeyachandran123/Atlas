@@ -533,6 +533,18 @@ one, the same workaround `tests/vision_os/conftest.py` already documents.)
    reason. Beyond roughly 50 line items this model also begins repeating items — a model
    capability limit, visible in the warnings, not a pipeline defect.
 
+9. **Four page images per NVIDIA request.** Measured: each page costs ~3,330 prompt tokens
+   (1 page → 3,999; 3 → 10,661; 4 → 13,992; 5 → rejected). Image *resolution* is irrelevant —
+   the endpoint resizes server-side, and an 8.7 MP scan produces the same token count as a
+   1.3 MP one. Page **count** is the only lever.
+
+   `DOCUMENT_VLM_MAX_PAGES` therefore defaults to 4, and the adapter caps independently as a
+   backstop, because overflow returns an opaque HTTP 500 (*"Prompt vocab size … larger than
+   max"*) rather than a degraded answer. A document longer than the cap is extracted from its
+   first pages and the response says so — `pageCount` vs `imagesSent`, plus a warning. A
+   longer document needs page-at-a-time requests with merged results, which this build does
+   not do.
+
 7. **One prompt version ships (`1.0.0`).** The versioning machinery, registration API and
    per-request pinning are complete and tested; only one wording exists so far.
 
