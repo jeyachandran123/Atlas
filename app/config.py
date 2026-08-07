@@ -126,6 +126,52 @@ class Settings(BaseSettings):
     dip_embedding_max_retries: int = 3
     dip_vector_store_provider: Literal["chroma"] = "chroma"
 
+    # ── Document VLM (Vision Language Model) ─────────────────────────────────────
+    # The Document Platform reaches a VLM only through DocumentVLMPort. Which
+    # implementation answers is decided here and nowhere else: changing provider
+    # is DOCUMENT_VLM_PROVIDER=<name> and a restart, never a code change.
+    #
+    # Registering a future provider (claude / gemini / openai / qwen) widens the
+    # accepted values through the adapter registry — this field stays a plain str
+    # rather than a Literal so a registered provider needs no edit here.
+    document_vlm_provider: str = "ollama"
+
+    # NVIDIA cloud VLM. nvidia_api_key / nvidia_base_url are shared with the chat
+    # provider above (same account, same endpoint); the *model* is separate
+    # because a VLM and a text model are different deployments.
+    nvidia_model: str = "nvidia/llama-3.1-nemotron-nano-vl-8b-v1"
+    # NVIDIA's vision models disagree about how images arrive: OpenAI-style
+    # content parts, or an inline <img src="data:…"/> tag. Configurable rather
+    # than guessed.
+    nvidia_image_format: Literal["image_url", "inline_html"] = "image_url"
+    nvidia_max_inline_image_bytes: int = 180_000
+    # Cost estimation stays honest: unset means "unpriced", never a stale
+    # hard-coded rate presented as fact.
+    nvidia_price_per_million_input_tokens: float = 0.0
+    nvidia_price_per_million_output_tokens: float = 0.0
+
+    # OCR provider for the extraction pipeline's text stage. "null" records
+    # that OCR was needed without performing it (the platform default);
+    # "tesseract" requires the Tesseract binary on the host.
+    document_ocr_provider: Literal["null", "tesseract"] = "null"
+
+    # Ollama local VLM. Kept distinct from ollama_host so the document VLM can
+    # point at a different (e.g. GPU) host without moving the chat models.
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen2.5vl:7b"
+
+    # Provider-agnostic call policy — applies to whichever adapter is bound.
+    document_vlm_timeout_seconds: float = 120.0
+    document_vlm_connect_timeout_seconds: float = 10.0
+    document_vlm_max_retries: int = 2          # retries *after* the first attempt
+    document_vlm_retry_backoff_seconds: float = 0.5
+    document_vlm_max_output_tokens: int = 4096
+    document_vlm_temperature: float = 0.0      # extraction is not a creative task
+    document_vlm_max_file_size_mb: int = 20
+    document_vlm_max_pages: int = 8            # pages sent to the model per request
+    document_vlm_health_timeout_seconds: float = 10.0
+    document_vlm_prompt_version: str = "1.0.0"
+
     # ── Conversational Knowledge Intelligence (Phase 4) ──────────────────────────
     # Endpoint/timeout for the ollama LLM provider reuse ollama_host /
     # ollama_timeout / ollama_num_ctx / ollama_num_predict above.
@@ -139,7 +185,7 @@ class Settings(BaseSettings):
     # Below this best-hit similarity the platform refuses rather than answers.
     dip_grounding_min_score: float = 0.35
 
-    @field_validator("ollama_host", mode="before")
+    @field_validator("ollama_host", "ollama_base_url", mode="before")
     @classmethod
     def normalize_ollama_host(cls, v: str) -> str:
         """Ensure ollama_host always has an http:// prefix.

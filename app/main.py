@@ -26,6 +26,7 @@ from app.api.v1.admin.router import router as admin_router
 from app.api.v1.auth.router import router as auth_router
 from app.api.v1.chat.router import router as chat_router
 from app.api.v1.conversations.router import router as conversations_router
+from app.api.v1.document_extraction.router import router as document_extraction_router
 from app.api.v1.documents.router import router as documents_router
 from app.api.v1.files.router import router as files_router
 from app.api.v1.generations.router import router as generations_router
@@ -186,6 +187,7 @@ def create_app() -> FastAPI:
     app.include_router(indexing_router, prefix=API_PREFIX)
     app.include_router(chat_router, prefix=API_PREFIX)
     app.include_router(documents_router, prefix=API_PREFIX)
+    app.include_router(document_extraction_router, prefix=API_PREFIX)  # additive: VLM invoice extraction
     app.include_router(conversations_router, prefix=API_PREFIX)
     app.include_router(generations_router, prefix=API_PREFIX)
     app.include_router(workspaces_router, prefix=API_PREFIX)
