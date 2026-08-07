@@ -401,10 +401,10 @@ def _close_truncated(text: str, attempt: _Attempt) -> str | None:
         candidate = head + "".join(reversed(stack))
         if _loads(candidate) is not _FAILED:
             attempt.note("truncated_output_closed")
-            if cut != boundaries[-1]:
-                # The caller deserves to know the recovery cost a fragment that
-                # a naive close would have kept — silently dropping a line item
-                # is exactly the kind of quiet loss this module exists to avoid.
+            if text[cut:].strip(" \t\r\n,"):
+                # Real content was discarded to make this parse. The caller
+                # deserves to know: silently dropping a half-written line item
+                # is exactly the quiet loss this module exists to prevent.
                 attempt.note("incomplete_trailing_element_dropped")
             return candidate
     return None

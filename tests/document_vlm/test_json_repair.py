@@ -80,6 +80,38 @@ class TestRecovery:
         assert outcome.value["line_items"][0] == {"amount": 10}
         assert outcome.repaired
 
+    @pytest.mark.parametrize(
+        "tail",
+        [
+            '{"a": 1}, {',                     # a new element just opened
+            '{"a": 1}, {"desc": "Marine sp',   # cut inside a string
+            '{"a": 1}, {"desc":',              # a key with no value
+            '{"a": 1},',                       # a trailing comma
+            '{"a": 1}, {"b": 2, "c":',         # a key with no value, one level in
+        ],
+    )
+    def test_every_truncation_point_recovers_the_complete_elements(self, tail) -> None:
+        """The measured failure behind intermittent 502s: a single "best guess"
+        cut fails wherever the closers cannot be appended cleanly. Backtracking
+        to the previous complete element costs one line item and returns an
+        answer instead of an error."""
+        outcome = parse_model_json('{"invoice_number": "INV-1", "line_items": [' + tail)
+        assert outcome.ok, tail
+        assert outcome.value["invoice_number"] == "INV-1"
+        assert outcome.value["line_items"][0] == {"a": 1}
+
+    def test_dropping_an_incomplete_element_is_reported(self) -> None:
+        """A silently dropped line item is exactly the quiet loss this module
+        exists to prevent."""
+        outcome = parse_model_json('{"items": [{"a": 1}, {"b":')
+        assert outcome.ok
+        assert "incomplete_trailing_element_dropped" in outcome.repairs
+
+    def test_a_complete_response_is_not_treated_as_truncated(self) -> None:
+        outcome = parse_model_json('{"items": [{"a": 1}]}')
+        assert outcome.strategy == "direct"
+        assert "truncated_output_closed" not in outcome.repairs
+
     def test_a_single_element_array_is_reported_as_an_array(self) -> None:
         """Unwrapping is the adapter's decision, not the parser's."""
         outcome = parse_model_json('[{"a": 1}]')

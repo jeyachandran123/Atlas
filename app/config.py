@@ -161,11 +161,24 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen2.5vl:7b"
 
     # Provider-agnostic call policy — applies to whichever adapter is bound.
-    document_vlm_timeout_seconds: float = 120.0
+    # A long invoice is a long generation: ~100 tokens per line item on an 8B
+    # model runs past two minutes well before it runs out of tokens. Matches the
+    # 300s the repo already allows Ollama for the same reason.
+    document_vlm_timeout_seconds: float = 300.0
     document_vlm_connect_timeout_seconds: float = 10.0
     document_vlm_max_retries: int = 2          # retries *after* the first attempt
     document_vlm_retry_backoff_seconds: float = 0.5
-    document_vlm_max_output_tokens: int = 4096
+    # Measured at roughly 100 completion tokens per invoice line item: 4096 caps
+    # out near 38 lines, and a real supplier invoice regularly exceeds that. A
+    # truncated answer is recoverable but lossy, so the ceiling is set where a
+    # long invoice fits rather than where a short one does.
+    #
+    # It cannot simply be maximised: this is the *completion* budget, and it
+    # shares a context window with the prompt. Nemotron VL's window is 16384
+    # total, and a page image costs ~4000 prompt tokens — so 8192 leaves ample
+    # headroom while allowing ~80 line items. Asking for the full window instead
+    # produces an immediate HTTP 400 on every request.
+    document_vlm_max_output_tokens: int = 8192
     document_vlm_temperature: float = 0.0      # extraction is not a creative task
     document_vlm_max_file_size_mb: int = 20
     document_vlm_max_pages: int = 8            # pages sent to the model per request

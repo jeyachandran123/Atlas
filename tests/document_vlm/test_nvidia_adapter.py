@@ -389,7 +389,12 @@ class TestRetries:
         self, nvidia_config, transport, extraction_request, recorded_sleeps
     ) -> None:
         """At temperature zero the same prompt produces the same unusable text;
-        retrying spends money to fail identically."""
+        retrying spends money to fail identically.
+
+        Measured against the live endpoint rather than assumed: twelve calls with
+        identical input — six text-only, six with a page image — returned
+        byte-identical output every time, same completion-token count. The
+        endpoint is deterministic, so a re-ask is pure cost."""
         transport.default = httpx.Response(200, json=nvidia_response("not json at all"))
         with pytest.raises(DocumentVLMInvalidResponseError):
             await build(nvidia_config, transport).extract_document(extraction_request)

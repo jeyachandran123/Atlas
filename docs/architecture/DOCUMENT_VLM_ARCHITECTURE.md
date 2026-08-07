@@ -516,6 +516,23 @@ one, the same workaround `tests/vision_os/conftest.py` already documents.)
    automatically re-run with a higher limit — that would double the cost of a document
    silently.
 
+7. **The output-token ceiling is bounded from both sides.** Measured against
+   `nvidia/llama-3.1-nemotron-nano-vl-8b-v1`:
+
+   | `DOCUMENT_VLM_MAX_OUTPUT_TOKENS` | Result |
+   |---|---|
+   | 4096 | ~38 line items before truncation |
+   | 8192 (default) | ~80 line items; long invoices need >120 s, hence the 300 s timeout |
+   | 16384 | **HTTP 400 on every request** — it is the model's *total* context, shared with the prompt (a page image costs ~4000 prompt tokens) |
+
+   A deployment that raises this must check the target model's context window; the ceiling
+   is a completion budget, not a request size.
+
+8. **Long invoices are latency-bound before they are token-bound.** A 55-line invoice runs
+   past two minutes on an 8B model. `DOCUMENT_VLM_TIMEOUT_SECONDS` defaults to 300 for that
+   reason. Beyond roughly 50 line items this model also begins repeating items — a model
+   capability limit, visible in the warnings, not a pipeline defect.
+
 7. **One prompt version ships (`1.0.0`).** The versioning machinery, registration API and
    per-request pinning are complete and tested; only one wording exists so far.
 
