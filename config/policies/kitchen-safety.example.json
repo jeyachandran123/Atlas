@@ -1,0 +1,82 @@
+{
+  "_comment": [
+    "An EXAMPLE use-case policy. Nothing in Vision OS references this file, and",
+    "deleting it changes no behaviour. It exists to show that a domain arrives as",
+    "data: no adapter, engine, detector or harness source changes to add one.",
+    "",
+    "Note what the justifications say. Each describes VISIBLE EVIDENCE, because",
+    "that is what the registry's neutrality gate demands. 'head covering is",
+    "visible' registers; 'staff member is compliant with policy' would not, and",
+    "should not — that is a judgment for the consumer, not an observation."
+  ],
+
+  "policy_id": "kitchen-safety",
+  "version": "1.0.0",
+  "scene": "kitchen",
+  "scope": {
+    "object_classes": ["person"],
+    "lifecycle": ["active", "occluded"],
+    "min_confidence": 0.4
+  },
+
+  "attributes": [
+    {
+      "key": "head_covering",
+      "type": "enum",
+      "values": ["none", "hairnet", "cap", "hood", "other"],
+      "justification": "A covering on the head is directly visible in the crop",
+      "validity_ms": 120000,
+      "question": "Report only what is on the head. Choose \"none\" if the hair is uncovered."
+    },
+    {
+      "key": "head_covering_colour",
+      "type": "enum",
+      "values": ["white", "blue", "black", "green", "red", "other", "not_visible"],
+      "justification": "Dominant colour of the head-covering region is directly visible",
+      "validity_ms": 120000
+    },
+    {
+      "key": "torso_garment",
+      "type": "enum",
+      "values": ["none", "apron", "coat", "high_visibility", "other"],
+      "justification": "An outer garment over the torso is directly visible",
+      "validity_ms": 120000
+    },
+    {
+      "key": "hand_covering",
+      "type": "enum",
+      "values": ["none", "gloves", "not_visible"],
+      "justification": "Covering on the hands is directly visible in the hand region",
+      "validity_ms": 60000
+    },
+    {
+      "key": "visible_hand_activity",
+      "type": "enum",
+      "values": ["none", "handling_food", "handling_utensil", "using_phone", "washing", "other"],
+      "justification": "Hand-to-object contact is a configuration of pixels; what the contact is FOR is not asked",
+      "validity_ms": 15000,
+      "question": "Choose only from direct hand contact you can see. Do not infer a task."
+    }
+  ],
+
+  "demand": {
+    "freshness_ms": 60000,
+    "triggers": ["on_first_sight", "on_region_entry", "on_change"],
+    "priority_class": "safety-observation",
+    "budget": {
+      "max_calls_per_hour": 400
+    }
+  },
+
+  "prompt": {
+    "prompt_id": "kitchen-safety.person",
+    "version": "1.0.0",
+    "max_output_tokens": 256,
+    "preamble": "You are a visual attribute extractor for a video analytics platform. Look at the cropped image of a {class_id} and report ONLY what is directly visible. Do not judge compliance, correctness, role or intent. Do not describe what someone should or should not be wearing."
+  },
+
+  "labels": {
+    "owner": "example",
+    "note": "illustrative-only"
+  }
+}

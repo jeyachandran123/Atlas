@@ -8,10 +8,20 @@ from .sources import (
     InMemorySecretProvider,
     JsonFileConfigSource,
 )
+from .understander_providers import (
+    UNDERSTANDER_FACTORIES,
+    ProviderConfigurationError,
+    build_understander,
+    resolve_provider_name,
+)
 
 __all__ = [
+    "UNDERSTANDER_FACTORIES",
     "EnvironmentSecretProvider",
     "InMemoryConfigSource",
     "InMemorySecretProvider",
     "JsonFileConfigSource",
+    "ProviderConfigurationError",
+    "build_understander",
+    "resolve_provider_name",
 ]
