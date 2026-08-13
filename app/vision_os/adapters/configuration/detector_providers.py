@@ -45,6 +45,30 @@ IOU_ENV = "VISION_DETECTOR_IOU"
 DEFAULT_PROVIDER = "yolo"
 DEFAULT_WEIGHTS = "models/yolov8n.onnx"
 
+#: How a detector's label space behaves when it meets something outside it.
+#:
+#: This is the fact nothing in the platform used to state, and its absence is
+#: what let a pen be reported as a toothbrush with no qualification anywhere.
+#:
+#: A **closed-set** detector scores a fixed vocabulary and returns the argmax. It
+#: has no way to answer "none of these": presented with an object it was never
+#: trained on, it must still distribute probability across the words it knows,
+#: and the winner is the nearest neighbour in that space rather than an
+#: identification. That is not a defect to be tuned away with a threshold — a
+#: pen scores 0.454 as `toothbrush`, comfortably above any threshold that still
+#: admits real detections.
+#:
+#: An **open-vocabulary** detector is scored against labels supplied at query
+#: time and can be asked whether a specific concept is present, so absence from
+#: its answer carries information a closed-set absence does not.
+#:
+#: Declaring which kind is bound lets consumers qualify a class claim instead of
+#: presenting it as an identity. It is a capability statement, in the same family
+#: as `producible_classes`, and it obeys the same rule: declared honestly, by the
+#: adapter that knows.
+CLOSED_SET = "closed_set"
+OPEN_VOCABULARY = "open_vocabulary"
+
 
 class DetectorConfigurationError(ValueError):
     """A detector was named that cannot be built. Raised at composition time."""
@@ -75,7 +99,8 @@ class BoundDetector:
     """
 
     __slots__ = ("adapter_id", "classes", "detector", "mappings", "model_id",
-                 "model_version", "artifact_hash", "artifact_path", "note")
+                 "model_version", "artifact_hash", "artifact_path", "note",
+                 "label_space_kind", "native_labels", "native_label_space")
 
     def __init__(
         self,
@@ -89,6 +114,9 @@ class BoundDetector:
         artifact_hash: str,
         artifact_path: str,
         note: str,
+        label_space_kind: str,
+        native_labels: tuple[str, ...],
+        native_label_space: str,
     ) -> None:
         self.detector = detector
         # Carried rather than read off the detector: `DetectorPort` declares
@@ -103,6 +131,39 @@ class BoundDetector:
         self.artifact_hash = artifact_hash
         self.artifact_path = artifact_path
         self.note = note
+        # Whether this detector can decline to name something, and the exact
+        # vocabulary it is choosing from. Both travel to consumers so a class
+        # claim can be qualified rather than read as an identification.
+        self.label_space_kind = label_space_kind
+        self.native_labels = native_labels
+        self.native_label_space = native_label_space
+
+    @property
+    def is_closed_set(self) -> bool:
+        return self.label_space_kind == CLOSED_SET
+
+    def capability_gaps(self) -> tuple[tuple[str, str], ...]:
+        """Capability facts for `CapabilitySummary.gaps`.
+
+        `gaps` is the platform's existing typed channel for "here is something I
+        cannot do", and it already reaches consumers through the Observation API.
+        A closed-set label space belongs there exactly: the detector cannot
+        report an object outside its vocabulary, and a consumer that does not
+        know this will read every class name as an identification.
+        """
+        if not self.is_closed_set:
+            return ()
+        return (
+            (
+                "detector.label_space",
+                f"{CLOSED_SET}:{self.native_label_space or 'custom'}:"
+                f"{len(self.native_labels)}",
+            ),
+            (
+                "detector.vocabulary",
+                ",".join(self.native_labels),
+            ),
+        )
 
     def declaration(self, *, detector_id: str, artifact_uri: str) -> dict[str, Any]:
         """The config-document entry describing this binding.
@@ -194,8 +255,15 @@ def _build_yolo(*, clock, env: Mapping[str, str], **_: Any) -> BoundDetector:
         note=(
             f"yolo ({model_id}, {len(selected)} of {len(declared)} classes"
             + (", narrowed by configuration" if wanted else "")
-            + ")"
+            + ", closed-set)"
         ),
+        # An exported detection graph has a fixed classification head. It scores
+        # exactly these labels and returns the best of them; there is no index
+        # meaning "not one of these". That is a property of the artifact, not a
+        # configuration choice, so it is declared here rather than made settable.
+        label_space_kind=CLOSED_SET,
+        native_labels=tuple(selected),
+        native_label_space="coco" if len(declared) == 80 else "custom",
     )
 
 
@@ -225,6 +293,40 @@ def _build_reference(*, clock, env: Mapping[str, str], **_: Any) -> BoundDetecto
         artifact_hash=f"blake2b:{hashlib.blake2b(b'reference', digest_size=32).hexdigest()}",
         artifact_path="",
         note="reference (scripted — a fixed box, not real detection)",
+        label_space_kind=CLOSED_SET,
+        native_labels=("person",),
+        native_label_space="scripted",
+    )
+
+
+def _build_open_vocabulary(*, clock, env: Mapping[str, str], **_: Any) -> BoundDetector:
+    """The open-vocabulary slot. **Declared, and deliberately unimplemented.**
+
+    A registered provider that refuses is worth more than an absent one. It
+    states, in the one table a deployment actually reads, that this platform has
+    a place for a detector whose vocabulary is supplied at query time — and that
+    nothing here will pretend to be one.
+
+    The alternative was to let a closed-set model stand in. That is precisely the
+    failure this whole seam exists to prevent: a COCO detector asked about a pen
+    answers `toothbrush` at 0.454, and dressing that up as open-vocabulary
+    detection would launder a nearest-neighbour guess into an identification.
+
+    Binding a real one — OWL-ViT, Grounding DINO, YOLO-World — is a factory entry
+    and an adapter, and touches no Vision OS module: `DetectorPort` already
+    accommodates it (its own docstring names Grounding DINO among the
+    implementations it expects), the mapping already absorbs a native label
+    space, and the capability declaration already has somewhere to say what kind
+    of label space is bound.
+    """
+    raise DetectorConfigurationError(
+        f"{PROVIDER_ENV}='{OPEN_VOCABULARY}' names a capability this deployment "
+        f"has not bound. Open-vocabulary detection needs an adapter whose labels "
+        f"are supplied at query time (OWL-ViT, Grounding DINO, YOLO-World); no "
+        f"such adapter is registered. The bundled '{DEFAULT_PROVIDER}' provider "
+        f"is closed-set and cannot substitute: asked about an object outside its "
+        f"vocabulary it returns the nearest word it knows, which is a guess "
+        f"wearing the clothes of an identification."
     )
 
 
@@ -232,6 +334,7 @@ def _build_reference(*, clock, env: Mapping[str, str], **_: Any) -> BoundDetecto
 DETECTOR_FACTORIES: Mapping[str, Any] = {
     "yolo": _build_yolo,
     "reference": _build_reference,
+    OPEN_VOCABULARY: _build_open_vocabulary,
 }
 
 
@@ -275,6 +378,8 @@ def _digest(path: Path) -> str:
 
 __all__ = [
     "CLASSES_ENV",
+    "CLOSED_SET",
+    "OPEN_VOCABULARY",
     "DEFAULT_PROVIDER",
     "DETECTOR_FACTORIES",
     "PROVIDER_ENV",
