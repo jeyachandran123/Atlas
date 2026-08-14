@@ -190,26 +190,48 @@ class TestTheNineTriggerReasons:
         [second] = policy.evaluate([candidate], now=NOW, demands=[wants(30_000)])
         assert second.reason is not TriggerReason.EXPLICIT_REQUEST
 
-    def test_all_nine_reasons_are_reachable(self) -> None:
+    def test_every_reason_is_reachable_from_some_shipped_policy(self) -> None:
         """No documented reason is decorative.
 
-        Reads the module rather than the enum, so a reason defined but never
-        emitted by the shipped policy is caught.
+        Reads the modules rather than the enum, so a reason defined but never
+        emitted by any shipped policy is caught.
+
+        Both policy modules are scanned because the platform ships two: the
+        default policy answers *"is this worth a fresh look?"* and the
+        verification policy answers *"is the detector's claim worth relying
+        on?"*. ``IDENTITY_UNVERIFIED`` is deliberately unreachable from the
+        default one — a policy that has never been told what the bound detector
+        can name has no basis for doubting it, and emitting the reason anyway
+        would make it meaningless.
         """
         import inspect
 
-        from app.vision_os.adapters.cropping import triggers
+        from app.vision_os.adapters.cropping import triggers, verification
 
-        source = inspect.getsource(triggers)
+        source = inspect.getsource(triggers) + inspect.getsource(verification)
         unreachable = [
             reason.name
             for reason in TriggerReason
             if f"TriggerReason.{reason.name}" not in source
         ]
         assert not unreachable, (
-            f"the default policy can never emit {unreachable}; a reason the "
-            f"platform cannot produce is a reason a consumer will never see"
+            f"no shipped policy can emit {unreachable}; a reason the platform "
+            f"cannot produce is a reason a consumer will never see"
         )
+
+    def test_the_default_policy_never_emits_a_verification_reason(self) -> None:
+        """The two policies stay separable.
+
+        If the default policy ever learned to emit ``IDENTITY_UNVERIFIED``, a
+        deployment with no verification rules would start spending model calls it
+        never configured — and the composition seam would have quietly become a
+        default.
+        """
+        import inspect
+
+        from app.vision_os.adapters.cropping import triggers
+
+        assert "IDENTITY_UNVERIFIED" not in inspect.getsource(triggers)
 
 
 class TestTheSkipReasons:

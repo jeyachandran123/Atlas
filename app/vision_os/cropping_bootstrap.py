@@ -24,6 +24,8 @@ from .adapters.cropping import (
     QUALITY_ESTIMATOR_FACTORIES,
     TRIGGER_POLICY_FACTORIES,
     ReferenceCropExtractor,
+    VerificationPolicy,
+    VerificationRules,
 )
 from .bootstrap import VisionPlatform
 from .conformance import CROP_STRATEGY_KIT, QUALITY_ESTIMATOR_KIT, TRIGGER_POLICY_KIT
@@ -31,6 +33,7 @@ from .core.errors import CropError
 from .core.model.ids import ConfigRevision, ModuleId, ObjectId
 from .core.model.provenance import Provenance
 from .core.model.timebase import Duration
+from .core.ports.cropping import LabelSpaceView
 from .kernel.plugins.manifest import PortCatalogue
 from .perception.cropping import (
     CropManager,
@@ -74,8 +77,15 @@ def build_gate_thresholds(platform: VisionPlatform) -> GateThresholds:
     )
 
 
-def build_trigger_policy(platform: VisionPlatform):
-    """Select a trigger policy by name.
+def build_trigger_policy(
+    platform: VisionPlatform, *, verification: VerificationRules | None = None
+):
+    """Select a trigger policy by name, corroboration-wrapped when configured.
+
+    ``verification`` composes rather than replaces: the named policy still makes
+    every ordinary decision, and the wrapper only withdraws corroboration
+    requests the detector's own claim already covers. Absent rules, the returned
+    policy is byte-for-byte the one this function returned before.
 
     Raises:
         CropError: the configured policy is unknown. Refusing beats defaulting:
@@ -90,11 +100,14 @@ def build_trigger_policy(platform: VisionPlatform):
             f"are {sorted(TRIGGER_POLICY_FACTORIES)}",
             requested=settings.trigger_policy,
         )
-    return factory(
+    policy = factory(
         appearance_threshold=settings.appearance_change_threshold,
         low_confidence=settings.low_confidence_threshold,
         refresh_interval=Duration.from_millis(settings.periodic_refresh_ms),
     )
+    if verification is None or not verification.rules:
+        return policy
+    return VerificationPolicy(policy, verification)
 
 
 def build_quality_estimator(platform: VisionPlatform):
@@ -145,6 +158,8 @@ def build_cropping_layer(
     strategy=None,
     extractor=None,
     capabilities: CapabilityView | None = None,
+    label_space: LabelSpaceView | None = None,
+    verification: VerificationRules | None = None,
     crop_sink=None,
     attach: bool = True,
 ) -> CroppingLayer:
@@ -156,6 +171,14 @@ def build_cropping_layer(
             understander — every demand is admitted and immediately marked
             unsatisfiable with ``NO_CAPABLE_MODEL``, rather than accepted and
             left waiting forever.
+        label_space: What the bound detector can name, from
+            ``label_space_view(bound_detector)``. **Undeclared by default**,
+            which reports "cannot tell" rather than "outside the vocabulary" —
+            an unconfigured deployment must not read as one whose detector can
+            name nothing, because that would send every object to verification.
+        verification: Rules governing which corroborating attributes are worth a
+            model call. **None by default** — a deployment that corroborates
+            nothing gets the unwrapped policy and behaves exactly as before.
         attach: Wire the runtime to the registry's sink. False leaves the layer
             assembled but unconnected, which is what a unit test wants.
 
@@ -171,7 +194,7 @@ def build_cropping_layer(
             "nothing"
         )
 
-    selected_policy = policy or build_trigger_policy(platform)
+    selected_policy = policy or build_trigger_policy(platform, verification=verification)
     selected_estimator = estimator or build_quality_estimator(platform)
     selected_strategy = strategy or build_crop_strategy(platform)
     selected_extractor = extractor or ReferenceCropExtractor(
@@ -214,6 +237,7 @@ def build_cropping_layer(
         demands=demands,
         budget=budget,
         gate=QualityGate(build_gate_thresholds(platform)),
+        label_space=label_space,
     )
 
     runtime = CropRuntime(

@@ -30,6 +30,13 @@ from .triggers import (
     DefaultTriggerPolicy,
     ExplicitRequestPolicy,
 )
+from .verification import (
+    CropRequirements,
+    TrustConditions,
+    VerificationPolicy,
+    VerificationRule,
+    VerificationRules,
+)
 
 #: Trigger policies selectable by configuration.
 #:
@@ -60,10 +67,15 @@ __all__ = [
     "QUALITY_ESTIMATOR_FACTORIES",
     "TRIGGER_POLICY_FACTORIES",
     "AlwaysUsableEstimator",
+    "CropRequirements",
     "DefaultTriggerPolicy",
     "ExplicitRequestPolicy",
     "HeuristicQualityEstimator",
     "PaddedCropStrategy",
     "ReferenceCropExtractor",
     "TightCropStrategy",
+    "TrustConditions",
+    "VerificationPolicy",
+    "VerificationRule",
+    "VerificationRules",
 ]

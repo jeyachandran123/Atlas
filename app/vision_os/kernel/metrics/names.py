@@ -231,6 +231,23 @@ class MetricName:
     CROP_CACHE_HITS: Final = "vision_os.cropping.cache_hits"
     CROP_CACHE_EVICTIONS: Final = "vision_os.cropping.cache_evictions"
 
+    VERIFICATION_CANDIDATES: Final = "vision_os.cropping.verification_candidates"
+    """Candidates a verification rule governed at all. The denominator: without
+    it, a low request count is indistinguishable from rules that never matched."""
+
+    VERIFICATION_REQUIRED: Final = "vision_os.cropping.verification_required"
+    """Labelled by ``reason``. Corroboration the policy judged worth paying for —
+    the numerator of the ratio that proves this is not a brute-force pipeline."""
+
+    VERIFICATION_WITHHELD: Final = "vision_os.cropping.verification_withheld"
+    """Labelled by ``skip``. Corroboration withdrawn because the detector's own
+    claim sufficed, or because the input could not support a defensible answer.
+
+    In a healthy deployment this dominates ``VERIFICATION_REQUIRED`` by a wide
+    margin. When it does not, either the detector is operating outside its
+    capability domain or the rules are drawn too broadly — and the two are
+    distinguishable by the ``reason`` label on the metric above."""
+
     # --- understanding (M9, Flow 6) ------------------------------------------ #
     UNDERSTANDING_RESULTS: Final = "vision_os.understanding.results"
     """Labelled by ``outcome``. The distribution across the six outcomes is the

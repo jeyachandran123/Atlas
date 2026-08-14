@@ -54,6 +54,7 @@ from ...core.errors import (
     FrameUnavailableError,
     GateRejectedError,
 )
+from ...core.model.confidence import Confidence
 from ...core.model.crop import (
     Crop,
     CropRequest,
@@ -63,6 +64,7 @@ from ...core.model.crop import (
     RetentionMode,
     Skipped,
     SkipReason,
+    TriggerReason,
 )
 from ...core.model.demand import Demand, DemandAcknowledgement
 from ...core.model.detection import QualityGrades, QualityLevel
@@ -70,6 +72,7 @@ from ...core.model.health import ComponentHealth, HealthState
 from ...core.model.ids import (
     AttributeKey,
     CameraId,
+    ClassId,
     CropId,
     DemandId,
     FrameRef,
@@ -82,6 +85,7 @@ from ...core.model.visual_object import VisualObject
 from ...core.ports.clock import Clock
 from ...core.ports.cropping import (
     AttributeStatus,
+    LabelSpaceView,
     QualityRequest,
     TriggerCandidate,
     TriggerDecision,
@@ -136,6 +140,7 @@ class CropManager:
         "_frames_evaluated",
         "_gate",
         "_gate_windows",
+        "_label_space",
         "_metrics",
         "_policy",
         "_priority",
@@ -162,6 +167,7 @@ class CropManager:
         demands: DemandRegistry | None = None,
         budget: UnderstandingBudget | None = None,
         gate: QualityGate | None = None,
+        label_space: LabelSpaceView | None = None,
     ) -> None:
         self._clock = clock
         self._metrics = metrics
@@ -188,6 +194,14 @@ class CropManager:
             else budget
         )
         self._gate = QualityGate() if gate is None else gate
+
+        # Undeclared by default. M8 never asks a detector what it can name — the
+        # composition root, which chose the detector, states it. An empty view
+        # reports "cannot tell" for every class, so a deployment that has not
+        # wired it behaves exactly as before rather than treating every object as
+        # outside the detector's capability.
+        self._label_space = LabelSpaceView() if label_space is None else label_space
+
         self._cache = CropDeduplicationCache(capacity=config.dedup_cache_size)
         self._priority = PriorityQueue(config.priority_classes)
         self._state = TriggerStateStore()
@@ -326,6 +340,8 @@ class CropManager:
                 camera_id=str(camera_id),
                 reason=request.trigger_reason.value,
             ).increment()
+
+        self._count_verification(camera_id, decisions)
 
         return EvaluationResult(
             camera_id=camera_id,
@@ -600,6 +616,39 @@ class CropManager:
     def budget_status(self) -> BudgetStatus:
         return self._budget.status(self._clock.monotonic())
 
+    def _count_verification(
+        self, camera_id: CameraId, decisions: Sequence[TriggerDecision]
+    ) -> None:
+        """Count corroboration decisions from their outcomes, not from the policy.
+
+        M8 does not know whether a verification policy is bound, and asking one
+        would couple the engine to an adapter it is supposed to be indifferent
+        to. The two outcomes are observable in the decision itself, which is
+        enough — and keeps the policy stateless (obligation G6).
+
+        The pair is what makes the ratio readable: a deployment needs the
+        withheld count as much as the required one, because a request rate with
+        no denominator cannot distinguish restraint from rules that never fired.
+        """
+        for decision in decisions:
+            if decision.reason is TriggerReason.IDENTITY_UNVERIFIED:
+                self._metrics.counter(
+                    MetricName.VERIFICATION_REQUIRED,
+                    camera_id=str(camera_id),
+                    reason=decision.reason.value,
+                ).increment()
+            elif decision.skip is SkipReason.EVIDENCE_SUFFICIENT:
+                self._metrics.counter(
+                    MetricName.VERIFICATION_WITHHELD,
+                    camera_id=str(camera_id),
+                    skip=decision.skip.value,
+                ).increment()
+            else:
+                continue
+            self._metrics.counter(
+                MetricName.VERIFICATION_CANDIDATES, camera_id=str(camera_id)
+            ).increment()
+
     # --- candidate construction ---------------------------------------------------- #
 
     def _candidate(
@@ -651,6 +700,61 @@ class CropManager:
             entered_region_this_frame=entered,
             lifecycle_changed_this_frame=lifecycle_changed,
             estimated_quality=grades,
+            class_confidence=self._class_confidence(obj),
+            class_alternatives=self._class_alternatives(obj),
+            label_space_kind=self._label_space.kind,
+            class_in_native_vocabulary=self._label_space.covers(obj.class_id),
+        )
+
+    @staticmethod
+    def _class_confidence(obj: VisualObject) -> Confidence | None:
+        """The detector's own score for the class the object currently carries.
+
+        Read from ``class_history`` rather than from ``obj.confidence``: the
+        latter is ``IDENTITY`` confidence — P(this track is this object) — and
+        handing it to a policy as a classification score would present one
+        quantity as another, which 02_VOM section 7.2 exists to prevent.
+
+        The most recent entry *for the published class* is used, not simply the
+        most recent entry. A flapping object's last sighting may have been the
+        losing class, and reporting that score would describe a claim the
+        platform is not making.
+        """
+        for sighting in reversed(obj.class_history):
+            if sighting.class_id == obj.class_id:
+                return sighting.confidence
+        return None
+
+    @staticmethod
+    def _class_alternatives(obj: VisualObject) -> tuple[tuple[ClassId, float], ...]:
+        """Every class this object has been called, by share of retained evidence.
+
+        Derived from ``class_history`` rather than from ``Detection.class_scores``
+        — the per-frame distribution is not propagated past the Detection Engine,
+        and what a policy actually wants here is *temporal* consistency, which is
+        what the history records.
+
+        The published class is excluded: a policy asking "what else might this
+        be?" is not helped by being told the answer it already has. Empty means
+        the object has only ever been called one thing, which is the stable case.
+        """
+        weights: dict[ClassId, float] = {}
+        for sighting in obj.class_history:
+            if sighting.class_id == obj.class_id:
+                continue
+            weights[sighting.class_id] = (
+                weights.get(sighting.class_id, 0.0) + sighting.confidence.value
+            )
+        total = sum(weights.values()) + sum(
+            s.confidence.value for s in obj.class_history if s.class_id == obj.class_id
+        )
+        if total <= 0.0:
+            return ()
+        # Sorted by share, then by class id: an arbitrary tie-break would make
+        # the policy's input depend on dict ordering and break replay (V13).
+        return tuple(
+            (class_id, weights[class_id] / total)
+            for class_id in sorted(weights, key=lambda c: (-weights[c], c))
         )
 
     def _attribute_status(self, obj: VisualObject) -> dict[AttributeKey, AttributeStatus]:

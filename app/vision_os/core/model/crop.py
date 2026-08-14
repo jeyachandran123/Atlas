@@ -127,6 +127,21 @@ class TriggerReason(enum.Enum):
     LOW_CONFIDENCE = "low_confidence"
     """A prior claim was weak; a better crop is available now."""
 
+    IDENTITY_UNVERIFIED = "identity_unverified"
+    """The detector's class claim is not admissible for what a demand needs, and
+    no corroborating evidence exists yet.
+
+    Distinct from ``LOW_CONFIDENCE``, which is about an attribute *already
+    computed* being weak. This fires when there is no claim at all and the
+    detector's own answer cannot stand alone — a closed-set model naming an
+    object outside its vocabulary returns the nearest word it knows, and that is
+    a guess wearing the clothes of an identification.
+
+    Kept separate because this value travels onto ``Evidence.trigger_reason``,
+    which is where *"why did the platform look at all?"* is answered six months
+    later. Collapsing the two would make the reasons indistinguishable in the
+    audit trail and in the metrics that count them."""
+
     QUALITY_IMPROVED = "quality_improved"
     """Previously gate-rejected; conditions are now adequate."""
 
@@ -156,6 +171,17 @@ class SkipReason(enum.Enum):
     BUDGET_EXHAUSTED = "budget_exhausted"
     QUALITY_INSUFFICIENT = "quality_insufficient"
     FRESH_ENOUGH = "fresh_enough"
+    EVIDENCE_SUFFICIENT = "evidence_sufficient"
+    """A demand wanted corroborating evidence and the evidence already held was
+    good enough, so no model was called.
+
+    Distinct from ``FRESH_ENOUGH``, which means *"the attribute is present and
+    within its freshness window"*. Here the attribute may be entirely absent —
+    what the policy decided is that the evidence the platform already has
+    supports the claim without paying for more. Recording it as ``FRESH_ENOUGH``
+    would make an attribute that was never computed look like one that was, and
+    would hide the largest and most valuable skip bucket in a deployment that
+    uses verification."""
     DEDUPLICATED = "deduplicated"
     PRIORITY_PREEMPTED = "priority_preempted"
     FRAME_UNAVAILABLE = "frame_unavailable"

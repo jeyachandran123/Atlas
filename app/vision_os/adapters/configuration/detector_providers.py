@@ -30,6 +30,7 @@ from typing import Any
 
 from ...core.model.ids import AdapterId, ClassId, ModelId
 from ...core.model.taxonomy import MappingEntry, TaxonomyMapping, UnmappedPolicy
+from ...core.ports.cropping import LabelSpaceView
 
 #: Selector. ``yolo`` is the default because a scripted detector must never be
 #: what a demo or a deployment runs by accident: it answers with the same box on
@@ -185,6 +186,24 @@ class BoundDetector:
                 for entry in self.mappings
             ],
         }
+
+
+def label_space_view(bound: BoundDetector) -> LabelSpaceView:
+    """The bound detector's capability, in the form M8's policies consume.
+
+    The same fact ``capability_gaps()`` publishes to consumers, handed to the
+    Crop Manager so a trigger policy can *act* on it instead of a consumer merely
+    reading about it afterwards. Derived here, at the only place that holds both
+    the detector and its declaration, so the two cannot drift.
+
+    ``bound.classes`` rather than ``bound.native_labels``: a policy compares this
+    against a candidate's platform ``class_id``, and a native label must never
+    escape its adapter (port obligation D2).
+    """
+    return LabelSpaceView(
+        kind=bound.label_space_kind,
+        producible_classes=frozenset(bound.classes),
+    )
 
 
 def _build_yolo(*, clock, env: Mapping[str, str], **_: Any) -> BoundDetector:
@@ -388,5 +407,6 @@ __all__ = [
     "DetectorConfigurationError",
     "build_detector",
     "default_weights_path",
+    "label_space_view",
     "resolve_detector_provider",
 ]

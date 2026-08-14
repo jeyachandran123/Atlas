@@ -23,6 +23,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
+from ..model.confidence import Confidence
 from ..model.crop import CropTransform, SkipReason, TriggerReason
 from ..model.detection import QualityGrades
 from ..model.ids import AttributeKey, CameraId, ClassId, ObjectId, RegionId
@@ -66,6 +67,77 @@ class AttributeStatus:
         return age is None or age.ns > freshness.ns
 
 
+#: A detector's label space **behaves differently** when it meets something
+#: outside itself, and a policy that cannot tell the two apart cannot reason about
+#: how much a class claim is worth.
+#:
+#: A closed-set detector scores a fixed vocabulary and returns the argmax; it has
+#: no index meaning "none of these", so an object it was never trained on still
+#: receives the nearest word it knows. An open-vocabulary detector is scored
+#: against labels supplied at query time, so an absence from its answer carries
+#: information a closed-set absence does not.
+#:
+#: These are the same two constants the detector provider already declares. They
+#: are restated here rather than imported because ``core`` may not import an
+#: adapter, and a policy reasoning about capability needs the vocabulary.
+CLOSED_SET = "closed_set"
+OPEN_VOCABULARY = "open_vocabulary"
+
+
+@dataclass(frozen=True, slots=True)
+class LabelSpaceView:
+    """What the bound detector can and cannot name.
+
+    Injected into M8 at composition rather than discovered, for the same reason
+    ``CapabilityView`` is: the capability question has one owner, and the adapter
+    that knows declares it honestly (adapter obligation A1).
+
+    The empty default is the honest unknown. A deployment that has not declared
+    its detector's label space gets ``covers() is None`` everywhere, and a policy
+    written against that reads "cannot tell" rather than "outside the vocabulary"
+    — the same distinction ``QualityGrades`` draws between unmeasured and zero
+    (obligation Q2).
+    """
+
+    kind: str = ""
+    """``closed_set`` | ``open_vocabulary`` | ``""`` for undeclared."""
+
+    producible_classes: frozenset[ClassId] = frozenset()
+    """The detector's vocabulary **as platform classes**, after any narrowing by
+    configuration.
+
+    Platform classes rather than the model's native labels, because a native
+    label must never escape its adapter (port obligation D2) and because a policy
+    compares this against a candidate's ``class_id``. Empty means undeclared,
+    never "names nothing"."""
+
+    @property
+    def is_closed_set(self) -> bool:
+        return self.kind == CLOSED_SET
+
+    @property
+    def is_declared(self) -> bool:
+        return bool(self.kind)
+
+    def covers(self, class_id: ClassId) -> bool | None:
+        """Whether this class is inside the detector's declared vocabulary.
+
+        ``None`` when nothing was declared. Returning ``False`` in that case
+        would let an unconfigured deployment read as "every class is outside the
+        detector's capability", which would send every object to verification —
+        the brute-force pipeline this whole seam exists to prevent.
+
+        Matching is hierarchical for the same reason class filters are: a
+        detector producing ``vehicle.forklift`` covers a demand for ``vehicle``.
+        """
+        if not self.producible_classes:
+            return None
+        return any(
+            class_id == produced or class_id.startswith(f"{produced}.")
+            for produced in self.producible_classes
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class TriggerCandidate:
     """One object considered for analysis this frame.
@@ -107,6 +179,41 @@ class TriggerCandidate:
     entered_region_this_frame: bool = False
     lifecycle_changed_this_frame: bool = False
     estimated_quality: QualityGrades = QualityGrades()
+
+    # --- what the detector claimed, and how much that claim is worth --------- #
+    #
+    # A policy deciding whether a class claim needs corroborating cannot reason
+    # from ``identity_confidence``: that is P(this track is this object), and
+    # presenting it as a classification score would compare two incomparable
+    # quantities (02_VOM section 7.2). These four fields carry the detector's own
+    # evidence, typed so the confusion is not expressible.
+
+    class_confidence: Confidence | None = None
+    """The detector's score for the class claim, with its semantics attached.
+
+    ``CLASSIFICATION`` — P(class | object present) — as recorded on the object's
+    ``class_history``. ``None`` means no class evidence has been retained, which
+    is distinct from a low score and must not be read as one."""
+
+    class_alternatives: tuple[tuple[ClassId, float], ...] = ()
+    """Other classes this object has been called, with each one's share of the
+    accumulated evidence, strongest first.
+
+    A stable object seen forty times as one class and a flapping object split
+    across three are different claims, and a single confidence number cannot tell
+    them apart. Empty means no alternative was ever asserted."""
+
+    label_space_kind: str = ""
+    """The bound detector's label space, from ``LabelSpaceView.kind``. Empty when
+    undeclared."""
+
+    class_in_native_vocabulary: bool | None = None
+    """Whether this class is inside the detector's declared vocabulary.
+
+    ``None`` is *undeclared*, not *outside*. A policy must be able to tell "the
+    detector cannot name this kind of thing" from "nobody told us what the
+    detector can name", because the first is a reason to look again and the
+    second is a reason to fix the configuration."""
 
 
 @dataclass(frozen=True, slots=True)
