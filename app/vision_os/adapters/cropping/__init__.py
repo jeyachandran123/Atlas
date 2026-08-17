@@ -20,6 +20,7 @@ from .strategies import (
     DEFAULT_OUTPUT_SIZE,
     DEFAULT_PADDING,
     PaddedCropStrategy,
+    PartFocusedCropStrategy,
     ReferenceCropExtractor,
     TightCropStrategy,
 )
@@ -54,6 +55,9 @@ QUALITY_ESTIMATOR_FACTORIES = {
 CROP_STRATEGY_FACTORIES = {
     "crop.tight": TightCropStrategy,
     "crop.padded": PaddedCropStrategy,
+    # Part-focused. Spends the canonical crop on the region a question is
+    # about instead of letterboxing a whole standing person into a square.
+    "crop.part_focused": PartFocusedCropStrategy,
 }
 
 __all__ = [
@@ -72,6 +76,7 @@ __all__ = [
     "ExplicitRequestPolicy",
     "HeuristicQualityEstimator",
     "PaddedCropStrategy",
+    "PartFocusedCropStrategy",
     "ReferenceCropExtractor",
     "TightCropStrategy",
     "TrustConditions",

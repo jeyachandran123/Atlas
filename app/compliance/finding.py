@@ -94,6 +94,21 @@ class UnknownReason(enum.Enum):
     """The rule requires corroborating evidence and none is present or fresh.
     The observation may well be correct; the rule declines to rely on it."""
 
+    NOT_OBSERVABLE = "not_observable"
+    """The platform **did** look and reported that it could not tell.
+
+    Distinct from ``ATTRIBUTE_ABSENT``, and the distinction is the whole reason
+    this value exists. An absent attribute means nothing was ever asked or the
+    answer never arrived. This means a model examined the evidence and returned
+    a value whose meaning is *"the thing you asked about is not visible here"* —
+    a legitimate, registered domain value that the rule must treat as evidence
+    of nothing rather than as evidence of absence.
+
+    Without it, an enum carrying ``not_visible`` fails an equality test exactly
+    as a bare hand would, and a person whose hands were inside a pot is reported
+    as not wearing gloves. That is the failure this whole layer exists to
+    prevent, arriving through the front door."""
+
     COVERAGE_GAP = "coverage_gap"
     """The platform was not fully observing the subject's scope. An empty or thin
     result under a coverage gap is not evidence of absence."""

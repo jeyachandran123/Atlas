@@ -35,17 +35,31 @@
       "severity": "high",
       "subject_classes": ["person"],
 
+      "_require_comment": [
+        "'unknown_values' is what keeps a refusal from becoming a violation.",
+        "",
+        "Both attributes carry 'not_visible' in their registered domain: the",
+        "model looked, the body part was inside a pot or out of frame, and it",
+        "said so. Without listing it here, 'not_visible' fails 'ne none' and",
+        "'eq gloves' exactly as a bare head or a bare hand would, and a person",
+        "nobody could actually see is reported as non-compliant.",
+        "",
+        "Listed per condition rather than inferred, because only a rule author",
+        "knows which members of an enum are facts and which are refusals."
+      ],
       "require": [
         {
           "attribute": "head_covering",
           "operator": "ne",
           "value": "none",
+          "unknown_values": ["not_visible"],
           "message": "is not wearing a head covering"
         },
         {
           "attribute": "hand_covering",
           "operator": "eq",
           "value": "gloves",
+          "unknown_values": ["not_visible"],
           "message": "is not wearing gloves"
         }
       ],

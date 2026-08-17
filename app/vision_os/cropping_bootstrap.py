@@ -130,7 +130,15 @@ def build_quality_estimator(platform: VisionPlatform):
     )
 
 
-def build_crop_strategy(platform: VisionPlatform):
+def build_crop_strategy(platform: VisionPlatform, *, regions=None):
+    """Select a crop strategy by name.
+
+    ``regions`` is ``{attribute_key: (top, height)}`` from the active policy
+    documents, and only ``crop.part_focused`` consumes it. Passed rather than
+    discovered because the strategy is an adapter: it may use the demanded
+    attributes to choose geometry (obligation C5) and must not go looking for a
+    policy to find out what they mean.
+    """
     settings = platform.config.cropping()
     factory = CROP_STRATEGY_FACTORIES.get(settings.crop_strategy)
     if factory is None:
@@ -142,6 +150,13 @@ def build_crop_strategy(platform: VisionPlatform):
     output_size = (settings.crop_width, settings.crop_height)
     if settings.crop_strategy == "crop.tight":
         return factory(output_size=output_size, preserve_aspect=settings.preserve_aspect)
+    if settings.crop_strategy == "crop.part_focused":
+        return factory(
+            regions=regions or {},
+            padding=settings.crop_padding,
+            output_size=output_size,
+            preserve_aspect=settings.preserve_aspect,
+        )
     return factory(
         padding=settings.crop_padding,
         output_size=output_size,
@@ -160,6 +175,7 @@ def build_cropping_layer(
     capabilities: CapabilityView | None = None,
     label_space: LabelSpaceView | None = None,
     verification: VerificationRules | None = None,
+    evidence_regions=None,
     crop_sink=None,
     attach: bool = True,
 ) -> CroppingLayer:
@@ -179,6 +195,9 @@ def build_cropping_layer(
         verification: Rules governing which corroborating attributes are worth a
             model call. **None by default** — a deployment that corroborates
             nothing gets the unwrapped policy and behaves exactly as before.
+        evidence_regions: ``{attribute_key: (top, height)}`` from the active
+            policies, for ``crop.part_focused``. Absent, every attribute falls
+            back to the whole subject box — the previous behaviour exactly.
         attach: Wire the runtime to the registry's sink. False leaves the layer
             assembled but unconnected, which is what a unit test wants.
 
@@ -196,7 +215,9 @@ def build_cropping_layer(
 
     selected_policy = policy or build_trigger_policy(platform, verification=verification)
     selected_estimator = estimator or build_quality_estimator(platform)
-    selected_strategy = strategy or build_crop_strategy(platform)
+    selected_strategy = strategy or build_crop_strategy(
+        platform, regions=evidence_regions
+    )
     selected_extractor = extractor or ReferenceCropExtractor(
         interpolation=settings.interpolation
     )

@@ -97,6 +97,22 @@ class SemanticRequirement:
     question: str = ""
     """Optional per-field wording. Rendered into the prompt when present."""
 
+    evidence_region: tuple[float, float] | None = None
+    """Where on the subject this attribute is visible, as ``(top, height)``
+    fractions of its bounding box. ``None`` means the whole subject.
+
+    Geometry, not meaning. P14's obligation C5 permits a strategy to choose
+    geometry from what is being asked — *"a head region for a person"* — and
+    forbids it using what the class means to a business. This is that permission
+    exercised from the document rather than from code: the policy that declares
+    an attribute is the only thing that knows which part of a subject answers it,
+    and ``crop.part_focused`` reads it without learning what the attribute is.
+
+    Absent this, a tall subject letterboxes into the square canonical crop with
+    most of the image as black bar, and the region a question is about lands in a
+    few dozen pixels — measurably too few for a model to answer from, which is
+    what real footage showed."""
+
     def __post_init__(self) -> None:
         if not self.key:
             raise ConfigurationError("a semantic requirement needs a key")
@@ -161,6 +177,7 @@ class SemanticPolicy:
                     values=tuple(str(v) for v in entry.get("values", ())),
                     validity_ms=int(entry.get("validity_ms", 30_000)),
                     question=str(entry.get("question", "")),
+                    evidence_region=_region(entry.get("evidence_region")),
                 )
                 for entry in document.get("attributes", ())
             )
@@ -222,6 +239,20 @@ class SemanticPolicy:
     @property
     def class_ids(self) -> tuple[ClassId, ...]:
         return tuple(ClassId(c) for c in self.object_classes)
+
+    @property
+    def evidence_regions(self) -> dict[str, tuple[float, float]]:
+        """Every declared region, keyed by attribute. Handed to ``crop.part_focused``.
+
+        Attributes that declared none are absent rather than mapped to the whole
+        box, so a strategy can tell "the document said nothing" from "the
+        document said all of it".
+        """
+        return {
+            r.key: r.evidence_region
+            for r in self.requirements
+            if r.evidence_region is not None
+        }
 
     def register_attributes(self, registry) -> tuple[AttributeKey, ...]:
         """Put every requirement through the registry's own gate.
@@ -379,6 +410,32 @@ def _trigger(name: str) -> TriggerHint:
             f"'{name}' is not a trigger hint; supported: "
             f"{', '.join(t.value for t in TriggerHint)}"
         ) from exc
+
+
+def _region(value: Any) -> tuple[float, float] | None:
+    """Parse ``{"top": 0.0, "height": 0.45}``. Refuses a band outside the box.
+
+    Raises at load rather than clamping silently: a region reaching past the
+    subject would crop context the document did not ask for, and a typo there
+    should be visible while someone is looking at the file.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ConfigurationError("evidence_region must be an object with top and height")
+    try:
+        top = float(value["top"])
+        height = float(value["height"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigurationError(
+            f"evidence_region needs numeric 'top' and 'height': {exc}"
+        ) from exc
+    if not 0.0 <= top <= 1.0 or not 0.0 < height <= 1.0 or top + height > 1.0001:
+        raise ConfigurationError(
+            f"evidence_region (top={top}, height={height}) does not lie inside the "
+            f"subject box; both are fractions of it"
+        )
+    return top, height
 
 
 def _optional_int(value: Any) -> int | None:

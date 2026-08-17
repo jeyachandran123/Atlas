@@ -106,6 +106,24 @@ class Condition:
     end-user sentence. Data, so the sentence carries no vocabulary from code and
     can be localised or rewritten without a release."""
 
+    unknown_values: tuple[str, ...] = ()
+    """Values that mean *"the platform could not tell"* rather than a fact.
+
+    A vision attribute's domain often contains one — ``not_visible`` is the
+    obvious case: the model looked, the body part was inside a pot or out of
+    frame, and it said so. That is exactly the honest answer the observation
+    layer is supposed to give, and it must not then be compared like a fact.
+
+    Without this, ``hand_covering == "gloves"`` treats ``not_visible`` as a
+    failed condition, and a person whose hands were never visible is reported as
+    not wearing gloves. The reading is arithmetically correct and completely
+    wrong: absence of evidence became evidence of absence.
+
+    Listed per condition rather than inferred from the value, because only the
+    rule author knows which of an enum's members are facts and which are
+    refusals. ``unknown`` is a real answer to *"what kind of object is this?"*
+    and a refusal in ``head_covering``; nothing in the value itself says which."""
+
     def __post_init__(self) -> None:
         if not self.attribute:
             raise RuleDocumentError("a condition must name an attribute")
@@ -374,6 +392,7 @@ def _condition_from(entry: Mapping[str, Any]) -> Condition:
         operator=operator,
         expected=tuple(expected) if isinstance(expected, list) else expected,
         message=str(entry.get("message", "")),
+        unknown_values=tuple(str(v) for v in entry.get("unknown_values", ())),
     )
 
 

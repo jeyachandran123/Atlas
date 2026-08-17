@@ -244,6 +244,16 @@ class ComplianceEvaluator:
         if held is None:
             return unresolved(UnknownReason.ATTRIBUTE_ABSENT)
 
+        # The platform looked and said it could not tell.
+        #
+        # Checked **before** staleness and before the comparison, because a
+        # refusal is not a value: comparing it would fail the condition exactly
+        # as a real negative does, and a person whose hands were inside a pot
+        # would be reported as not wearing gloves. Absence of evidence must not
+        # become evidence of absence, and this is the line where that happens.
+        if condition.unknown_values and _as_text(held.value) in condition.unknown_values:
+            return unresolved(UnknownReason.NOT_OBSERVABLE)
+
         if self._is_stale(held, evidence, now):
             return unresolved(UnknownReason.ATTRIBUTE_STALE)
 
@@ -326,6 +336,17 @@ class ComplianceEvaluator:
             coverage_fraction=observable,
             labels=dict(rule.labels),
         )
+
+
+def _as_text(value: object) -> str:
+    """A held value as the string a domain lists it as.
+
+    Enum members arrive as plain strings, which is the case that matters. A
+    boolean or a number stringifies harmlessly and simply will not match any
+    declared refusal, which is the correct outcome — ``true`` is never a way of
+    saying "I could not see".
+    """
+    return value if isinstance(value, str) else str(value)
 
 
 def _deterministic_id(rule: Rule, subject: SubjectRef, now: Instant) -> str:

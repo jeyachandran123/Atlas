@@ -152,6 +152,150 @@ class PaddedCropStrategy:
         )
 
 
+class PartFocusedCropStrategy:
+    """The part of the subject a question is actually about. ``crop.part_focused``.
+
+    §M8 names this among the strategies that plug in without the platform
+    changing — *"part-focused (head region for headwear, torso for hi-vis)"* —
+    and P14's obligation C5 permits it explicitly: *"a strategy may use the
+    object's class to choose geometry; it may never use what the class means to a
+    business."* This uses the **demanded attributes** to choose geometry and
+    never learns what any of them mean.
+
+    ### Why a whole-person crop is not adequate evidence
+
+    A standing person is roughly 1:3, and the canonical crop is square. Letterbox
+    one into the other and about 55% of the image is black bar; the head lands in
+    perhaps 40x40 pixels of a 224x224 canvas. Reviewing real kitchen footage,
+    that was enough to lose a plainly visible blue hairnet: the model answered
+    ``none`` for a head that was covered, and the rule turned it into a violation.
+
+    Narrowing to the region a question is about spends the same 224x224 on the
+    part that answers it. The head band of the same person fills the frame.
+
+    ### The regions are data
+
+    ``regions`` maps an attribute key to a vertical band of the subject box, and
+    every value comes from the policy document that declared the attribute. This
+    class contains no attribute name, no body part, and no fraction of its own —
+    an attribute with no declared region falls back to the whole box, which is
+    the previous behaviour exactly.
+
+    When several attributes are demanded together the bands are **unioned**, so
+    one crop still answers every question asked of it. That is what keeps this a
+    single crop per object per frame: M8 admits one request per decision, and
+    inventing a second would be a parallel pipeline.
+    """
+
+    __slots__ = ("_min_aspect", "_output_size", "_padding", "_preserve_aspect", "_regions")
+
+    def __init__(
+        self,
+        *,
+        regions: dict[str, tuple[float, float]] | None = None,
+        padding: float = DEFAULT_PADDING,
+        output_size: tuple[int, int] = DEFAULT_OUTPUT_SIZE,
+        preserve_aspect: bool = True,
+        min_aspect: float = 0.75,
+    ) -> None:
+        """
+        Args:
+            regions: ``{attribute_key: (top, height)}`` as fractions of the
+                subject box, from the policy document.
+            min_aspect: The narrowest width/height the planned region may have
+                before it is widened. A tall band letterboxes into a square crop
+                exactly as a whole person does, so narrowing vertically without
+                widening horizontally would trade one waste for another.
+        """
+        if not 0.0 <= padding <= 4.0:
+            raise ValueError("padding must be in [0,4]")
+        if min_aspect <= 0.0:
+            raise ValueError("min_aspect must be positive")
+        width, height = output_size
+        if width <= 0 or height <= 0:
+            raise ValueError("output_size must be positive")
+        for key, span in (regions or {}).items():
+            top, extent = span
+            if not 0.0 <= top <= 1.0 or not 0.0 < extent <= 1.0 or top + extent > 1.0001:
+                raise ValueError(
+                    f"region for '{key}' is {span}; a band must be (top, height) "
+                    f"fractions of the subject box lying inside it"
+                )
+        self._regions = dict(regions or {})
+        self._padding = padding
+        self._output_size = output_size
+        self._preserve_aspect = preserve_aspect
+        self._min_aspect = min_aspect
+
+    @property
+    def strategy_id(self) -> str:
+        return "crop.part_focused"
+
+    @property
+    def regions(self) -> dict[str, tuple[float, float]]:
+        return dict(self._regions)
+
+    def plan(
+        self,
+        *,
+        box: Box,
+        class_id: ClassId,
+        source_width: int,
+        source_height: int,
+        attributes: Sequence[AttributeKey] = (),
+    ) -> CropPlan:
+        top, bottom = self._span(attributes)
+
+        band_y1 = box.y1 + box.height * top
+        band_y2 = box.y1 + box.height * bottom
+        band_height = max(band_y2 - band_y1, _EPSILON)
+
+        # Widen a narrow band rather than letterboxing it. The band is centred on
+        # the subject, so the extra width is context on both sides — which is
+        # what a reviewer looking at a head wants anyway.
+        band_width = box.width
+        wanted = band_height * self._min_aspect
+        if band_width < wanted:
+            centre = (box.x1 + box.x2) / 2.0
+            band_x1, band_x2 = centre - wanted / 2.0, centre + wanted / 2.0
+        else:
+            band_x1, band_x2 = box.x1, box.x2
+
+        pad_x = (band_x2 - band_x1) * self._padding
+        pad_y = band_height * self._padding
+        width, height = self._output_size
+        return CropPlan(
+            source_box=box,
+            padded_box=_clamped(
+                band_x1 - pad_x, band_y1 - pad_y, band_x2 + pad_x, band_y2 + pad_y
+            ),
+            padding_applied=self._padding,
+            output_width=width,
+            output_height=height,
+            preserve_aspect=self._preserve_aspect,
+        )
+
+    def _span(self, attributes: Sequence[AttributeKey]) -> tuple[float, float]:
+        """The union of the bands the demanded attributes declared.
+
+        Union, not intersection: one crop has to answer every question asked of
+        it, and a band that satisfied only the first attribute would leave the
+        rest being answered from pixels that do not contain them — which is the
+        failure this class exists to remove.
+
+        No declared region for any demanded attribute means the whole box, which
+        is exactly what ``crop.padded`` would have produced.
+        """
+        spans = [
+            self._regions[str(key)] for key in attributes if str(key) in self._regions
+        ]
+        if not spans:
+            return 0.0, 1.0
+        top = min(span[0] for span in spans)
+        bottom = max(span[0] + span[1] for span in spans)
+        return top, min(bottom, 1.0)
+
+
 #: Minimum box extent, in normalized units. Roughly a tenth of a pixel at 1080p.
 _EPSILON = 1e-4
 

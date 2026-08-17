@@ -7,74 +7,154 @@
     "Note what the justifications say. Each describes VISIBLE EVIDENCE, because",
     "that is what the registry's neutrality gate demands. 'head covering is",
     "visible' registers; 'staff member is compliant with policy' would not, and",
-    "should not — that is a judgment for the consumer, not an observation."
+    "should not — that is a judgment for the consumer, not an observation.",
+    "",
+    "=== SCOPE: TWO ATTRIBUTES ===",
+    "",
+    "This policy asks two questions and no others: is the head covered, and are",
+    "the hands covered. It previously also asked for covering colour, torso",
+    "garment and hand activity. Those were removed, not because they were wrong,",
+    "but because every extra field is another chance for a model to answer",
+    "confidently about something it cannot see, and each one costs tokens on a",
+    "call whose only consumer is a two-condition PPE rule.",
+    "",
+    "=== THE UNCERTAINTY RULE ===",
+    "",
+    "Every attribute here carries 'not_visible' in its domain, and the prompt",
+    "spends most of its words on when to use it. That is the whole design.",
+    "",
+    "A CCTV crop of a person bending over a pot frequently shows the head clearly",
+    "and the hands not at all. A model asked 'are they wearing gloves?' will",
+    "answer — models answer — and 'none' then flows into a rule as though the",
+    "hands had been inspected and found bare. The result is a confident violation",
+    "generated from pixels nobody looked at.",
+    "",
+    "'not_visible' is what the platform's UNKNOWN state is built on. The rule",
+    "document lists it under 'unknown_values', so it becomes UNKNOWN rather than",
+    "a failed condition — never a violation, and never a pass."
   ],
-
   "policy_id": "kitchen-safety",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "scene": "kitchen",
   "scope": {
-    "object_classes": ["person"],
-    "lifecycle": ["active", "occluded"],
+    "object_classes": [
+      "person"
+    ],
+    "lifecycle": [
+      "active",
+      "occluded"
+    ],
     "min_confidence": 0.4
   },
-
   "attributes": [
     {
       "key": "head_covering",
       "type": "enum",
-      "values": ["none", "hairnet", "cap", "hood", "other"],
+      "_comment": [
+        "'not_visible' is new in 2.0.0 and it is the point of this version.",
+        "Without it the domain had no way to express 'the head is not in this",
+        "crop', so a crop that had drifted onto an empty floor still produced",
+        "'none' — indistinguishable from a bare head, and read by the rule as a",
+        "violation."
+      ],
+      "values": [
+        "none",
+        "hairnet",
+        "cap",
+        "hood",
+        "other",
+        "not_visible"
+      ],
       "justification": "A covering on the head is directly visible in the crop",
       "validity_ms": 120000,
-      "question": "Report only what is on the head. Choose \"none\" if the hair is uncovered."
-    },
-    {
-      "key": "head_covering_colour",
-      "type": "enum",
-      "values": ["white", "blue", "black", "green", "red", "other", "not_visible"],
-      "justification": "Dominant colour of the head-covering region is directly visible",
-      "validity_ms": 120000
-    },
-    {
-      "key": "torso_garment",
-      "type": "enum",
-      "values": ["none", "apron", "coat", "high_visibility", "other"],
-      "justification": "An outer garment over the torso is directly visible",
-      "validity_ms": 120000
+      "question": "Look at the TOP of the head. If any net, cap, hood, scarf or other fabric covers any part of the top of the head, answer with that covering — answer it EVEN IF loose hair is also visible below or around it, which is normal and does not make the head uncovered. Answer \"none\" ONLY if the top of the head is bare hair or scalp with nothing on it. Answer \"not_visible\" if the head is out of frame, cut off by the crop edge, turned fully away, blurred, or too small to judge — do not guess from the uniform or the setting.",
+      "_region_comment": [
+        "The top 45% of the person box, which is head and shoulders. A whole",
+        "standing person is about 1:3 and the canonical crop is square, so",
+        "letterboxing one into the other spends ~55% of the image on black bar",
+        "and leaves the head around 40x40px. That lost a plainly visible blue",
+        "hairnet in the 2026-08-13 review: the model answered 'none' for a",
+        "covered head and the rule turned it into a violation.",
+        "Fractions of the subject box, never pixels — the same numbers work on",
+        "a person 200px tall and one 900px tall."
+      ],
+      "evidence_region": {
+        "top": 0.0,
+        "height": 0.45
+      },
+      "_question_comment": [
+        "The 2026-08-13 review's remaining error, and it was caused by an earlier",
+        "version of this line. 'Answer none only if you can clearly see uncovered",
+        "hair' made the model answer 'none' for three chefs in plainly visible blue",
+        "hairnets, because hair was also visible below the net. A covering plus",
+        "some visible hair is the normal appearance of a hairnet, not an absence."
+      ]
     },
     {
       "key": "hand_covering",
       "type": "enum",
-      "values": ["none", "gloves", "not_visible"],
+      "_comment": [
+        "The attribute that produced every unsupported claim in the 2026-08-13",
+        "kitchen review: five of five crops got a confident 'gloves' or 'none'",
+        "while the hands were inside a pot, behind a body, or out of frame.",
+        "",
+        "The question below is deliberately lopsided. It spends one clause on how",
+        "to say yes and four on when to refuse, because refusing is the answer",
+        "the model was never giving."
+      ],
+      "values": [
+        "none",
+        "gloves",
+        "not_visible"
+      ],
       "justification": "Covering on the hands is directly visible in the hand region",
-      "validity_ms": 60000
-    },
-    {
-      "key": "visible_hand_activity",
-      "type": "enum",
-      "values": ["none", "handling_food", "handling_utensil", "using_phone", "washing", "other"],
-      "justification": "Hand-to-object contact is a configuration of pixels; what the contact is FOR is not asked",
-      "validity_ms": 15000,
-      "question": "Choose only from direct hand contact you can see. Do not infer a task."
+      "validity_ms": 60000,
+      "question": "Look at the HANDS themselves. Answer \"not_visible\" if the hands are out of frame, below the crop edge, behind the body, in a pocket, or inside a pot, bowl, sink, bag or any container — a hand you cannot see is not_visible even if you can see the arm going into something. A visible forearm, sleeve or cuff is NOT a visible hand. Answer \"none\" ONLY if you can actually see bare skin on a hand. Answer \"gloves\" ONLY if you can actually see a covering on a hand.",
+      "_region_comment": [
+        "From just below the head to just above the knees. Hands live at the",
+        "end of arms, and arms in this kitchen are usually down at the sides or",
+        "forward into a pot — both inside this band.",
+        "It overlaps the head band on purpose: when both attributes are demanded",
+        "together the strategy unions the two, so one crop still answers both",
+        "questions. M8 admits one crop per object per frame, and inventing a",
+        "second would be a parallel pipeline."
+      ],
+      "evidence_region": {
+        "top": 0.15,
+        "height": 0.55
+      }
     }
   ],
-
   "demand": {
+    "_comment": [
+      "freshness_ms 60000 with on_change: PPE state changes when someone puts a",
+      "glove on, not every frame. The trigger set and the freshness window are",
+      "what stop a tracked person generating a model call per frame, and they",
+      "live here rather than in code so a deployment can retune the bill without",
+      "a release."
+    ],
     "freshness_ms": 60000,
-    "triggers": ["on_first_sight", "on_region_entry", "on_change"],
+    "triggers": [
+      "on_first_sight",
+      "on_region_entry",
+      "on_change"
+    ],
     "priority_class": "safety-observation",
     "budget": {
       "max_calls_per_hour": 400
     }
   },
-
   "prompt": {
     "prompt_id": "kitchen-safety.person",
-    "version": "1.0.0",
-    "max_output_tokens": 256,
-    "preamble": "You are a visual attribute extractor for a video analytics platform. Look at the cropped image of a {class_id} and report ONLY what is directly visible. Do not judge compliance, correctness, role or intent. Do not describe what someone should or should not be wearing."
+    "version": "2.0.0",
+    "max_output_tokens": 128,
+    "_comment": [
+      "The preamble establishes the discipline; the per-field questions above",
+      "apply it. Both are data — no wording about hairnets, gloves or kitchens",
+      "appears anywhere in Python or TypeScript."
+    ],
+    "preamble": "You are inspecting one cropped CCTV image of a person for personal protective equipment. Report ONLY what is plainly visible in THIS image. You are being graded on refusing to guess, not on filling every field. If the body part a question asks about is not clearly visible in this crop, the correct answer is \"not_visible\" — that is a complete and useful answer, and it is always better than a guess. Do not infer equipment from the uniform, the room, the person's apparent role, or what someone in this setting would normally wear. Do not assume a hand is gloved because the work looks like it needs gloves. Do not assume a head is covered because the job usually requires it. Judge each body part independently: it is normal and expected for one to be visible and the other not."
   },
-
   "labels": {
     "owner": "example",
     "note": "illustrative-only"
