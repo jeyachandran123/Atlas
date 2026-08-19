@@ -30,7 +30,7 @@ from .conftest import (
     OTHER_CAMERA,
     OTHER_TENANT,
     TENANT,
-    flat_frame,
+    other_sharp_frame,
     frame_context,
     make_demand,
     make_object,
@@ -84,8 +84,8 @@ class TestDeterministicEvaluation:
         frame = frame_context()
         request = manager.evaluate([make_object()], frame).requests[0]
         sharp = manager.extract(request, pixels=sharp_frame(), frame=frame)
-        flat = manager.extract(request, pixels=flat_frame(), frame=frame)
-        assert sharp.crop_id != flat.crop_id
+        other = manager.extract(request, pixels=other_sharp_frame(), frame=frame)
+        assert sharp.crop_id != other.crop_id
 
     def test_the_transform_is_reproducible(self, manager) -> None:
         manager.register_demand(make_demand())

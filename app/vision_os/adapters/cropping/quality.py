@@ -48,7 +48,25 @@ DEFAULT_MAX_OCCLUSION = 0.7
 #: Empirical scaling constant, not a threshold: it converts an unbounded variance
 #: into the [0,1] grade 02_VOM requires. The *decision* threshold is
 #: ``DEFAULT_MAX_BLUR`` above.
-SHARPNESS_SATURATION = 500.0
+#:
+#: Calibrated against real kitchen CCTV (``datasets/kitchen-01``): native-
+#: resolution patches of that footage score roughly 40–120 sharp, and the same
+#: crops under a 6px Gaussian fall below 5. 60.0 puts the midpoint of the grade
+#: inside that gap rather than above the whole range.
+SHARPNESS_SATURATION = 60.0
+
+#: Side of each patch sampled for blur, and how many patches across the crop.
+#:
+#: Blur must be measured between **adjacent** pixels. A stride sample spread over
+#: the whole crop compares pixels far enough apart to be uncorrelated, which
+#: reports a large variance for any textured scene no matter how smeared it is —
+#: measuring how busy the kitchen is, not whether the lens was in focus.
+#:
+#: Several small patches rather than one large one because blur is local: a still
+#: counter and a moving arm share a crop, and one centred window would grade
+#: whichever happened to be in the middle.
+BLUR_PATCH_SIDE = 12
+BLUR_PATCH_GRID = 3
 
 #: Mean luma below/above which exposure is called under/over.
 UNDEREXPOSED_LUMA = 40.0
@@ -204,37 +222,97 @@ class HeuristicQualityEstimator:
     def _blur(self, request: QualityRequest) -> float:
         """Normalized variance-of-Laplacian: 0 is sharp, 1 is featureless.
 
-        A subsampled 4-neighbour Laplacian over a bounded grid. Exact variance
-        over every pixel would be more precise and would cost more than some of
-        the inference it is protecting.
+        A 4-neighbour Laplacian over **adjacent** pixels, taken from a few small
+        patches spread across the crop. Adjacency is the whole point: the
+        Laplacian measures how fast intensity changes from one pixel to the next,
+        and pixels sampled far apart change fast in any textured scene, blurred
+        or not.
+
+        The patches are read at native resolution and the sharpest is kept. A
+        crop where anything is in focus was focused; averaging would let a large
+        flat wall outvote the subject and grade a sharp chef as blurred.
+
+        Cost stays bounded by ``BLUR_PATCH_SIDE`` and ``BLUR_PATCH_GRID`` rather
+        than by crop size — quality estimation must never become the expensive
+        step it exists to avoid paying for.
         """
-        luma = self._sample_luma(request)
-        if len(luma) < 9:
-            return 0.0
-        stride = self._grid_stride(len(luma))
-        if stride < 3:
-            return 0.0
+        best = 0.0
+        found = False
+        for patch in self._blur_patches(request):
+            side = BLUR_PATCH_SIDE
+            responses: list[float] = []
+            for row in range(1, side - 1):
+                for col in range(1, side - 1):
+                    centre = patch[row * side + col]
+                    responses.append(
+                        patch[(row - 1) * side + col]
+                        + patch[(row + 1) * side + col]
+                        + patch[row * side + col - 1]
+                        + patch[row * side + col + 1]
+                        - 4.0 * centre
+                    )
+            if len(responses) < 2:
+                continue
+            mean = sum(responses) / len(responses)
+            variance = sum((r - mean) ** 2 for r in responses) / len(responses)
+            best = max(best, variance)
+            found = True
 
-        responses: list[float] = []
-        rows = len(luma) // stride
-        for row in range(1, rows - 1):
-            for col in range(1, stride - 1):
-                centre = luma[row * stride + col]
-                laplacian = (
-                    luma[(row - 1) * stride + col]
-                    + luma[(row + 1) * stride + col]
-                    + luma[row * stride + col - 1]
-                    + luma[row * stride + col + 1]
-                    - 4.0 * centre
-                )
-                responses.append(laplacian)
-
-        if len(responses) < 2:
+        if not found:
             return 0.0
-        mean = sum(responses) / len(responses)
-        variance = sum((r - mean) ** 2 for r in responses) / len(responses)
-        sharpness = min(1.0, variance / SHARPNESS_SATURATION)
+        sharpness = min(1.0, best / SHARPNESS_SATURATION)
         return round(1.0 - sharpness, 6)
+
+    def _blur_patches(self, request: QualityRequest) -> list[list[float]]:
+        """Contiguous native-resolution patches, evenly spaced over the crop.
+
+        Deterministic placement, never random: the same crop must grade the same
+        way on replay six months later (obligation Q4, invariant V13).
+        """
+        pixels = request.pixels
+        width, height = request.crop_width, request.crop_height
+        side = BLUR_PATCH_SIDE
+        if pixels is None or width < side or height < side:
+            return []
+        total = width * height
+        channels = max(1, len(pixels) // total)
+        if channels * total > len(pixels):
+            return []
+        raw = pixels.tobytes() if pixels.format != "B" else pixels
+        stride = width * channels
+
+        # Evenly spaced origins, inset so every patch lies wholly inside.
+        steps = max(1, BLUR_PATCH_GRID)
+        xs = self._origins(width, side, steps)
+        ys = self._origins(height, side, steps)
+
+        patches: list[list[float]] = []
+        for top in ys:
+            for left in xs:
+                patch: list[float] = []
+                for row in range(side):
+                    base = (top + row) * stride + left * channels
+                    for col in range(side):
+                        offset = base + col * channels
+                        if channels >= 3:
+                            patch.append(
+                                0.114 * raw[offset]
+                                + 0.587 * raw[offset + 1]
+                                + 0.299 * raw[offset + 2]
+                            )
+                        else:
+                            patch.append(float(raw[offset]))
+                patches.append(patch)
+        return patches
+
+    @staticmethod
+    def _origins(extent: int, side: int, steps: int) -> list[int]:
+        span = extent - side
+        if span <= 0:
+            return [0]
+        if steps == 1:
+            return [span // 2]
+        return [round(span * i / (steps - 1)) for i in range(steps)]
 
     def _exposure(self, request: QualityRequest) -> ExposureLevel:
         luma = self._sample_luma(request)

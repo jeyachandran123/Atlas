@@ -17,7 +17,7 @@ and never learns what implements it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .adapters.cropping import (
     CROP_STRATEGY_FACTORIES,
@@ -62,6 +62,25 @@ class CroppingLayer:
     @property
     def policy_id(self) -> str:
         return self.manager._policy.policy_id  # noqa: SLF001 - diagnostic accessor
+
+
+def build_quality_gate(platform: VisionPlatform, *, quality_floors=None) -> QualityGate:
+    """The gate, with any per-attribute floors the policies declared.
+
+    ``quality_floors`` is ``{attribute_key: {threshold_name: value}}`` from the
+    active policy documents. A crop taken to answer that attribute is judged
+    against the declared floor instead of the deployment default — because what
+    counts as usable depends on the question, and one global floor has to be
+    wrong for some of them.
+
+    Unknown threshold names were already refused when the document loaded, so
+    anything arriving here names a real field.
+    """
+    default = build_gate_thresholds(platform)
+    per_attribute = {
+        key: replace(default, **floors) for key, floors in (quality_floors or {}).items()
+    }
+    return QualityGate(default, per_attribute=per_attribute)
 
 
 def build_gate_thresholds(platform: VisionPlatform) -> GateThresholds:
@@ -130,7 +149,7 @@ def build_quality_estimator(platform: VisionPlatform):
     )
 
 
-def build_crop_strategy(platform: VisionPlatform, *, regions=None):
+def build_crop_strategy(platform: VisionPlatform, *, regions=None, output_sizes=None):
     """Select a crop strategy by name.
 
     ``regions`` is ``{attribute_key: (top, height)}`` from the active policy
@@ -138,6 +157,12 @@ def build_crop_strategy(platform: VisionPlatform, *, regions=None):
     discovered because the strategy is an adapter: it may use the demanded
     attributes to choose geometry (obligation C5) and must not go looking for a
     policy to find out what they mean.
+
+    ``output_sizes`` is ``{attribute_key: (width, height)}`` from the same
+    documents, for attributes needing more detail than the deployment default.
+    Also confined to ``crop.part_focused``: it is the only strategy that knows
+    which attributes a crop was planned for, and a per-attribute size means
+    nothing to a strategy that frames the whole subject regardless.
     """
     settings = platform.config.cropping()
     factory = CROP_STRATEGY_FACTORIES.get(settings.crop_strategy)
@@ -155,6 +180,7 @@ def build_crop_strategy(platform: VisionPlatform, *, regions=None):
             regions=regions or {},
             padding=settings.crop_padding,
             output_size=output_size,
+            output_sizes=output_sizes or {},
             preserve_aspect=settings.preserve_aspect,
         )
     return factory(
@@ -176,6 +202,8 @@ def build_cropping_layer(
     label_space: LabelSpaceView | None = None,
     verification: VerificationRules | None = None,
     evidence_regions=None,
+    output_sizes=None,
+    quality_floors=None,
     crop_sink=None,
     attach: bool = True,
 ) -> CroppingLayer:
@@ -198,6 +226,14 @@ def build_cropping_layer(
         evidence_regions: ``{attribute_key: (top, height)}`` from the active
             policies, for ``crop.part_focused``. Absent, every attribute falls
             back to the whole subject box — the previous behaviour exactly.
+        output_sizes: ``{attribute_key: (width, height)}`` from the active
+            policies, for ``crop.part_focused``. An attribute needing more
+            detail than the deployment default declares it here; absent, every
+            crop is rendered at the configured size exactly as before.
+        quality_floors: ``{attribute_key: {threshold: value}}`` from the
+            active policies. A crop is judged against the floor declared for
+            what it was taken to answer; absent, the deployment default
+            applies and behaviour is unchanged.
         attach: Wire the runtime to the registry's sink. False leaves the layer
             assembled but unconnected, which is what a unit test wants.
 
@@ -216,7 +252,7 @@ def build_cropping_layer(
     selected_policy = policy or build_trigger_policy(platform, verification=verification)
     selected_estimator = estimator or build_quality_estimator(platform)
     selected_strategy = strategy or build_crop_strategy(
-        platform, regions=evidence_regions
+        platform, regions=evidence_regions, output_sizes=output_sizes
     )
     selected_extractor = extractor or ReferenceCropExtractor(
         interpolation=settings.interpolation
@@ -257,8 +293,11 @@ def build_cropping_layer(
         provenance=provenance,
         demands=demands,
         budget=budget,
-        gate=QualityGate(build_gate_thresholds(platform)),
+        gate=build_quality_gate(platform, quality_floors=quality_floors),
         label_space=label_space,
+        # The same map the strategy plans from. M8 uses it only to decide
+        # which attributes can share one crop; it never reads the geometry.
+        evidence_regions=evidence_regions,
     )
 
     runtime = CropRuntime(

@@ -126,6 +126,83 @@ def sharp_frame(
     return memoryview(bytes(buffer))
 
 
+def _noise(width: int, height: int) -> list[int]:
+    """A deterministic pseudo-random texture — the stand-in for a real scene.
+
+    Deterministic so a replay grades identically (V13). Fine-grained everywhere,
+    unlike a checkerboard, which has structure at exactly one frequency.
+    """
+    values = []
+    state = 0x2545F491
+    for _ in range(width * height):
+        state = (state * 1103515245 + 12345) & 0x7FFFFFFF
+        values.append((state >> 16) & 0xFF)
+    return values
+
+
+def noise_frame(
+    width: int = FRAME_WIDTH, height: int = FRAME_HEIGHT, channels: int = 3
+) -> memoryview:
+    """In-focus texture: neighbouring pixels differ sharply."""
+    values = _noise(width, height)
+    buffer = bytearray(width * height * channels)
+    for index, value in enumerate(values):
+        for c in range(channels):
+            buffer[index * channels + c] = value
+    return memoryview(bytes(buffer))
+
+
+def blurred_frame(
+    width: int = FRAME_WIDTH, height: int = FRAME_HEIGHT, channels: int = 3
+) -> memoryview:
+    """The same texture, smeared.
+
+    Still structured at coarse scales — what a box filter removes is the *local*
+    gradient, which is exactly what a blur measure must be sensitive to and what
+    a stride-sampled one is blind to.
+    """
+    values = _noise(width, height)
+    # Uniform noise is far sharper than any real scene, so it takes several
+    # passes to reach the softness of a genuinely out-of-focus crop.
+    for _ in range(6):
+        smoothed = list(values)
+        for y in range(height):
+            for x in range(width):
+                total = count = 0
+                for dy in (-1, 0, 1):
+                    for dx in (-1, 0, 1):
+                        sy, sx = y + dy, x + dx
+                        if 0 <= sy < height and 0 <= sx < width:
+                            total += values[sy * width + sx]
+                            count += 1
+                smoothed[y * width + x] = total // count
+        values = smoothed
+    buffer = bytearray(width * height * channels)
+    for index, value in enumerate(values):
+        for c in range(channels):
+            buffer[index * channels + c] = value
+    return memoryview(bytes(buffer))
+
+
+def other_sharp_frame(
+    width: int = FRAME_WIDTH, height: int = FRAME_HEIGHT, channels: int = 3
+) -> memoryview:
+    """A different high-frequency pattern that also grades as sharp.
+
+    For proving that different pixels hash differently. A featureless frame
+    cannot serve that purpose any more: the gate rejects it before a crop
+    exists, which is the gate working correctly.
+    """
+    buffer = bytearray(width * height * channels)
+    for y in range(height):
+        for x in range(width):
+            value = 255 if (x // 2 + y) % 2 == 0 else 0
+            base = (y * width + x) * channels
+            for c in range(channels):
+                buffer[base + c] = value
+    return memoryview(bytes(buffer))
+
+
 def flat_frame(
     width: int = FRAME_WIDTH,
     height: int = FRAME_HEIGHT,

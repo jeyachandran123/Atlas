@@ -334,3 +334,76 @@ def test_no_domain_vocabulary_is_written_into_the_loader():
     body = source.split('"""', 2)[-1].lower()
     for domain_word in ("hairnet", "apron", "shirt_colour", "cooking", "restaurant"):
         assert domain_word not in body, f"'{domain_word}' was hardcoded into the loader"
+
+
+# --- per-attribute crop resolution (Phase 4.2) -------------------------------- #
+#
+# Resolution is declared per attribute because how much detail a claim needs
+# depends on the claim, and because vision tokens scale with area: 448 costs 4x
+# the tokens of 224, so raising it globally to fix one question would be a cost
+# with no measured return.
+
+
+def sized(value, key="posture"):
+    return document(
+        attributes=[
+            {
+                "key": key,
+                "type": "enum",
+                "values": ["standing", "sitting"],
+                "justification": "Body configuration is directly visible",
+                "output_size": value,
+            }
+        ]
+    )
+
+
+def test_output_size_survives_policy_loading(tmp_path):
+    policy = SemanticPolicy.from_file(write(tmp_path, sized(448)))
+    assert policy.output_sizes == {"posture": (448, 448)}
+
+
+def test_output_size_accepts_an_explicit_width_and_height(tmp_path):
+    policy = SemanticPolicy.from_file(write(tmp_path, sized({"width": 448, "height": 224})))
+    assert policy.output_sizes == {"posture": (448, 224)}
+
+
+def test_an_attribute_declaring_no_size_is_absent_rather_than_defaulted(tmp_path):
+    """So the strategy can tell "the document said nothing" from "the document
+    said the default" — the distinction that lets a default change safely."""
+    policy = SemanticPolicy.from_file(write(tmp_path, document()))
+    assert policy.output_sizes == {}
+
+
+@pytest.mark.parametrize("bad", [0, -1, {"width": 448}, "448", True, {"width": 448, "height": 0}])
+def test_a_malformed_output_size_is_refused_at_load(tmp_path, bad):
+    """Refused while someone is looking at the file. A size silently ignored
+    would leave a deployment believing it had raised a resolution it had not,
+    and the symptom — a confident answer from too little detail — looks like a
+    model problem rather than a typo."""
+    with pytest.raises(ConfigurationError):
+        SemanticPolicy.from_file(write(tmp_path, sized(bad)))
+
+
+def test_an_absurd_output_size_is_refused(tmp_path):
+    """Vision tokens scale with area, so an unbounded config value is an
+    unbounded bill. A typo of 4480 for 448 is caught here, not on an invoice."""
+    with pytest.raises(ConfigurationError, match="ceiling"):
+        SemanticPolicy.from_file(write(tmp_path, sized(4480)))
+
+
+def test_the_shipped_kitchen_policy_raises_only_the_head(tmp_path):
+    """The measured configuration: 23.3% -> 74.4% head accuracy came from
+    raising this one attribute. Hands are left at the default because no
+    measurement supports paying 4x the tokens for them."""
+    policy = SemanticPolicy.from_file(f"{POLICIES}/kitchen-safety.example.json")
+    assert policy.output_sizes == {"head_covering": (448, 448)}
+    assert "hand_covering" not in policy.output_sizes
+
+
+def test_declaring_a_size_does_not_disturb_the_other_declarations(tmp_path):
+    """Region, floors and size are independent knobs on the same attribute."""
+    policy = SemanticPolicy.from_file(f"{POLICIES}/kitchen-safety.example.json")
+    assert policy.evidence_regions["head_covering"] == (0.0, 0.45)
+    assert policy.quality_floors["head_covering"]["max_blur"] == 0.5
+    assert policy.output_sizes["head_covering"] == (448, 448)

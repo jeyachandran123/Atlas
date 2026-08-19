@@ -32,6 +32,8 @@ from ..conftest import (
     FRAME_WIDTH,
     bright_frame,
     dark_frame,
+    blurred_frame,
+    noise_frame,
     flat_frame,
     sharp_frame,
 )
@@ -126,6 +128,41 @@ class TestPixelGrades:
             )
         )
         assert grades.blur == pytest.approx(1.0, abs=1e-6)
+
+    def test_blur_separates_a_smeared_crop_from_a_sharp_one(self, estimator) -> None:
+        """The axis must respond to *blur*, not merely to featurelessness.
+
+        Regression test for a defect found on real kitchen footage: the estimator
+        sampled with a stride spanning the whole crop and then treated those
+        far-apart samples as neighbours. Pixels that distant are uncorrelated in
+        any textured scene, so the variance saturated and every crop graded
+        0.0 — perfectly sharp. Only a uniform frame ever scored as blurred, which
+        made the whole axis, and every threshold built on it, inert.
+
+        A texture smeared by repeated local averaging must grade measurably
+        worse than the texture itself.
+        """
+        sharp = estimator.estimate(
+            request_for(
+                Box(0.4, 0.3, 0.55, 0.85),
+                pixels=noise_frame(64, 64),
+                crop_width=64,
+                crop_height=64,
+            )
+        )
+        smeared = estimator.estimate(
+            request_for(
+                Box(0.4, 0.3, 0.55, 0.85),
+                pixels=blurred_frame(64, 64),
+                crop_width=64,
+                crop_height=64,
+            )
+        )
+        assert sharp.blur is not None and smeared.blur is not None
+        assert smeared.blur > sharp.blur + 0.3, (
+            f"blurring moved the grade only from {sharp.blur} to {smeared.blur}; "
+            "the axis is not measuring focus"
+        )
 
     def test_exposure_is_classified(self, estimator) -> None:
         def exposure_of(pixels):

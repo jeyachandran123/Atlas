@@ -138,6 +138,7 @@ class CropManager:
         "_extractor",
         "_failures",
         "_frames_evaluated",
+        "_evidence_regions",
         "_gate",
         "_gate_windows",
         "_label_space",
@@ -168,6 +169,7 @@ class CropManager:
         budget: UnderstandingBudget | None = None,
         gate: QualityGate | None = None,
         label_space: LabelSpaceView | None = None,
+        evidence_regions: dict[str, tuple[float, float]] | None = None,
     ) -> None:
         self._clock = clock
         self._metrics = metrics
@@ -194,6 +196,12 @@ class CropManager:
             else budget
         )
         self._gate = QualityGate() if gate is None else gate
+
+        # Where each attribute is visible on a subject, as declared by the
+        # policy that asked for it. Used only to *group* attributes into
+        # evidence requests; the geometry itself is the crop strategy's to
+        # plan. Empty means one group, which is the previous behaviour.
+        self._evidence_regions = dict(evidence_regions or {})
 
         # Undeclared by default. M8 never asks a detector what it can name — the
         # composition root, which chose the detector, states it. An empty view
@@ -375,53 +383,70 @@ class CropManager:
         for item in ordered:
             decision, obj = item.decision, item.obj
 
-            if len(requests) >= self._config.max_candidates_per_frame:
-                skipped.append(
-                    Skipped(
+            # One request per **evidence group**, not per object.
+            #
+            # Attributes about different parts of a subject need different
+            # pixels. Answering them from one crop means unioning their regions,
+            # and a union of "the head" and "the hands" is most of a body — which
+            # is the whole-person crop the split exists to escape. Grouping keeps
+            # each question with evidence that actually contains its answer.
+            #
+            # Attributes sharing a region stay in one group, so this adds crops
+            # only where the geometry genuinely differs. With no regions declared
+            # every attribute lands in one group and the behaviour is unchanged.
+            for group in self._evidence_groups(decision.attributes):
+                if len(requests) >= self._config.max_candidates_per_frame:
+                    skipped.append(
+                        Skipped(
+                            object_id=obj.object_id,
+                            camera_id=camera_id,
+                            reason=SkipReason.PRIORITY_PREEMPTED,
+                            detail=(
+                                f"per-frame candidate ceiling "
+                                f"({self._config.max_candidates_per_frame}) reached"
+                            ),
+                            attribute_keys=tuple(str(k) for k in group),
+                        )
+                    )
+                    continue
+
+                # Each group is its own model call and is charged as one. A
+                # subject whose head and hands are asked about separately costs
+                # two units, and when the budget runs out mid-subject the
+                # remaining groups are skipped with an attributed reason rather
+                # than quietly answered from the wrong pixels.
+                if not self._budget.try_spend(
+                    self._clock.monotonic(), demand_ids=decision.demand_ids
+                ):
+                    exhausted = True
+                    skipped.append(
+                        Skipped(
+                            object_id=obj.object_id,
+                            camera_id=camera_id,
+                            reason=SkipReason.BUDGET_EXHAUSTED,
+                            detail="understanding budget spent for this window",
+                            attribute_keys=tuple(str(k) for k in group),
+                        )
+                    )
+                    continue
+
+                requests.append(
+                    CropRequest(
                         object_id=obj.object_id,
                         camera_id=camera_id,
-                        reason=SkipReason.PRIORITY_PREEMPTED,
-                        detail=(
-                            f"per-frame candidate ceiling "
-                            f"({self._config.max_candidates_per_frame}) reached"
-                        ),
-                        attribute_keys=tuple(str(k) for k in decision.attributes),
+                        frame_ref=frame.frame_ref,
+                        source_box=self._box_of(obj),
+                        trigger_reason=decision.reason,
+                        tenant_id=obj.tenant_id,
+                        site_id=obj.site_id,
+                        class_id=obj.class_id,
+                        required_attributes=tuple(str(k) for k in group),
+                        priority_class=decision.priority_class,
+                        demand_ids=decision.demand_ids,
                     )
                 )
-                continue
-
-            if not self._budget.try_spend(
-                self._clock.monotonic(), demand_ids=decision.demand_ids
-            ):
-                exhausted = True
-                skipped.append(
-                    Skipped(
-                        object_id=obj.object_id,
-                        camera_id=camera_id,
-                        reason=SkipReason.BUDGET_EXHAUSTED,
-                        detail="understanding budget spent for this window",
-                        attribute_keys=tuple(str(k) for k in decision.attributes),
-                    )
-                )
-                continue
-
-            requests.append(
-                CropRequest(
-                    object_id=obj.object_id,
-                    camera_id=camera_id,
-                    frame_ref=frame.frame_ref,
-                    source_box=self._box_of(obj),
-                    trigger_reason=decision.reason,
-                    tenant_id=obj.tenant_id,
-                    site_id=obj.site_id,
-                    class_id=obj.class_id,
-                    required_attributes=tuple(str(k) for k in decision.attributes),
-                    priority_class=decision.priority_class,
-                    demand_ids=decision.demand_ids,
-                )
-            )
-            for demand_id in decision.demand_ids:
-                self._demands.record_served(DemandId(demand_id), now)
+                for demand_id in decision.demand_ids:
+                    self._demands.record_served(DemandId(demand_id), now)
 
         if exhausted:
             self._publish_budget_exhausted()
@@ -475,7 +500,7 @@ class CropManager:
                 neighbour_boxes=neighbour_boxes,
             )
         )
-        pre_result = self._gate.evaluate(pre_grades)
+        pre_result = self._gate.evaluate(pre_grades, request.required_attributes)
         if not pre_result.passed:
             self._reject(request, pre_grades, pre_result)
 
@@ -510,7 +535,7 @@ class CropManager:
                 crop_height=transform.output_height,
             )
         )
-        gate_result = self._gate.evaluate(grades)
+        gate_result = self._gate.evaluate(grades, request.required_attributes)
         self._record_gate(camera_id, gate_result)
         if not gate_result.passed:
             self._reject(request, grades, gate_result)
@@ -648,6 +673,41 @@ class CropManager:
             self._metrics.counter(
                 MetricName.VERIFICATION_CANDIDATES, camera_id=str(camera_id)
             ).increment()
+
+    def _evidence_groups(
+        self, attributes: Sequence[AttributeKey]
+    ) -> tuple[tuple[AttributeKey, ...], ...]:
+        """Partition demanded attributes by the region that answers them.
+
+        The grouping key is the declared ``(top, height)`` band, so two
+        attributes visible in the same place travel together and cost one call
+        between them. M8 never learns what a region *means* — it compares two
+        pairs of floats supplied by configuration, exactly as it compares a
+        priority class it does not interpret.
+
+        Order is deterministic (V13): groups come back sorted by band, and each
+        group's attributes sorted by key, so the same demand always produces the
+        same requests in the same sequence and a replay reproduces them.
+
+        Attributes with no declared region share the empty band, which means a
+        deployment that declared none gets exactly one group — the previous
+        behaviour, unchanged.
+        """
+        if not attributes:
+            return ()
+
+        buckets: dict[tuple[float, float] | None, list[AttributeKey]] = {}
+        for key in attributes:
+            buckets.setdefault(self._evidence_regions.get(str(key)), []).append(key)
+
+        # `None` sorts first and is the undeclared bucket; declared bands sort by
+        # position down the subject, so a head group precedes a hand group.
+        return tuple(
+            tuple(sorted(keys, key=str))
+            for _, keys in sorted(
+                buckets.items(), key=lambda item: (item[0] is not None, item[0] or (0.0, 0.0))
+            )
+        )
 
     # --- candidate construction ---------------------------------------------------- #
 

@@ -187,7 +187,14 @@ class PartFocusedCropStrategy:
     inventing a second would be a parallel pipeline.
     """
 
-    __slots__ = ("_min_aspect", "_output_size", "_padding", "_preserve_aspect", "_regions")
+    __slots__ = (
+        "_min_aspect",
+        "_output_size",
+        "_output_sizes",
+        "_padding",
+        "_preserve_aspect",
+        "_regions",
+    )
 
     def __init__(
         self,
@@ -195,6 +202,7 @@ class PartFocusedCropStrategy:
         regions: dict[str, tuple[float, float]] | None = None,
         padding: float = DEFAULT_PADDING,
         output_size: tuple[int, int] = DEFAULT_OUTPUT_SIZE,
+        output_sizes: dict[str, tuple[int, int]] | None = None,
         preserve_aspect: bool = True,
         min_aspect: float = 0.75,
     ) -> None:
@@ -202,6 +210,22 @@ class PartFocusedCropStrategy:
         Args:
             regions: ``{attribute_key: (top, height)}`` as fractions of the
                 subject box, from the policy document.
+            output_sizes: ``{attribute_key: (width, height)}`` for attributes
+                that need a canonical crop larger than the deployment default.
+
+                **How much resolution a claim needs depends on the claim.**
+                Narrowing to the head band recovers framing but not detail: the
+                band is still resampled to the canonical size, so a hairnet in a
+                224px crop survives as roughly 30px of fabric. Measured on
+                annotated kitchen footage, raising only the head band to 448
+                moved head accuracy from 23.3% to 74.4% with the same model,
+                prompt, region and detector.
+
+                Absent an entry the deployment default applies, so a deployment
+                that declares none behaves exactly as before. Declared per
+                attribute rather than raised globally because vision tokens
+                scale with *area*: paying 4x on every crop to fix one question
+                would be a cost with no measured return.
             min_aspect: The narrowest width/height the planned region may have
                 before it is widened. A tall band letterboxes into a square crop
                 exactly as a whole person does, so narrowing vertically without
@@ -214,6 +238,9 @@ class PartFocusedCropStrategy:
         width, height = output_size
         if width <= 0 or height <= 0:
             raise ValueError("output_size must be positive")
+        for key, size in (output_sizes or {}).items():
+            if size[0] <= 0 or size[1] <= 0:
+                raise ValueError(f"output_size for '{key}' is {size}; both must be positive")
         for key, span in (regions or {}).items():
             top, extent = span
             if not 0.0 <= top <= 1.0 or not 0.0 < extent <= 1.0 or top + extent > 1.0001:
@@ -224,6 +251,7 @@ class PartFocusedCropStrategy:
         self._regions = dict(regions or {})
         self._padding = padding
         self._output_size = output_size
+        self._output_sizes = dict(output_sizes or {})
         self._preserve_aspect = preserve_aspect
         self._min_aspect = min_aspect
 
@@ -263,7 +291,7 @@ class PartFocusedCropStrategy:
 
         pad_x = (band_x2 - band_x1) * self._padding
         pad_y = band_height * self._padding
-        width, height = self._output_size
+        width, height = self._output_for(attributes)
         return CropPlan(
             source_box=box,
             padded_box=_clamped(
@@ -274,6 +302,27 @@ class PartFocusedCropStrategy:
             output_height=height,
             preserve_aspect=self._preserve_aspect,
         )
+
+    def _output_for(self, attributes: Sequence[AttributeKey]) -> tuple[int, int]:
+        """The canonical size for a crop serving these attributes.
+
+        The **largest** declared size wins when one crop answers several
+        questions, mirroring the gate's strictest-floor rule and for the same
+        reason: a crop rendered at the smaller size would answer the demanding
+        question from detail its own policy said was not enough, and the loss
+        would be invisible in the result.
+
+        Compared by area, because that is what the cost and the detail both
+        scale with.
+        """
+        declared = [
+            self._output_sizes[str(key)]
+            for key in attributes
+            if str(key) in self._output_sizes
+        ]
+        if not declared:
+            return self._output_size
+        return max(declared, key=lambda size: size[0] * size[1])
 
     def _span(self, attributes: Sequence[AttributeKey]) -> tuple[float, float]:
         """The union of the bands the demanded attributes declared.

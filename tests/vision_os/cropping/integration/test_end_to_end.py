@@ -247,6 +247,104 @@ class TestCompositionRoot:
         assert layer.policy_id == "trigger.default"
         assert layer.budget.ceiling_per_hour == pytest.approx(360_000.0)
 
+    def test_declared_quality_floors_reach_the_gate(self, clock) -> None:
+        """Per-attribute floors must survive the whole composition root.
+
+        The floors live in a policy document, are parsed by `SemanticPolicy`,
+        merged across policies by the harness, and handed to `build_cropping_layer`.
+        A gate that quietly kept the defaults would leave every declared floor
+        unenforced while the document, the tests and the dashboards all showed it
+        configured — the failure would be invisible from every side.
+        """
+        platform = make_platform(clock, cropping_document())
+        registry_layer = build_registry_layer(platform, store=InMemoryObjectStore())
+        layer = build_cropping_layer(
+            platform,
+            registry_layer,
+            attach=False,
+            quality_floors={
+                "head_covering": {"min_scale_pixels": 220.0, "max_blur": 0.5},
+                "hand_covering": {"min_scale_pixels": 120.0},
+            },
+        )
+        gate = layer.manager._gate
+
+        assert gate.thresholds_for(("head_covering",)).min_scale_pixels == 220.0
+        assert gate.thresholds_for(("head_covering",)).max_blur == 0.5
+        assert gate.thresholds_for(("hand_covering",)).min_scale_pixels == 120.0
+
+        # An unspecified field keeps the deployment default rather than the
+        # dataclass default: a document tightening scale must not loosen blur.
+        default = gate.thresholds_for(())
+        assert gate.thresholds_for(("hand_covering",)).max_blur == default.max_blur
+
+        # The strictest declared floor governs a crop that answers both.
+        assert gate.thresholds_for(("head_covering", "hand_covering")).min_scale_pixels == 220.0
+
+        # An attribute nobody declared is judged by the deployment default.
+        assert gate.thresholds_for(("garment_colour",)) is default
+
+    def test_a_layer_without_floors_behaves_exactly_as_before(self, clock) -> None:
+        platform = make_platform(clock, cropping_document())
+        registry_layer = build_registry_layer(platform, store=InMemoryObjectStore())
+        layer = build_cropping_layer(platform, registry_layer, attach=False)
+        gate = layer.manager._gate
+        assert gate.thresholds_for(("head_covering",)) is gate.thresholds
+
+    def test_declared_output_sizes_reach_the_crop_manager(self, clock) -> None:
+        """Per-attribute resolution must survive the whole composition root.
+
+        Loading the value proves the parser works; only planning a crop proves
+        the strategy the manager actually holds was given it. A size that stopped
+        at the boundary would leave the document, the tests and the dashboards
+        all showing 448 while every crop was still rendered at 224 — and the
+        symptom would look like a model failure.
+        """
+        platform = make_platform(
+            clock, cropping_document(crop_strategy="crop.part_focused")
+        )
+        registry_layer = build_registry_layer(platform, store=InMemoryObjectStore())
+        layer = build_cropping_layer(
+            platform,
+            registry_layer,
+            attach=False,
+            evidence_regions={"head_covering": (0.0, 0.45)},
+            output_sizes={"head_covering": (448, 448)},
+        )
+        strategy = layer.manager._strategy
+
+        def plan_for(*attributes):
+            return strategy.plan(
+                box=Box(0.3, 0.1, 0.5, 0.9),
+                class_id=ClassId("person"),
+                source_width=WIDTH,
+                source_height=HEIGHT,
+                attributes=tuple(AttributeKey(a) for a in attributes),
+            )
+
+        assert plan_for("head_covering").output_width == 448
+        # An attribute nobody sized keeps the deployment default, whatever the
+        # deployment happens to have configured it to.
+        assert plan_for("hand_covering").output_width == 64
+        # A crop answering both is rendered at the larger of the two.
+        assert plan_for("head_covering", "hand_covering").output_width == 448
+
+    def test_a_layer_without_output_sizes_renders_as_before(self, clock) -> None:
+        """No deployment is silently upgraded: 448 costs 4x the vision tokens."""
+        platform = make_platform(
+            clock, cropping_document(crop_strategy="crop.part_focused")
+        )
+        registry_layer = build_registry_layer(platform, store=InMemoryObjectStore())
+        layer = build_cropping_layer(platform, registry_layer, attach=False)
+        plan = layer.manager._strategy.plan(
+            box=Box(0.3, 0.1, 0.5, 0.9),
+            class_id=ClassId("person"),
+            source_width=WIDTH,
+            source_height=HEIGHT,
+            attributes=(AttributeKey("head_covering"),),
+        )
+        assert plan.output_width == 64, "the deployment's own size, unchanged"
+
     def test_a_disabled_layer_refuses_to_build(self, clock) -> None:
         """A site that does not want attention should not build the layer."""
         document = cropping_document()

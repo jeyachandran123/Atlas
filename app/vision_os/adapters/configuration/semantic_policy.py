@@ -97,6 +97,44 @@ class SemanticRequirement:
     question: str = ""
     """Optional per-field wording. Rendered into the prompt when present."""
 
+    min_quality: Mapping[str, float] | None = None
+    """Quality floors a crop must clear before this attribute is asked at all.
+
+    Keys are ``GateThresholds`` field names — ``min_scale_pixels``,
+    ``max_blur``, ``max_truncation``, ``max_occlusion``. ``None`` means the
+    deployment's default gate applies.
+
+    Declared per attribute because **what counts as usable depends on the
+    question**. A whole-person crop 60px tall answers "what colour is the
+    garment" perfectly well; the head band inside it is 27px and cannot answer
+    "is the head covered". A single global floor has to be wrong for one of
+    them, and it fails silently either way — too low and a blurred region
+    returns a confident answer, too high and every distant subject goes
+    unexamined.
+
+    These are **calibration candidates**, not production values. The right
+    numbers come from measuring annotated footage, and until that measurement
+    exists a deployment should treat any value here as provisional."""
+
+    output_size: tuple[int, int] | None = None
+    """Canonical crop size for evidence answering this attribute. ``None`` means
+    the deployment default.
+
+    Separate from ``evidence_region`` because they fix different losses.
+    The region decides *what* is in the crop; this decides *how much detail*
+    survives being resampled into it. Narrowing to a body part stops spending the
+    canvas on the rest of the subject, but that band is still resampled to the
+    canonical size — so a small feature can arrive as a few dozen pixels either
+    way, and be read as absent.
+
+    Measured on annotated footage (``datasets/kitchen-01``), raising one
+    attribute's crop from 224 to 448 moved its accuracy from 23.3% to 74.4% with
+    an identical model, prompt, region and detector.
+
+    Declared per attribute rather than raised globally because vision tokens
+    scale with **area**: 448 costs 4x the tokens of 224, and paying that on
+    every question to fix one would be a cost with no measured return."""
+
     evidence_region: tuple[float, float] | None = None
     """Where on the subject this attribute is visible, as ``(top, height)``
     fractions of its bounding box. ``None`` means the whole subject.
@@ -178,6 +216,8 @@ class SemanticPolicy:
                     validity_ms=int(entry.get("validity_ms", 30_000)),
                     question=str(entry.get("question", "")),
                     evidence_region=_region(entry.get("evidence_region")),
+                    min_quality=_quality(entry.get("min_quality")),
+                    output_size=_output_size(entry.get("output_size")),
                 )
                 for entry in document.get("attributes", ())
             )
@@ -239,6 +279,34 @@ class SemanticPolicy:
     @property
     def class_ids(self) -> tuple[ClassId, ...]:
         return tuple(ClassId(c) for c in self.object_classes)
+
+    @property
+    def quality_floors(self) -> dict[str, dict[str, float]]:
+        """Every declared quality floor, keyed by attribute.
+
+        Handed to the gate at composition. Attributes that declared none are
+        absent rather than mapped to the default, so the gate can tell "the
+        document said nothing" from "the document said the default".
+        """
+        return {
+            r.key: dict(r.min_quality)
+            for r in self.requirements
+            if r.min_quality
+        }
+
+    @property
+    def output_sizes(self) -> dict[str, tuple[int, int]]:
+        """Every declared canonical crop size, keyed by attribute.
+
+        Handed to ``crop.part_focused`` at composition. Attributes that declared
+        none are absent rather than mapped to the default, so the strategy can
+        tell "the document said nothing" from "the document said the default".
+        """
+        return {
+            r.key: r.output_size
+            for r in self.requirements
+            if r.output_size is not None
+        }
 
     @property
     def evidence_regions(self) -> dict[str, tuple[float, float]]:
@@ -436,6 +504,72 @@ def _region(value: Any) -> tuple[float, float] | None:
             f"subject box; both are fractions of it"
         )
     return top, height
+
+
+def _quality(value: Any) -> dict[str, float] | None:
+    """Parse a ``min_quality`` block. Refuses a field the gate does not have.
+
+    Refusing at load rather than ignoring: a misspelled threshold that silently
+    did nothing would leave a deployment believing it had tightened a floor it
+    had not, and the symptom — a confident answer from bad evidence — looks like
+    a model problem rather than a typo.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ConfigurationError("min_quality must be an object of threshold names")
+    allowed = {
+        "min_scale_pixels", "max_truncation", "max_occlusion",
+        "max_blur", "max_crowding",
+    }
+    unknown = set(value) - allowed
+    if unknown:
+        raise ConfigurationError(
+            f"min_quality names {sorted(unknown)}, which the quality gate has no "
+            f"threshold for; supported: {sorted(allowed)}"
+        )
+    return {str(k): float(v) for k, v in value.items()}
+
+
+#: Largest canonical crop side a document may ask for.
+#:
+#: Vision tokens scale with area, so an unbounded value in a config file is an
+#: unbounded bill and an unbounded latency. 1024 is far above anything measured
+#: to help and low enough that a typo — 4480 for 448 — is refused while someone
+#: is looking at the file rather than discovered on an invoice.
+MAX_OUTPUT_SIZE = 1024
+
+
+def _output_size(value: Any) -> tuple[int, int] | None:
+    """Parse ``448`` or ``{"width": 448, "height": 448}``.
+
+    A bare integer is accepted because square is the overwhelmingly common case
+    and ``"output_size": 448`` is what someone writes when they mean it.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ConfigurationError("output_size must be a number or {width, height}")
+    if isinstance(value, (int, float)):
+        width = height = int(value)
+    elif isinstance(value, Mapping):
+        try:
+            width, height = int(value["width"]), int(value["height"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ConfigurationError(
+                f"output_size needs integer 'width' and 'height': {exc}"
+            ) from exc
+    else:
+        raise ConfigurationError("output_size must be a number or {width, height}")
+
+    if width <= 0 or height <= 0:
+        raise ConfigurationError(f"output_size ({width}x{height}) must be positive")
+    if width > MAX_OUTPUT_SIZE or height > MAX_OUTPUT_SIZE:
+        raise ConfigurationError(
+            f"output_size ({width}x{height}) exceeds the {MAX_OUTPUT_SIZE}px ceiling; "
+            f"vision tokens scale with area, so this is a cost limit, not a capability one"
+        )
+    return width, height
 
 
 def _optional_int(value: Any) -> int | None:

@@ -20,6 +20,7 @@ names the axis a human would name: a 9-pixel object is `TOO_SMALL`, not
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ...core.model.crop import GateRejection, GateResult
@@ -63,18 +64,66 @@ class QualityGate:
     engine's job, not the gate's.
     """
 
-    __slots__ = ("_thresholds",)
+    __slots__ = ("_per_attribute", "_thresholds")
 
-    def __init__(self, thresholds: GateThresholds | None = None) -> None:
+    def __init__(
+        self,
+        thresholds: GateThresholds | None = None,
+        *,
+        per_attribute: dict[str, GateThresholds] | None = None,
+    ) -> None:
+        """
+        Args:
+            per_attribute: Thresholds that apply when a crop was taken to answer
+                a particular attribute. **What counts as usable depends on the
+                question.** A whole-person crop 60px tall is a fine subject for
+                "what colour is the garment"; the head band inside it is 27px
+                and cannot answer "is the head covered". One global floor has to
+                be wrong for one of them, and the failure is silent either way:
+                too low and a blurred head yields a confident answer, too high
+                and every distant person goes unexamined.
+
+                Absent an entry the default applies, so a deployment that
+                declares none behaves exactly as before.
+        """
         self._thresholds = thresholds or GateThresholds()
+        self._per_attribute = dict(per_attribute or {})
 
     @property
     def thresholds(self) -> GateThresholds:
         return self._thresholds
 
-    def evaluate(self, grades: QualityGrades) -> GateResult:
-        """Decide. Every rejection names its axis and its measurement."""
-        t = self._thresholds
+    def thresholds_for(self, attributes: Sequence[str] = ()) -> GateThresholds:
+        """The thresholds governing a crop taken for these attributes.
+
+        The **strictest** declared floor wins when a crop serves several
+        attributes at once. A crop good enough for the laxest question but not
+        the strictest would otherwise answer both, and the strict one would be
+        answered from evidence its own policy called insufficient.
+
+        Ordering by `min_scale_pixels` alone is deliberate: scale is §M8's
+        "strongest single predictor", and comparing whole threshold sets would
+        need an ordering that does not exist.
+        """
+        declared = [
+            self._per_attribute[str(key)]
+            for key in attributes
+            if str(key) in self._per_attribute
+        ]
+        if not declared:
+            return self._thresholds
+        return max(declared, key=lambda t: t.min_scale_pixels)
+
+    def evaluate(
+        self, grades: QualityGrades, attributes: Sequence[str] = ()
+    ) -> GateResult:
+        """Decide. Every rejection names its axis and its measurement.
+
+        ``attributes`` names what the crop was taken to answer, so the verdict
+        can be specific to the question. Omitting it uses the default
+        thresholds, which is what every existing caller gets.
+        """
+        t = self.thresholds_for(attributes)
 
         # Degenerate geometry first: nothing else is meaningful without area.
         if grades.scale_pixels is not None and grades.scale_pixels <= 0.0:
@@ -140,11 +189,11 @@ class QualityGate:
 
         return GateResult.accept()
 
-    def would_pass(self, grades: QualityGrades) -> bool:
+    def would_pass(self, grades: QualityGrades, attributes: Sequence[str] = ()) -> bool:
         """Cheap pre-check, used before paying for extraction.
 
         The same logic, so a pre-check that passes and a post-check that rejects
         can only differ because a pixel-derived grade arrived — never because two
         implementations of "good enough" drifted apart.
         """
-        return self.evaluate(grades).passed
+        return self.evaluate(grades, attributes).passed

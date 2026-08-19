@@ -231,14 +231,14 @@ class TestExtraction:
         assert first.crop_id == second.crop_id
 
     def test_different_pixels_produce_different_ids(self, manager: CropManager) -> None:
-        from ..conftest import flat_frame
+        from ..conftest import other_sharp_frame
 
         demanded(manager)
         frame = frame_context()
         request = manager.evaluate([make_object()], frame).requests[0]
         sharp = manager.extract(request, pixels=sharp_frame(), frame=frame)
-        flat = manager.extract(request, pixels=flat_frame(), frame=frame)
-        assert sharp.crop_id != flat.crop_id
+        other = manager.extract(request, pixels=other_sharp_frame(), frame=frame)
+        assert sharp.crop_id != other.crop_id
 
     def test_a_gate_rejection_raises_with_its_reason(
         self, manager: CropManager

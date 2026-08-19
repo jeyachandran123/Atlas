@@ -88,7 +88,48 @@
         "hair' made the model answer 'none' for three chefs in plainly visible blue",
         "hairnets, because hair was also visible below the net. A covering plus",
         "some visible hair is the normal appearance of a hairnet, not an absence."
-      ]
+      ],
+      "_min_quality_comment": [
+        "Calibrated against datasets/kitchen-01 (15 frames, 43 annotated",
+        "subjects, human visual inspection). These are measured floors, not",
+        "guesses, and the measurement is what makes their limits honest:",
+        "",
+        "max_blur 0.5 - of 13 heads a human could not read, 2 were blurred",
+        "past this point and 11 were perfectly sharp. Every one of the 30",
+        "readable heads graded 0.00. So this floor rejects 2 unanswerable",
+        "crops at zero cost to answerable ones - a free gain, and a small",
+        "one. The other 11 are unreadable because the head is turned away,",
+        "bent down or outside the box, which no quality axis can detect.",
+        "",
+        "min_scale_pixels 130 - a guard, NOT a discriminator. Readable heads",
+        "measured 139-474px and unreadable ones 154-422px: the ranges overlap",
+        "almost completely, so on this camera scale does not separate them and",
+        "any floor high enough to matter would cost readable evidence. 130 sits",
+        "just below everything observed, to catch crops from a further camera",
+        "rather than to filter this one."
+      ],
+      "min_quality": {
+        "min_scale_pixels": 130.0,
+        "max_blur": 0.5
+      },
+      "_output_size_comment": [
+        "Measured, not chosen. On datasets/kitchen-01 the identical model,",
+        "prompt, region and detector scored 23.3% head accuracy at the 224",
+        "default and 74.4% at 448 - and false ABSENT on a covered head, the",
+        "production failure, fell from 20 to 4.",
+        "",
+        "evidence_region above and this are different fixes. The region",
+        "decides WHAT is in the crop; this decides how much DETAIL survives",
+        "being resampled into it. The head band is still squeezed to the",
+        "canonical size, so on 1712x1032 footage a hairnet arrived as ~30px",
+        "of fabric and read as a bare head. Narrowing alone could not fix",
+        "that; only resolution could.",
+        "",
+        "Raised here and not globally: vision tokens scale with AREA, so 448",
+        "costs 4x the tokens of 224. hand_covering is left at the default",
+        "because no measurement supports paying that for it."
+      ],
+      "output_size": 448
     },
     {
       "key": "hand_covering",
@@ -122,6 +163,24 @@
       "evidence_region": {
         "top": 0.15,
         "height": 0.55
+      },
+      "_min_quality_comment": [
+        "PROVISIONAL - calibrated on 3 positive examples and therefore not a",
+        "measurement. In kitchen-01 only 3 of 43 subjects had hands a human",
+        "could read at all; the other 40 were inside a pot, behind a body or",
+        "out of frame. Three examples cannot support a threshold, and a floor",
+        "fitted to them would be fitted to noise.",
+        "",
+        "These values are set to sit below every observed reading (hand crops",
+        "measured 183-579px, blur at most 0.79) so that they change nothing on",
+        "this camera. They exist so the field is present and reviewable, and",
+        "they must be recalibrated once a camera that actually sees hands has",
+        "been annotated. Raising them on this evidence would be inventing a",
+        "number and calling it calibration."
+      ],
+      "min_quality": {
+        "min_scale_pixels": 150.0,
+        "max_blur": 0.85
       }
     }
   ],
