@@ -9,14 +9,22 @@
     "visible' registers; 'staff member is compliant with policy' would not, and",
     "should not — that is a judgment for the consumer, not an observation.",
     "",
-    "=== SCOPE: TWO ATTRIBUTES ===",
+    "=== SCOPE: THREE ATTRIBUTES ===",
     "",
-    "This policy asks two questions and no others: is the head covered, and are",
-    "the hands covered. It previously also asked for covering colour, torso",
-    "garment and hand activity. Those were removed, not because they were wrong,",
-    "but because every extra field is another chance for a model to answer",
-    "confidently about something it cannot see, and each one costs tokens on a",
-    "call whose only consumer is a two-condition PPE rule.",
+    "This policy asks three questions and no others: is the head covered, is the",
+    "face covered, and are the hands covered. It previously also asked for",
+    "covering colour, torso garment and hand activity. Those were removed, not",
+    "because they were wrong, but because every extra field is another chance",
+    "for a model to answer confidently about something it cannot see.",
+    "",
+    "face_covering was added in 2.1.0 and is the exception that proves the rule",
+    "rather than a relaxation of it. It costs NO extra model call: it declares",
+    "head_covering's band exactly, so it rides a crop already being taken and",
+    "arrives as one more key in a response already being parsed. The discipline",
+    "that removed three fields is a discipline about CALLS and about answerable",
+    "questions, not a quota on keys - and a question that is free to ask is",
+    "still only worth asking if the model can actually see the answer, which is",
+    "why that attribute's wording is as lopsided toward refusal as the rest.",
     "",
     "=== THE UNCERTAINTY RULE ===",
     "",
@@ -34,7 +42,7 @@
     "a failed condition — never a violation, and never a pass."
   ],
   "policy_id": "kitchen-safety",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "scene": "kitchen",
   "scope": {
     "object_classes": [
@@ -132,6 +140,116 @@
       "output_size": 448
     },
     {
+      "key": "face_covering",
+      "type": "enum",
+      "_comment": [
+        "NEW in 2.1.0, and the gap this version exists to close. The head was",
+        "asked about and the hands were asked about; the face was not. A mask",
+        "requirement therefore had no observation to rest on, and the rule",
+        "document said so in as many words rather than inventing one.",
+        "",
+        "=== WHY THIS SHARES head_covering's BAND EXACTLY ===",
+        "",
+        "evidence_region and output_size below are identical to head_covering's,",
+        "character for character. That is a cost decision, not a copy-paste.",
+        "",
+        "M8 partitions demanded attributes by their declared (top, height) band",
+        "and issues ONE crop and ONE model call per distinct band. Identical",
+        "bands travel together; a band differing by 0.01 becomes its own group.",
+        "Measured today, head (0.0,0.45) and hand (0.15,0.55) are two groups at",
+        "2.00 calls per person. A tighter face band would make three, at 3.00 -",
+        "a 50% increase on every person in frame, and max_calls_per_hour below",
+        "would have to rise to match.",
+        "",
+        "Sharing the band means the head crop already on its way to the model",
+        "answers this question too: one more key in the same JSON response, for",
+        "no extra call, no extra crop and no extra budget unit.",
+        "",
+        "It is also the correct band on the merits. This is the head-and-",
+        "shoulders region, and a face is inside a head.",
+        "",
+        "=== WHY 'mask_below_nose' IS ITS OWN VALUE ===",
+        "",
+        "A mask parked on the chin is the commonest real mask failure, and it is",
+        "visibly distinct from BOTH a worn mask and a bare face. Folded into",
+        "'mask', every chin mask passes; folded into 'none', the observation",
+        "misdescribes what is plainly in the picture.",
+        "",
+        "It reports where fabric sits, not whether that is acceptable - which is",
+        "what keeps it an observation and not a verdict. Whether below-the-nose",
+        "counts as covered is a judgment, and it lives in the rule document,",
+        "exactly as 'head_covering != none' does."
+      ],
+      "values": [
+        "none",
+        "mask",
+        "mask_below_nose",
+        "other",
+        "not_visible"
+      ],
+      "justification": "A covering over the nose and mouth is directly visible in the crop",
+      "_validity_comment": [
+        "60s, matching hand_covering rather than head_covering's 120s. A hairnet",
+        "goes on at the start of a shift and stays on; a mask is pulled down to",
+        "talk, drink or breathe and pushed back up minutes later. The state it",
+        "reports genuinely changes faster, so vouching for it as long would mean",
+        "vouching for it wrongly."
+      ],
+      "validity_ms": 60000,
+      "_question_comment": [
+        "Lopsided toward refusal, for the reason hand_covering's is: the failure",
+        "this platform keeps producing is a confident answer about a body part",
+        "nobody looked at, not a missed covering.",
+        "",
+        "PROFILE IS DELIBERATELY ANSWERABLE. An earlier draft refused it. Phase",
+        "4.4 is the argument against that: a nose-anchored head definition would",
+        "'refuse most of this kitchen and discard evidence the camera plainly",
+        "has.' A mask is clearly visible from the side. What is genuinely",
+        "unreadable is the back of a head, not a cheek."
+      ],
+      "question": "Look at the FACE - the nose and mouth specifically. Answer \"not_visible\" if you are looking at the back or top of the head, if the face is turned away from the camera, or if it is cut off by the crop edge, blurred, or too small to judge. A face seen from the side IS visible - answer it normally. Answer \"mask\" ONLY if a mask or fabric covers BOTH the nose and the mouth. Answer \"mask_below_nose\" if a mask is on the person but sits below the nose, on the chin, or around the neck. Answer \"other\" for a face shield, visor or beard covering when nothing covers the nose and mouth. Answer \"none\" ONLY if you can actually see a bare nose and mouth with nothing on them.",
+      "_region_comment": [
+        "Identical to head_covering's by design - see the cost note above. Change",
+        "one of these two and you silently split the evidence group and add a",
+        "model call per person."
+      ],
+      "evidence_region": {
+        "top": 0.0,
+        "height": 0.45
+      },
+      "_min_quality_comment": [
+        "PROVISIONAL - no face has been annotated in this repository, so these",
+        "are not measured and must not be read as calibration. They are",
+        "head_covering's measured floors, copied deliberately.",
+        "",
+        "Copied rather than tightened because the gate takes the STRICTEST floor",
+        "across the attributes sharing a crop. Declaring anything tighter here",
+        "would silently tighten head_covering's gate too - overwriting a floor",
+        "that WAS measured (kitchen-01, 15 frames, 43 subjects) with one that",
+        "was guessed, and costing head observations that currently succeed.",
+        "",
+        "Identical values make the strictest-floor rule a no-op: head_covering's",
+        "calibration survives untouched, and this attribute inherits a floor",
+        "already known to be sane for this band.",
+        "",
+        "Recalibrate once live CCTV has produced annotated faces. A face is a",
+        "smaller feature than a hairnet and may well need a higher scale floor",
+        "than 130 - but that number has to be measured, and until it is, raising",
+        "it would be inventing a number and calling it calibration."
+      ],
+      "min_quality": {
+        "min_scale_pixels": 130.0,
+        "max_blur": 0.5
+      },
+      "_output_size_comment": [
+        "448, matching head_covering. Free: the strategy takes the LARGEST size",
+        "declared in a group, head_covering already declares 448, and this",
+        "attribute rides the same crop. Asking for more would re-render the",
+        "whole head band larger and multiply tokens for both questions."
+      ],
+      "output_size": 448
+    },
+    {
       "key": "hand_covering",
       "type": "enum",
       "_comment": [
@@ -155,10 +273,16 @@
         "From just below the head to just above the knees. Hands live at the",
         "end of arms, and arms in this kitchen are usually down at the sides or",
         "forward into a pot — both inside this band.",
-        "It overlaps the head band on purpose: when both attributes are demanded",
-        "together the strategy unions the two, so one crop still answers both",
-        "questions. M8 admits one crop per object per frame, and inventing a",
-        "second would be a parallel pipeline."
+        "It overlaps the head band, but it does NOT share a crop with it, and an",
+        "earlier version of this comment said it did. M8 groups attributes by",
+        "their EXACT declared band, and (0.15,0.55) is not (0.0,0.45) - so head",
+        "and hand are two groups, two crops and two model calls. Phase 4.2",
+        "measures precisely that: 2.00 calls per person for two attributes.",
+        "",
+        "The strategy does union bands, but only WITHIN a group; the grouping",
+        "split happens first, so two differing bands never reach the union.",
+        "face_covering above shares head's band character for character and is",
+        "therefore genuinely free. This one is not, and is worth its call."
       ],
       "evidence_region": {
         "top": 0.15,
@@ -205,14 +329,14 @@
   },
   "prompt": {
     "prompt_id": "kitchen-safety.person",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "max_output_tokens": 128,
     "_comment": [
       "The preamble establishes the discipline; the per-field questions above",
       "apply it. Both are data — no wording about hairnets, gloves or kitchens",
       "appears anywhere in Python or TypeScript."
     ],
-    "preamble": "You are inspecting one cropped CCTV image of a person for personal protective equipment. Report ONLY what is plainly visible in THIS image. You are being graded on refusing to guess, not on filling every field. If the body part a question asks about is not clearly visible in this crop, the correct answer is \"not_visible\" — that is a complete and useful answer, and it is always better than a guess. Do not infer equipment from the uniform, the room, the person's apparent role, or what someone in this setting would normally wear. Do not assume a hand is gloved because the work looks like it needs gloves. Do not assume a head is covered because the job usually requires it. Judge each body part independently: it is normal and expected for one to be visible and the other not."
+    "preamble": "You are inspecting one cropped CCTV image of a person for personal protective equipment. Report ONLY what is plainly visible in THIS image. You are being graded on refusing to guess, not on filling every field. If the body part a question asks about is not clearly visible in this crop, the correct answer is \"not_visible\" — that is a complete and useful answer, and it is always better than a guess. Do not infer equipment from the uniform, the room, the person's apparent role, or what someone in this setting would normally wear. Do not assume a hand is gloved because the work looks like it needs gloves. Do not assume a head is covered because the job usually requires it. Do not assume a face is masked because the setting is a kitchen. Judge each body part independently: it is normal and expected for one to be visible and another not."
   },
   "labels": {
     "owner": "example",

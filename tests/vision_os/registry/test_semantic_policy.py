@@ -392,13 +392,29 @@ def test_an_absurd_output_size_is_refused(tmp_path):
         SemanticPolicy.from_file(write(tmp_path, sized(4480)))
 
 
-def test_the_shipped_kitchen_policy_raises_only_the_head(tmp_path):
+def test_the_shipped_kitchen_policy_raises_only_the_head_band(tmp_path):
     """The measured configuration: 23.3% -> 74.4% head accuracy came from
-    raising this one attribute. Hands are left at the default because no
-    measurement supports paying 4x the tokens for them."""
+    raising the head band. Hands are left at the default because no measurement
+    supports paying 4x the tokens for them.
+
+    `face_covering` also reads 448, and that is not a second decision. It
+    declares head_covering's band exactly, so it shares the same crop and the
+    strategy renders that crop once at the largest size declared for it. The
+    load-bearing assertion is the one about hands: a band nobody measured is
+    still not paying 4x.
+    """
     policy = SemanticPolicy.from_file(f"{POLICIES}/kitchen-safety.example.json")
-    assert policy.output_sizes == {"head_covering": (448, 448)}
+    assert policy.output_sizes == {
+        "head_covering": (448, 448),
+        "face_covering": (448, 448),
+    }
     assert "hand_covering" not in policy.output_sizes
+
+    # The reason face_covering is free rather than a second 448 crop.
+    assert (
+        policy.evidence_regions["face_covering"]
+        == policy.evidence_regions["head_covering"]
+    )
 
 
 def test_declaring_a_size_does_not_disturb_the_other_declarations(tmp_path):

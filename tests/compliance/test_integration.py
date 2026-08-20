@@ -328,11 +328,18 @@ class TestSubjectsAreIndependent:
             labels={"obj-1": "Employee #1", "obj-2": "Employee #2"},
         )
 
-        assert [f.state for f in findings] == [
+        # Scoped to the PPE rule. The shipped document also carries an
+        # informational face-covering rule that covers `person`, and these
+        # fixtures declare no face_covering — so it contributes an UNKNOWN per
+        # subject. That is the correct behaviour of a rule whose evidence is
+        # absent, and it is not what this test is about.
+        ppe = [f for f in findings if f.rule_id == "kitchen.person.ppe.v1"]
+
+        assert [f.state for f in ppe] == [
             ComplianceState.COMPLIANT,
             ComplianceState.VIOLATION,
         ]
-        assert findings[1].describe() == "Employee #2: is not wearing a head covering"
+        assert ppe[1].describe() == "Employee #2: is not wearing a head covering"
 
 
 # --- 27. the no-policy configuration --------------------------------------------- #
@@ -380,6 +387,7 @@ class TestShippedExamplesLoad:
 
         assert {r.rule_id for r in rules.rules} == {
             "kitchen.person.ppe.v1",
+            "kitchen.person.face_covering.v1",
             "site.object.identity.v1",
         }
 
@@ -449,7 +457,17 @@ class TestShippedExamplesLoad:
                 (CONFIG / "rules" / "site-safety.example.json").read_text(encoding="utf-8")
             )
         )
-        gaps = rules.unproducible_against(["head_covering", "hand_covering"])
+        kitchen = json.loads(
+            (CONFIG / "policies" / "kitchen-safety.example.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        # Read from the document rather than restated here: a test that hardcodes
+        # the vocabulary fails when the policy gains an attribute, which says
+        # nothing about the property under test.
+        gaps = rules.unproducible_against(
+            [entry["key"] for entry in kitchen["attributes"]]
+        )
 
         assert gaps, "the gap must be visible at startup"
         assert all(rule_id == "site.object.identity.v1" for rule_id, _ in gaps)

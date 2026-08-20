@@ -170,17 +170,26 @@ class TestTheShippedDocumentsAgree:
                 f"'{entry['key']}' has no way to say the region was not visible"
             )
 
-    def test_the_policy_scope_is_the_two_ppe_questions(self) -> None:
+    def test_the_policy_scope_is_the_three_ppe_questions(self) -> None:
+        """head, face and hands — in that order, and no others.
+
+        `face_covering` arrived in policy 2.1.0. It is third question but not a
+        third model call: it declares head_covering's band, so it rides that
+        crop and costs one extra key in a response already being parsed.
+        """
         policy = json.loads(
             (CONFIG / "policies" / "kitchen-safety.example.json").read_text(encoding="utf-8")
         )
 
         assert [e["key"] for e in policy["attributes"]] == [
             "head_covering",
+            "face_covering",
             "hand_covering",
         ]
 
-    @pytest.mark.parametrize("key", ["head_covering", "hand_covering"])
+    @pytest.mark.parametrize(
+        "key", ["head_covering", "face_covering", "hand_covering"]
+    )
     def test_every_attribute_declares_where_it_is_visible(self, key: str) -> None:
         """The geometry the part-focused strategy reads. Data, not code."""
         policy = json.loads(
