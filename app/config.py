@@ -83,10 +83,10 @@ class Settings(BaseSettings):
     # ── NVIDIA ───────────────────────────────────────────────────────────────────
     nvidia_api_key: SecretStr = SecretStr("")
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
-    nvidia_chat_model: str = "deepseek-ai/deepseek-v4-pro"
-    nvidia_temperature: float = 0.3   # 1.0 is a creative-writing setting; it fabricates
-    nvidia_top_p: float = 0.95
-    nvidia_max_tokens: int = 16384
+    nvidia_chat_model: str = "openai/gpt-oss-120b"
+    nvidia_temperature: float = 1   # 1.0 is a creative-writing setting; it fabricates
+    nvidia_top_p: float = 1
+    nvidia_max_tokens: int = 4096
 
     # ── Vision ───────────────────────────────────────────────────────────────────
     vision_model: str = "qwen2.5vl:7b"  # Ollama vision model
