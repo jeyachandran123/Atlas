@@ -43,6 +43,12 @@ services:
       CHROMA_PORT: 8000
       # Ollama runs on the Windows host, not in a container
       OLLAMA_HOST: http://host.docker.internal:11434
+      # The document VLM reads its own base URL (see config.ollama_base_url,
+      # kept separate so vision can run on a GPU box). It was never overridden
+      # here, so inside the container it fell back to localhost:11434 — where
+      # nothing listens — and every extraction failed with a connect error
+      # while the chat models on OLLAMA_HOST worked fine.
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
       APP_ENV: development
       APP_DEBUG: "true"
     volumes:
@@ -89,6 +95,12 @@ services:
       CHROMA_PORT: 8000
       # Ollama runs on the Windows host, not in a container
       OLLAMA_HOST: http://host.docker.internal:11434
+      # The document VLM reads its own base URL (see config.ollama_base_url,
+      # kept separate so vision can run on a GPU box). It was never overridden
+      # here, so inside the container it fell back to localhost:11434 — where
+      # nothing listens — and every extraction failed with a connect error
+      # while the chat models on OLLAMA_HOST worked fine.
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
     volumes:
       - ./app:/app/app:ro                    # live reload in dev
       - ./data:/app/data                     # shared upload storage with api
@@ -125,6 +137,9 @@ services:
       CHROMA_HOST: chromadb
       CHROMA_PORT: 8000
       OLLAMA_HOST: http://host.docker.internal:11434
+      # The document VLM reads its own base URL; without this it falls
+      # back to localhost inside the container, where nothing listens.
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
     volumes:
       - ./app:/app/app:ro       # live reload in dev
       - ./data:/app/data        # shared blob storage fallback root with api
@@ -155,6 +170,9 @@ services:
       CHROMA_HOST: chromadb
       CHROMA_PORT: 8000
       OLLAMA_HOST: http://host.docker.internal:11434
+      # The document VLM reads its own base URL; without this it falls
+      # back to localhost inside the container, where nothing listens.
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
     volumes:
       - ./app:/app/app:ro       # live reload in dev
       - ./data:/app/data
