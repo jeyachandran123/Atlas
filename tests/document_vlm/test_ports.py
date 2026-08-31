@@ -42,7 +42,7 @@ class TestConformance:
                 VLMAdapterConfig(base_url="https://x.test/v1", model="m", api_key="k")
             ),
             OllamaDocumentVLMAdapter(
-                VLMAdapterConfig(base_url="http://localhost:11434", model="m")
+                VLMAdapterConfig(base_url="http://192.168.6.118:11434", model="m")
             ),
             ScriptedDocumentVLM(),
         ],

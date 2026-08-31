@@ -15,7 +15,7 @@ def test_tool_planner():
     print("TEST 1: Tool Planner")
     print("=" * 60)
     
-    planner = ToolPlanner(ollama_host="http://localhost:11434", model="qwen2.5-coder:7b")
+    planner = ToolPlanner(ollama_host="http://192.168.6.118:11434", model="qwen2.5-coder:7b")
     registry = ToolRegistry()
     
     # Test query that should trigger read_file tool

@@ -64,7 +64,8 @@ class Settings(BaseSettings):
     chroma_auth_token: SecretStr = SecretStr("")
 
     # ── Ollama ───────────────────────────────────────────────────────────────
-    ollama_host: str = "http://localhost:11434"
+    # ollama_host: str = "http://localhost:11434"
+    ollama_host: str = "http://192.168.6.118:11434"
     # Model per agent mode — swap these to whichever local models you have
     ollama_chat_model: str = "qwen2.5-coder:7b"      # code mode (default)
     ollama_auto_model: str = "llama3.2:3b"            # auto / general chat
@@ -161,7 +162,8 @@ class Settings(BaseSettings):
 
     # Ollama local VLM. Kept distinct from ollama_host so the document VLM can
     # point at a different (e.g. GPU) host without moving the chat models.
-    ollama_base_url: str = "http://localhost:11434"
+    # ollama_base_url: str = "http://localhost:11434"
+    ollama_base_url: str = "http://192.168.6.118:11434"
     ollama_model: str = "qwen2.5vl:7b"
 
     # Provider-agnostic call policy — applies to whichever adapter is bound.

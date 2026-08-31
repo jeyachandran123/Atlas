@@ -148,7 +148,7 @@ def nvidia_config() -> VLMAdapterConfig:
 @pytest.fixture
 def ollama_config() -> VLMAdapterConfig:
     return VLMAdapterConfig(
-        base_url="http://localhost:11434",
+        base_url="http://192.168.6.118:11434",
         model="qwen2.5vl:7b",
         timeout_seconds=30.0,
         max_retries=2,

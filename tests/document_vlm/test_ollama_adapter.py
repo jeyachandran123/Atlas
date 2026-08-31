@@ -46,7 +46,7 @@ class TestRequestConstruction:
     ) -> None:
         transport.responses = [httpx.Response(200, json=ollama_response())]
         await adapter(ollama_config, transport).extract_document(extraction_request)
-        assert str(transport.requests[0].url) == "http://localhost:11434/api/chat"
+        assert str(transport.requests[0].url) == "http://http://192.168.6.118:11434/api/chat"
 
     async def test_sends_no_authorization_header_by_default(
         self, ollama_config, transport, extraction_request
@@ -109,7 +109,7 @@ class TestRequestConstruction:
         self, transport, extraction_request
     ) -> None:
         config = VLMAdapterConfig(
-            base_url="http://localhost:11434", model="m", extra={"num_ctx": 16384}
+            base_url="http://192.168.6.118:11434", model="m", extra={"num_ctx": 16384}
         )
         transport.responses = [httpx.Response(200, json=ollama_response())]
         await adapter(config, transport).extract_document(extraction_request)
@@ -239,7 +239,7 @@ class TestHealth:
         assert "ollama pull qwen2.5vl:7b" in health.detail["reason"]
 
     async def test_a_bare_model_name_matches_the_latest_tag(self, transport) -> None:
-        config = VLMAdapterConfig(base_url="http://localhost:11434", model="qwen2.5vl")
+        config = VLMAdapterConfig(base_url="http://192.168.6.118:11434", model="qwen2.5vl")
         transport.default = httpx.Response(200, json={"models": [{"name": "qwen2.5vl:latest"}]})
         assert (await adapter(config, transport).health()).healthy
 
@@ -283,7 +283,7 @@ class TestFactory:
         settings = settings_factory(
             DOCUMENT_VLM_PROVIDER="ollama", OLLAMA_BASE_URL="0.0.0.0:11434"
         )
-        assert build_ollama_adapter(settings).config.base_url == "http://localhost:11434"
+        assert build_ollama_adapter(settings).config.base_url == "http://192.168.6.118:11434"
 
     def test_needs_no_api_key(self, settings_factory) -> None:
         settings = settings_factory(DOCUMENT_VLM_PROVIDER="ollama", NVIDIA_API_KEY="")
