@@ -6,6 +6,8 @@ Supports:
   - NVIDIA multimodal models (via OpenAI-compatible API)
 
 The model router automatically selects the vision model when images are present.
+Which provider serves it is VISION_PROVIDER, falling back to LLM_PROVIDER when
+unset — so images can run on a cloud VLM while text chat stays local.
 """
 from __future__ import annotations
 
@@ -23,6 +25,30 @@ settings = get_settings()
 OLLAMA_VISION_MODEL = getattr(settings, "vision_model", "qwen2.5vl:7b")
 
 
+# Magic-byte prefixes, longest-first where they overlap.
+_IMAGE_MAGIC: tuple[tuple[bytes, str], ...] = (
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+
+def _sniff_mime(data: bytes) -> str:
+    """Media type for a data URL, read from the bytes rather than assumed.
+
+    Ollama takes bare base64 and never asks what format it is. NVIDIA's
+    OpenAI-compatible endpoint reads the data-URL media type, so a JPEG
+    announced as image/png is a payload the server can refuse outright.
+    """
+    for magic, mime in _IMAGE_MAGIC:
+        if data.startswith(magic):
+            return mime
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/png"
+
+
 class VisionModel:
     """Handles vision LLM calls with image inputs."""
 
@@ -37,7 +63,7 @@ class VisionModel:
         temperature: float = 0.3,
     ) -> str:
         """Single-turn vision chat. Returns complete response."""
-        if settings.llm_provider == "nvidia":
+        if settings.vision_provider_resolved == "nvidia":
             return await self._nvidia_vision_chat(prompt, system_prompt, image_data, temperature)
         return await self._ollama_vision_chat(prompt, system_prompt, image_data, temperature)
 
@@ -49,7 +75,7 @@ class VisionModel:
         temperature: float = 0.3,
     ) -> AsyncGenerator[str, None]:
         """Streaming vision chat. Yields text chunks."""
-        if settings.llm_provider == "nvidia":
+        if settings.vision_provider_resolved == "nvidia":
             async for chunk in self._nvidia_vision_stream(prompt, system_prompt, image_data, temperature):
                 yield chunk
         else:
@@ -143,9 +169,10 @@ class VisionModel:
         )
         messages = self._build_openai_messages(prompt, system_prompt, image_data)
         completion = await client.chat.completions.create(
-            model=settings.nvidia_chat_model,
+            model=settings.nvidia_vision_model_resolved,
             messages=messages,
             temperature=temperature,
+            top_p=settings.nvidia_top_p,
             max_tokens=settings.nvidia_max_tokens,
             stream=False,
         )
@@ -163,9 +190,10 @@ class VisionModel:
         )
         messages = self._build_openai_messages(prompt, system_prompt, image_data)
         stream = await client.chat.completions.create(
-            model=settings.nvidia_chat_model,
+            model=settings.nvidia_vision_model_resolved,
             messages=messages,
             temperature=temperature,
+            top_p=settings.nvidia_top_p,
             max_tokens=settings.nvidia_max_tokens,
             stream=True,
         )
@@ -188,7 +216,7 @@ class VisionModel:
             b64 = base64.b64encode(img).decode("utf-8")
             content_parts.append({
                 "type": "image_url",
-                "image_url": {"url": f"data:image/png;base64,{b64}"},
+                "image_url": {"url": f"data:{_sniff_mime(img)};base64,{b64}"},
             })
         content_parts.append({"type": "text", "text": prompt})
 

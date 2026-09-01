@@ -90,7 +90,14 @@ class Settings(BaseSettings):
     nvidia_max_tokens: int = 4096
 
     # ── Vision ───────────────────────────────────────────────────────────────────
-    vision_model: str = "qwen2.5vl:7b"  # Ollama vision model
+    # Which provider answers chat vision (/chat/stream/vision). Deliberately
+    # separate from llm_provider so images can go to a cloud VLM while text chat
+    # stays on local Ollama — the same split DOCUMENT_VLM_PROVIDER already allows
+    # for invoice extraction. Empty means "follow llm_provider", so a deployment
+    # that sets neither behaves exactly as it did before this field existed.
+    vision_provider: Literal["", "ollama", "nvidia"] = "nvidia"
+    # vision_model: str = "qwen2.5vl:7b"  # Ollama vision model
+    vision_model: str = "meta/llama-3.2-90b-vision-instruct"  # NVIDIA vision model
     vision_storage_dir: str = "data/vision_uploads"
     vision_max_image_size_mb: int = 20
     vision_max_images_per_message: int = 5
@@ -140,7 +147,12 @@ class Settings(BaseSettings):
     # NVIDIA cloud VLM. nvidia_api_key / nvidia_base_url are shared with the chat
     # provider above (same account, same endpoint); the *model* is separate
     # because a VLM and a text model are different deployments.
-    nvidia_model: str = "nvidia/llama-3.1-nemotron-nano-vl-8b-v1"
+    nvidia_model: str = "meta/llama-3.2-90b-vision-instruct"
+    # Chat vision (/chat/stream/vision) may need a *different* deployment from
+    # document extraction: llama-3.2-11b-vision answers in under a second but
+    # rejects any prompt carrying more than one image, which suits chat uploads
+    # and not multi-page invoices. Empty means "use nvidia_model".
+    nvidia_vision_model: str = ""
     # NVIDIA's vision models disagree about how images arrive: OpenAI-style
     # content parts, or an inline <img src="data:…"/> tag. Configurable rather
     # than guessed.
@@ -270,6 +282,16 @@ class Settings(BaseSettings):
     @property
     def chroma_url(self) -> str:
         return f"http://{self.chroma_host}:{self.chroma_port}"
+
+    @property
+    def nvidia_vision_model_resolved(self) -> str:
+        """Model for chat vision: NVIDIA_VISION_MODEL, falling back to NVIDIA_MODEL."""
+        return self.nvidia_vision_model or self.nvidia_model
+
+    @property
+    def vision_provider_resolved(self) -> str:
+        """Provider for chat vision: VISION_PROVIDER, falling back to LLM_PROVIDER."""
+        return self.vision_provider or self.llm_provider
 
     @property
     def cors_origins_list(self) -> list[str]:
