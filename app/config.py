@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_password: SecretStr = SecretStr("")
+    redis_ssl: bool = False
     redis_db: int = 0
     redis_max_connections: int = 50
 
@@ -399,7 +400,8 @@ class Settings(BaseSettings):
     def redis_url(self) -> str:
         pwd = self.redis_password.get_secret_value()
         auth = f":{pwd}@" if pwd else ""
-        return f"redis://{auth}{self.redis_host}:{self.redis_port}/{self.redis_db}"
+        scheme = "rediss" if self.redis_ssl else "redis"
+        return f"{scheme}://{auth}{self.redis_host}:{self.redis_port}/{self.redis_db}"
 
     @property
     def chroma_url(self) -> str:
