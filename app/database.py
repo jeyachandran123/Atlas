@@ -44,6 +44,7 @@ def get_engine() -> AsyncEngine:
             echo=cfg.app_debug,
             pool_pre_ping=True,
             poolclass=NullPool,
+            connect_args={"ssl": "require"},
         )
     return _engine
 

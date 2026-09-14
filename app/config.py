@@ -384,7 +384,7 @@ class Settings(BaseSettings):
     log_format: str = "json"
 
     # ── CORS ─────────────────────────────────────────────────────────────────
-    cors_origins: str = "http://localhost:3000,http://localhost:5173"
+    cors_origins: str = "http://localhost:3000,http://localhost:5173,https://atlas-frontend-mauve.vercel.app"
 
     # ── Computed ─────────────────────────────────────────────────────────────
     @property

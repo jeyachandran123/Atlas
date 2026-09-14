@@ -36,7 +36,7 @@ def run_migrations_offline() -> None:
 
 
 async def run_migrations_online() -> None:
-    engine = create_async_engine(cfg.database_url, echo=False)
+    engine = create_async_engine(cfg.database_url, echo=False , connect_args={"ssl": "require"})
     async with engine.begin() as conn:
         await conn.run_sync(
             lambda sync_conn: context.configure(
