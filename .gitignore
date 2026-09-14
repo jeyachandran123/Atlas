@@ -27,8 +27,8 @@ chroma_data/
 .DS_Store
 Thumbs.db
 
-# Firebase credentials (NEVER commit)
-firebase-service-account.json
+# # Firebase credentials (NEVER commit)
+# firebase-service-account.json
 *-service-account.json
 
 # Real CCTV source footage — kept on disk, never in git.
