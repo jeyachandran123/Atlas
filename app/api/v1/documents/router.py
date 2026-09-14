@@ -203,6 +203,27 @@ async def download_document(
     )
 
 
+@router.get("/{document_id}/preview")
+async def preview_document(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    service: DocumentPlatformService = Depends(get_document_platform_service),
+):
+    """A workspace document as the in-app viewer draws it: spreadsheet grid, Word paragraphs."""
+    from app.library.preview import PreviewError, build_preview
+
+    try:
+        doc, data = await service.download_bytes(current_user.org_id, current_user.id, document_id)
+    except DocumentNotFoundError:
+        raise HTTPException(404, detail={"code": "not_found", "message": "Document not found."})
+    await db.commit()
+    try:
+        return build_preview(doc.original_filename, data)
+    except PreviewError as e:
+        raise HTTPException(422, detail={"code": "unreadable", "message": str(e)})
+
+
 @router.get("/{document_id}/processing", response_model=ProcessingStateOut)
 async def get_processing_state(
     document_id: str,

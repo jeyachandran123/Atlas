@@ -98,6 +98,26 @@ async def download_link(
     return LibraryDownloadOut(mode="proxy", filename=filename)
 
 
+@router.get("/{kind}/{item_id}/preview")
+async def preview_item(
+    kind: Kind,
+    item_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """A spreadsheet as a grid, a Word file as paragraphs — what the viewer draws."""
+    from app.library.preview import PreviewError, build_preview
+
+    try:
+        filename, _, data = await LibraryService(db).read(current_user.id, kind, item_id)
+    except LibraryNotFound:
+        raise HTTPException(404, "Not found")
+    try:
+        return build_preview(filename, data)
+    except PreviewError as e:
+        raise HTTPException(422, str(e))
+
+
 @router.get("/{kind}/{item_id}/file")
 async def download_file(
     kind: Kind,
