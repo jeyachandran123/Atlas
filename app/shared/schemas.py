@@ -283,7 +283,12 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=100000)
     conversation_id: Optional[str] = None
     repo_id: Optional[str] = None
-    agent_mode: str = Field(default="auto")  # auto | code | business
+    # auto | code | business | reasoning | math | planning — each maps onto a
+    # chat profile in app/llm (unknown modes fall back to general).
+    agent_mode: str = Field(default="auto")
+    # None = the profile's default. True/False force the model's thinking pass
+    # on or off for this one message.
+    thinking: Optional[bool] = None
 
 
 class ChatResponse(BaseModel):

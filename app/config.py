@@ -88,10 +88,31 @@ class Settings(BaseSettings):
     # without touching the chat one. Either is accepted for code generation.
     vision_nvidia_api_key: SecretStr = SecretStr("")
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
-    nvidia_chat_model: str = "openai/gpt-oss-120b"
+    # The two models behind every chat profile in app/llm. Vision has its own
+    # model (nvidia_model below); embeddings stay local.
+    #   chat      - general, coding, planning, documents, code generation
+    #   reasoning - the deep modes a person picks on purpose: reasoning, maths
+    # Measured on the hosted tier: Super 120B first token 0.4s, Ultra 550B 167s.
+    # Set both to one model to run everything on it; per-profile changes go in
+    # LLM_PROFILE_OVERRIDES below.
+    nvidia_chat_model: str = "nvidia/nemotron-3-super-120b-a12b"
+    nvidia_reasoning_model: str = "nvidia/nemotron-3-ultra-550b-a55b"
     nvidia_temperature: float = 1   # 1.0 is a creative-writing setting; it fabricates
     nvidia_top_p: float = 1
     nvidia_max_tokens: int = 4096
+
+    # ── Chat gateway (app/llm) ───────────────────────────────────────────────────
+    # Profiles (general, reasoning, math, coding, agent_planning, document,
+    # codegen, fast) carry their own temperature, token budget, timeout and
+    # thinking default; NVIDIA_TEMPERATURE / NVIDIA_MAX_TOKENS above are no
+    # longer consulted by it. Per-profile changes go here, as JSON:
+    #   LLM_PROFILE_OVERRIDES={"coding": {"model": "...", "thinking": false}}
+    llm_profile_overrides: str = ""
+    # Retries for rate limits, timeouts and 5xx. 4xx are never retried.
+    llm_max_retries: int = 2
+    # Calls in flight at once. The hosted tier limits requests per minute; a
+    # burst should queue here briefly rather than fail with 429 all together.
+    llm_max_concurrency: int = 8
 
     # ── Vision ───────────────────────────────────────────────────────────────────
     # Which provider answers chat vision (/chat/stream/vision). Deliberately

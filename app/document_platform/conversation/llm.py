@@ -274,69 +274,51 @@ class NvidiaLLMProvider(AbstractLLMProvider):
                 "No NVIDIA API key is set, so the document platform has no "
                 "endpoint to answer with"
             )
-        self._url = str(
-            getattr(settings, "dip_codegen_url", "")
-            or "https://integrate.api.nvidia.com/v1/chat/completions"
-        )
-        self.model_name = str(getattr(settings, "dip_codegen_model", "") or "")
-        self._timeout = float(getattr(settings, "dip_llm_timeout_seconds", 300.0))
-        self._max_output_tokens = int(getattr(settings, "dip_max_output_tokens", 2048))
-        self._temperature = float(getattr(settings, "dip_chat_temperature", 0.2))
+        from app.llm import DOCUMENT, get_chat_gateway
+
+        self._gateway = get_chat_gateway()
+        self.model_name = self._gateway.profile(DOCUMENT).model
+        # Still accepted so existing callers construct this unchanged; the
+        # gateway owns the connection now.
         self._transport = transport
 
-    async def _answer(self, prompt: StructuredPrompt) -> str:
-        payload = {
-            "model": self.model_name,
-            "messages": [
-                {"role": "system", "content": prompt.system},
-                {"role": "user", "content": prompt.user},
-            ],
-            "max_tokens": prompt.max_output_tokens or self._max_output_tokens,
-            "temperature": self._temperature,
-            "top_p": 0.95,
-            "stream": False,
-        }
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
-        try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(self._timeout, connect=15.0),
-                transport=self._transport,
-            ) as client:
-                response = await client.post(self._url, json=payload, headers=headers)
-                response.raise_for_status()
-                data = response.json()
-        except httpx.TimeoutException as exc:
-            raise LLMProviderError(
-                f"NVIDIA did not answer within {self._timeout:.0f}s"
-            ) from exc
-        except httpx.HTTPStatusError as exc:
-            # The body can echo the key back; only the status is safe to keep.
-            raise LLMProviderError(
-                f"NVIDIA returned HTTP {exc.response.status_code}"
-            ) from exc
-        except (httpx.HTTPError, ValueError) as exc:
-            raise LLMProviderError(f"NVIDIA call failed: {type(exc).__name__}") from exc
+    @staticmethod
+    def _profile_for(prompt: StructuredPrompt) -> str:
+        """Which kind of answer this prompt wants.
+
+        Talk addressed to the user - the assistant's small talk, the Cognitive
+        Kernel's steps - is GENERAL. Anything answering from documents is
+        DOCUMENT: literal and low-temperature, because the validator has to be
+        able to tie every sentence back to a source.
+        """
+        from app.llm import DOCUMENT, GENERAL
+
+        return GENERAL if prompt.strategy in ("assistant", "cognitive") else DOCUMENT
+
+    async def _complete(self, prompt: StructuredPrompt):
+        from app.llm import LLMGatewayError
 
         try:
-            text = data["choices"][0]["message"]["content"] or ""
-        except (KeyError, IndexError, TypeError) as exc:
-            raise LLMProviderError("NVIDIA reply carried no message content") from exc
-        return _unwrap_math(_THINK_RE.sub("", str(text))).strip()
+            return await self._gateway.complete(
+                system=prompt.system, user=prompt.user,
+                profile=self._profile_for(prompt),
+                max_tokens=prompt.max_output_tokens or None,
+            )
+        except LLMGatewayError as exc:
+            raise LLMProviderError(str(exc)) from exc
+
+    async def _answer(self, prompt: StructuredPrompt) -> str:
+        return _unwrap_math((await self._complete(prompt)).text).strip()
 
     async def generate(self, prompt: StructuredPrompt) -> LLMResult:
-        start = time.monotonic()
-        text = await self._answer(prompt)
+        result = await self._complete(prompt)
         return LLMResult(
-            text=text,
-            prompt_tokens=0,
-            completion_tokens=0,
-            latency_ms=int((time.monotonic() - start) * 1000),
+            text=_unwrap_math(result.text).strip(),
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            latency_ms=result.latency_ms,
             provider=self.name,
-            model=self.model_name,
+            model=result.model,
         )
 
     async def stream(self, prompt: StructuredPrompt, stats: StreamStats) -> AsyncIterator[str]:

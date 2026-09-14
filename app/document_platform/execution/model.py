@@ -124,6 +124,44 @@ class OpenAICompatibleModel(AbstractCodegenModel):
         )
 
 
+class GatewayCodegenModel(AbstractCodegenModel):
+    """The application's chat model, called through the one chat gateway.
+
+    Code generation used to own a private NVIDIA client with its own model
+    setting - one of three parallel ways the app reached the same endpoint.
+    It now shares the gateway's pooled client, retries and error handling, and
+    runs on the CODEGEN profile: thinking off, because the repair loop already
+    feeds the traceback back and a reasoning pass per attempt would multiply
+    the wait without changing what the sandbox reports.
+    """
+
+    name = "gateway"
+
+    def __init__(self) -> None:
+        from app.llm import CODEGEN, get_chat_gateway
+
+        self._gateway = get_chat_gateway()
+        self._profile = CODEGEN
+        self.model_name = self._gateway.profile(CODEGEN).model
+
+    async def complete(self, system: str, user: str, max_tokens: int) -> Completion:
+        from app.llm import LLMGatewayError
+
+        try:
+            result = await self._gateway.complete(
+                user=user, system=system, profile=self._profile, max_tokens=max_tokens,
+            )
+        except LLMGatewayError as exc:
+            raise CodegenError(str(exc)) from exc
+        return Completion(
+            text=result.text,
+            latency_ms=result.latency_ms,
+            completion_tokens=result.completion_tokens,
+            model=result.model,
+            provider="nvidia",
+        )
+
+
 class UnityWorksCodegenModel(AbstractCodegenModel):
     """The self-hosted deployment, for keeping every byte on your own hardware.
 
@@ -182,12 +220,11 @@ def get_codegen_model(settings=None) -> AbstractCodegenModel:
                 "falling back to the self-hosted model, which is weaker at this task"
             )
             return UnityWorksCodegenModel(settings)
-        return OpenAICompatibleModel(
-            url=str(getattr(settings, "dip_codegen_url", "")),
-            api_key=str(key),
-            model=str(getattr(settings, "dip_codegen_model", "")),
-            timeout=float(getattr(settings, "dip_codegen_timeout_seconds", 300.0)),
-        )
+        # Through the chat gateway, on the CODEGEN profile: the application's
+        # chat model, no thinking, near-deterministic. To pin code generation
+        # to a different model, override that one profile rather than adding a
+        # setting here: LLM_PROFILE_OVERRIDES={"codegen": {"model": "..."}}.
+        return GatewayCodegenModel()
     # ollama, or anything else configured for images, has no code-writing
     # counterpart here; the self-hosted model is the honest fallback.
     logger.warning(

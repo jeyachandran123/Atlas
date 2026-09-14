@@ -17,6 +17,7 @@ from typing import Optional
 
 from app.agents.state import AgentState
 from app.config import get_settings
+from app.llm import profile_for_mode
 from app.ollama_client import OllamaClient, get_ollama_client
 from app.prompts.coding import build_user_prompt
 
@@ -41,6 +42,17 @@ class CodingAgent:
         self._ollama = ollama or get_ollama_client()
 
     def _get_temperature(self, intent: str, agent_mode: str = "auto") -> float:
+        return _temperature_for_intent(intent, agent_mode)
+
+    def _temperature(self, intent: str, agent_mode: str = "auto") -> Optional[float]:
+        """Temperature for this call, or None to let the chat profile decide.
+
+        The per-intent temperatures were tuned for the local models. On the
+        hosted gateway each profile already carries the temperature it was set
+        up with, and overriding it per intent would quietly undo that.
+        """
+        if _settings.llm_provider == "nvidia":
+            return None
         return _temperature_for_intent(intent, agent_mode)
 
     def _get_model(self, agent_mode: str) -> str:
@@ -83,7 +95,9 @@ class CodingAgent:
                 prompt=user_prompt,
                 system_prompt=system_prompt,
                 model=self._get_model(agent_mode),
-                temperature=_temperature_for_intent(state["intent"], agent_mode),
+                temperature=self._temperature(state["intent"], agent_mode),
+                profile=profile_for_mode(agent_mode),
+                thinking=state.get("thinking"),
             )
             tokens = (len(user_prompt) + len(response)) // 4
             return {
@@ -119,6 +133,8 @@ class CodingAgent:
             prompt=user_prompt,
             system_prompt=system_prompt,
             model=self._get_model(agent_mode),
-            temperature=_temperature_for_intent(state["intent"], agent_mode),
+            temperature=self._temperature(state["intent"], agent_mode),
+            profile=profile_for_mode(agent_mode),
+            thinking=state.get("thinking"),
         ):
             yield chunk

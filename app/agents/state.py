@@ -46,6 +46,9 @@ class AgentState(TypedDict):
     # ── Mode (set by user in UI) ──────────────────────────────────────────────
     # "auto" | "code" | "business"
     agent_mode: str
+    # None = the chat profile's default; True/False force the model's
+    # thinking pass on or off for this one message.
+    thinking: bool | None
 
     # ── Intent (set by intelligence engine) ───────────────────────────────────
     # Legacy string: "code" | "fix" | "review" | "explain" | "test" | "search" | "chat"
@@ -128,6 +131,7 @@ def initial_state(
     request_id: str,
     repo_id: Optional[str] = None,
     agent_mode: str = "auto",
+    thinking: bool | None = None,
 ) -> AgentState:
     """Create a fresh AgentState with all required defaults."""
     return AgentState(
@@ -139,6 +143,7 @@ def initial_state(
         repo_id=repo_id,
         request_id=request_id,
         agent_mode=agent_mode,
+        thinking=thinking,
         # Intent
         intent="chat",
         # V3 intelligence outputs

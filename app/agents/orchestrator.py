@@ -752,6 +752,9 @@ class AgentOrchestrator:
             repo_file_tree=repo_file_tree,
         )
 
+        from app.llm import profile_for_mode
+        from app.ollama_client import ReasoningDelta
+
         # Debug trace
         from app.config import get_settings as _gs
         _cfg = _gs()
@@ -759,7 +762,7 @@ class AgentOrchestrator:
         _debug = (
             f"\n{_sep}\n[FINAL PROMPT → LLM]\n"
             f"  provider : {_cfg.llm_provider}\n"
-            f"  model    : {self._coding_agent._get_model(state.get('agent_mode', 'auto'))}\n"
+            f"  profile  : {profile_for_mode(state.get('agent_mode', 'auto'))}  thinking={state.get('thinking')}\n"
             f"  intent   : {state.get('intent')}  |  mode: {state.get('agent_mode', 'auto')}\n"
             f"  rewritten: {state.get('rewritten_query', '')[:80]}\n"
             f"  clarify  : {state.get('should_clarify')}  |  plan: {state.get('execution_plan_summary', '')[:60]}\n"
@@ -776,10 +779,19 @@ class AgentOrchestrator:
                 prompt=user_prompt,
                 system_prompt=system_prompt,
                 model=self._coding_agent._get_model(state.get("agent_mode", "auto")),
-                temperature=self._coding_agent._get_temperature(
+                temperature=self._coding_agent._temperature(
                     state["intent"], state.get("agent_mode", "auto")
                 ),
+                profile=profile_for_mode(state.get("agent_mode", "auto")),
+                thinking=state.get("thinking"),
+                include_reasoning=True,
             ):
+                if isinstance(chunk, ReasoningDelta):
+                    # Thinking travels to the client as its own event and never
+                    # into full_response, which is reviewed, formatted, saved and
+                    # remembered as the answer.
+                    yield chunk
+                    continue
                 full_response += chunk
                 yield chunk
         except Exception as e:

@@ -232,11 +232,16 @@ class DocumentService:
             )
             return
 
+        from app.llm import profile_for_mode
+
         async for chunk in self._ollama.chat_stream(
             prompt=user_prompt,
             system_prompt=full_system,
             model=self._get_model(agent_mode),
-            temperature=_cfg.ollama_chat_temperature,
+            # On the hosted gateway the profile carries its own temperature;
+            # the Ollama-tuned value applies only when running locally.
+            temperature=None if _cfg.llm_provider == "nvidia" else _cfg.ollama_chat_temperature,
+            profile=profile_for_mode(agent_mode),
         ):
             yield chunk
 

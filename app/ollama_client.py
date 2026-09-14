@@ -223,8 +223,9 @@ Wraps the Ollama REST API with retry logic, timeout handling,
 and a clean interface for both chat and embedding operations.
 
 Supports LLM_PROVIDER switch in .env:
-    LLM_PROVIDER=ollama  → uses local Ollama models (default)
-    LLM_PROVIDER=nvidia  → routes to NVIDIA API (deepseek-v4-pro)
+    LLM_PROVIDER=nvidia  → the chat gateway, app.llm (NVIDIA_CHAT_MODEL, by profile)
+    LLM_PROVIDER=ollama  → local Ollama models
+Embeddings always use Ollama.
 """
 
 from __future__ import annotations
@@ -233,33 +234,23 @@ import time
 from typing import AsyncGenerator, Optional
 
 import httpx
-from openai import AsyncOpenAI, OpenAIError
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.config import get_settings
+from app.llm import GENERAL, LLMGatewayError, get_chat_gateway
 from app.shared.exceptions import OllamaUnavailableError
 
 settings = get_settings()
 
-# Reused across calls: constructing AsyncOpenAI per request forces a fresh TLS
-# handshake and discards the connection pool. Built lazily so importing this
-# module never requires an NVIDIA key when LLM_PROVIDER=ollama.
-_nvidia_singleton: AsyncOpenAI | None = None
+class ReasoningDelta(str):
+    """A piece of the model's thinking - not of its answer.
 
-# deepseek-v4-pro emits a reasoning pass by default. It is filtered out of the
-# stream either way, but generating it costs latency and eats into max_tokens,
-# so turn it off at the template level.
-_NVIDIA_NO_THINKING = {"chat_template_kwargs": {"thinking": False}}
+    ``chat_stream`` yields these only to a caller that asks for them with
+    ``include_reasoning=True``, and as a distinct type so that caller can tell
+    the two apart. Concatenating thinking into the answer is how "<think>"
+    ends up in a saved message, and in the next turn's memory after that.
+    """
 
-
-def _nvidia_client() -> AsyncOpenAI:
-    global _nvidia_singleton
-    if _nvidia_singleton is None:
-        _nvidia_singleton = AsyncOpenAI(
-            base_url=settings.nvidia_base_url,
-            api_key=settings.nvidia_api_key.get_secret_value(),
-        )
-    return _nvidia_singleton
 
 class OllamaClient:
     """
@@ -277,98 +268,87 @@ class OllamaClient:
             timeout=httpx.Timeout(timeout),
         )
 
-    # ── NVIDIA private helper ─────────────────────────────────────────────────
+    # ── NVIDIA: through the chat gateway ─────────────────────────────────────
 
     async def _nvidia_chat(
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
+        *,
+        profile: Optional[str] = None,
+        thinking: Optional[bool] = None,
     ) -> str:
-        """Route chat to NVIDIA API (deepseek-v4-pro)."""
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
-
         try:
-            completion = await _nvidia_client().chat.completions.create(
-                model=settings.nvidia_chat_model,
-                messages=messages,
-                temperature=(
-                    settings.nvidia_temperature if temperature is None else temperature
-                ),
-                top_p=settings.nvidia_top_p,
-                max_tokens=settings.nvidia_max_tokens,
-                stream=False,
-                extra_body=_NVIDIA_NO_THINKING,
+            result = await get_chat_gateway().complete(
+                user=prompt, system=system_prompt, profile=profile or GENERAL,
+                thinking=thinking, temperature=temperature,
             )
-        except OpenAIError as e:
-            raise OllamaUnavailableError(f"NVIDIA API unavailable: {e}") from e
-        return completion.choices[0].message.content
+        except LLMGatewayError as e:
+            raise OllamaUnavailableError(str(e)) from e
+        return result.text
 
     async def _nvidia_chat_stream(
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
+        *,
+        profile: Optional[str] = None,
+        thinking: Optional[bool] = None,
+        include_reasoning: bool = False,
     ) -> AsyncGenerator[str, None]:
-        """Streaming version for NVIDIA API."""
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
-
         try:
-            stream = await _nvidia_client().chat.completions.create(
-                model=settings.nvidia_chat_model,
-                messages=messages,
-                temperature=(
-                    settings.nvidia_temperature if temperature is None else temperature
-                ),
-                top_p=settings.nvidia_top_p,
-                max_tokens=settings.nvidia_max_tokens,
-                stream=True,
-                extra_body=_NVIDIA_NO_THINKING,
-            )
-            async for chunk in stream:
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta
-                # Reasoning arrives on delta.reasoning_content, never on delta.content,
-                # so reading content alone keeps any thinking out of the user stream.
-                content = getattr(delta, "content", None)
-                if content:
-                    yield content
-        except OpenAIError as e:
-            raise OllamaUnavailableError(f"NVIDIA API unavailable: {e}") from e
+            async for event in get_chat_gateway().stream(
+                user=prompt, system=system_prompt, profile=profile or GENERAL,
+                thinking=thinking, temperature=temperature,
+            ):
+                if event.kind == "content" and event.text:
+                    yield event.text
+                elif event.kind == "reasoning" and include_reasoning and event.text:
+                    yield ReasoningDelta(event.text)
+        except LLMGatewayError as e:
+            raise OllamaUnavailableError(str(e)) from e
 
     # ── Public interface (same as before — coding_agent.py unchanged) ─────────
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=8),
-        reraise=True,
-    )
     async def chat(
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
+        *,
+        profile: Optional[str] = None,
+        thinking: Optional[bool] = None,
     ) -> str:
         """
         Single-turn chat completion.
-        Routes to NVIDIA or Ollama based on LLM_PROVIDER setting.
+        Routes to the chat gateway (NVIDIA) or Ollama based on LLM_PROVIDER.
 
-        ``temperature=None`` means "use the configured default for whichever
-        provider is active" — NVIDIA_TEMPERATURE or the Ollama default below.
+        ``profile`` names the kind of answer wanted - general, reasoning, math,
+        coding, agent_planning, document - and ``thinking`` overrides that
+        profile's default. ``temperature=None`` lets the profile decide. The
+        Ollama path ignores both and uses one model per agent mode instead.
         """
-        # ── Switch: NVIDIA ────────────────────────────────────────────────────
         if settings.llm_provider == "nvidia":
-            return await self._nvidia_chat(prompt, system_prompt, temperature)
+            return await self._nvidia_chat(
+                prompt, system_prompt, temperature, profile=profile, thinking=thinking,
+            )
+        return await self._ollama_chat(prompt, system_prompt, model, temperature)
 
-        # ── Switch: Ollama (default) ──────────────────────────────────────────
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=8),
+        reraise=True,
+    )
+    async def _ollama_chat(
+        self,
+        prompt: str,
+        system_prompt: Optional[str],
+        model: Optional[str],
+        temperature: Optional[float],
+    ) -> str:
         temperature = 0.15 if temperature is None else temperature
         model = model or settings.ollama_chat_model
         messages = []
@@ -409,18 +389,24 @@ class OllamaClient:
         system_prompt: Optional[str] = None,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
+        *,
+        profile: Optional[str] = None,
+        thinking: Optional[bool] = None,
+        include_reasoning: bool = False,
     ) -> AsyncGenerator[str, None]:
         """
         Streaming chat completion.
-        Routes to NVIDIA or Ollama based on LLM_PROVIDER setting.
+        Routes to the chat gateway (NVIDIA) or Ollama based on LLM_PROVIDER.
 
-        ``temperature=None`` means "use the configured default for whichever
-        provider is active" — NVIDIA_TEMPERATURE or the Ollama default below.
+        With ``include_reasoning=True`` the model's thinking is yielded too, as
+        ``ReasoningDelta`` chunks a caller can tell apart from the answer.
+        Without it, thinking is dropped and only the answer is yielded - the
+        behaviour every existing caller was written against.
         """
-        # ── Switch: NVIDIA ────────────────────────────────────────────────────
         if settings.llm_provider == "nvidia":
             async for chunk in self._nvidia_chat_stream(
-                prompt, system_prompt, temperature
+                prompt, system_prompt, temperature, profile=profile,
+                thinking=thinking, include_reasoning=include_reasoning,
             ):
                 yield chunk
             return
@@ -438,7 +424,7 @@ class OllamaClient:
         try:
             async with httpx.AsyncClient(
                 base_url=self._base_url,
-                timeout=httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0),
+                timeout=httpx.Timeout(connect=10.0, read=float(settings.ollama_timeout), write=30.0, pool=10.0),
             ) as stream_client:
                 async with stream_client.stream(
                     "POST",

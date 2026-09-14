@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.orchestrator import AgentOrchestrator, get_orchestrator_dep
 from app.agents.state import initial_state
 from app.auth import get_current_user, require_developer
+from app.ollama_client import ReasoningDelta
 from app.config import get_settings as _get_settings
 
 cfg = _get_settings()
@@ -349,6 +350,7 @@ async def send_message(
         request_id=request_id,
         repo_id=req.repo_id or conv.repo_id,
         agent_mode=req.agent_mode,
+        thinking=req.thinking,
     )
     state["session_messages"] = session_messages
 
@@ -515,7 +517,10 @@ def _cognitive_chunks(text: str, size: int = 40):
         yield text[i:i + size]
 
 
-def _stream_cognitive_response(*, db, conv_repo, conv_id, user_id, message, request_id, delib) -> StreamingResponse:
+def _stream_cognitive_response(
+    *, db, conv_repo, conv_id, user_id, message, request_id, delib,
+    agent_mode: str = "auto", thinking: Optional[bool] = None,
+) -> StreamingResponse:
     """Stream a brain-governed reply token-by-token (TRUE streaming), then persist it.
 
     The Executive safety gate (in ``delib``) already decided authorize-vs-escalate. If
@@ -535,13 +540,19 @@ def _stream_cognitive_response(*, db, conv_repo, conv_id, user_id, message, requ
                     full += chunk
                     yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
             else:
+                from app.llm import profile_for_mode
                 from app.ollama_client import get_ollama_client
 
                 client = get_ollama_client()
                 async for chunk in client.chat_stream(
-                    delib.user_prompt, system_prompt=delib.system_prompt, model=delib.model
+                    delib.user_prompt, system_prompt=delib.system_prompt, model=delib.model,
+                    profile=profile_for_mode(agent_mode), thinking=thinking,
+                    include_reasoning=True,
                 ):
                     if not chunk:
+                        continue
+                    if isinstance(chunk, ReasoningDelta):
+                        yield f"data: {json.dumps({'type': 'reasoning', 'content': str(chunk)})}\n\n"
                         continue
                     full += chunk
                     yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
@@ -653,6 +664,7 @@ async def stream_message(
             return _stream_cognitive_response(
                 db=db, conv_repo=conv_repo, conv_id=conv.id, user_id=current_user.id,
                 message=req.message, request_id=request_id, delib=delib,
+                agent_mode=req.agent_mode, thinking=req.thinking,
             )
 
     state = initial_state(
@@ -663,6 +675,7 @@ async def stream_message(
         request_id=request_id,
         repo_id=req.repo_id or conv.repo_id,
         agent_mode=req.agent_mode,
+        thinking=req.thinking,
     )
     state["session_messages"] = session_messages
 
@@ -678,6 +691,11 @@ async def stream_message(
         try:
             async for chunk in orch.stream(state):
                 if not chunk:
+                    continue
+                if isinstance(chunk, ReasoningDelta):
+                    # The model's thinking: its own event, never part of the
+                    # saved answer or the session memory.
+                    yield f"data: {json.dumps({'type': 'reasoning', 'content': str(chunk)})}\n\n"
                     continue
                 full_response += chunk
                 # Each SSE frame must end with double newline to be flushed immediately
