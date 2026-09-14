@@ -443,3 +443,11 @@ def get_settings() -> Settings:
 
 # Module-level singleton for non-dependency-injection contexts
 settings = get_settings()
+
+# --- TEMP DEBUG — remove after checking ---
+import os
+print("RAW ENV REDIS_HOST:", os.environ.get("REDIS_HOST"))
+print("RAW ENV REDIS_PORT:", os.environ.get("REDIS_PORT"))
+print("SETTINGS redis_host:", settings.redis_host)
+print("SETTINGS redis_url:", settings.redis_url)
+# --- END TEMP DEBUG ---
