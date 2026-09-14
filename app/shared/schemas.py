@@ -212,6 +212,8 @@ class UserOut(BaseModel):
     has_password: bool = False
     # How the account was first created: "email", "google", …
     auth_provider: Optional[str] = None
+    # Profile photo from the sign-in provider (Google); None for email-only accounts.
+    avatar_url: Optional[str] = None
 
 
 class RepoOut(BaseModel):

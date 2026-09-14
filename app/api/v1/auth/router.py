@@ -214,7 +214,8 @@ async def _find_or_create_user(
         logger.warning(f"Cleared an unverified password on {email}: Google verified the address")
     if user.firebase_uid is None:
         user.firebase_uid = firebase_uid
-    if user.profile_picture_url is None and picture:
+    # Google is the source of truth for the photo: follow it when it changes.
+    if picture and user.profile_picture_url != picture:
         user.profile_picture_url = picture
     if not user.email_verified and email_verified:
         user.email_verified = email_verified
@@ -266,6 +267,7 @@ def _user_out(user: User) -> UserOut:
         created_at=user.created_at,
         has_password=bool(user.hashed_password),
         auth_provider=getattr(user, "auth_provider", None),
+        avatar_url=getattr(user, "profile_picture_url", None) or None,
     )
 
 
