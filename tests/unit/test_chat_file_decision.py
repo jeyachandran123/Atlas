@@ -23,8 +23,23 @@ class TestGate:
         assert worth_deciding("create one excel file with all anime from the last five years",
                               has_spreadsheet=False, after_clarifier=False)
 
+    def test_typos_of_generate_are_still_a_file_request(self):
+        for msg in ("now genearate excel file", "genrate a pdf report", "generete the csv file"):
+            assert worth_deciding(msg, has_spreadsheet=False, after_clarifier=False), msg
+
+    def test_naming_the_format_of_the_answer_is_a_file_request(self):
+        # The message that once got "I can't make .xlsx files" from ordinary chat.
+        assert worth_deciding(
+            "ok you listed the 50 items right now you have to give this exact thing as a "
+            "excel file da now genearate excel file",
+            has_spreadsheet=False, after_clarifier=False,
+        )
+        for msg in ("send me that list in excel", "put the plan into a pdf", "give this as an excel"):
+            assert worth_deciding(msg, has_spreadsheet=False, after_clarifier=False), msg
+
     def test_ordinary_chat_is_not(self):
-        for msg in ("hey there", "what is a pdf?", "explain velocity", "thanks!"):
+        for msg in ("hey there", "what is a pdf?", "explain velocity", "thanks!",
+                    "what's new in python 3.13", "how do I get better at cooking"):
             assert not worth_deciding(msg, has_spreadsheet=False, after_clarifier=False), msg
 
     def test_a_question_about_an_attached_sheet_is_looked_at(self):

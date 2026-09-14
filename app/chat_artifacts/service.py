@@ -42,10 +42,14 @@ _CONTEXT_CHARS = 24_000
 _HISTORY_TURNS = 12
 
 _KNOWLEDGE_RULE = (
-    "\n\nThere is no source document: use general knowledge only. Include only "
-    "entries and values you are confident are real and correct. Never invent "
-    "titles, names, dates or numbers to fill a table; if a value is not known, "
-    "write 'Unknown'. Fewer correct rows are better than more invented ones. "
+    "\n\nThere is no source document: use general knowledge only. Every entry "
+    "must be real — never invent a title, name, date or number to fill a table. "
+    "When the request asks for a number of entries (\"top 50\"), deliver that "
+    "many: a well-known subject — dishes, places, films, companies — has far "
+    "more real entries than that, so stopping short is a failure, not caution. "
+    "If one value in a row is uncertain, write 'Unknown' in that cell rather "
+    "than dropping the row. Give fewer rows only when the subject truly does "
+    "not have that many real entries, and then say so in the subtitle. "
     "Every row must be different: never repeat an entry. A list written from "
     "memory is a selection, not a complete record — say so plainly in the "
     "subtitle, and if your knowledge does not reach the end of the requested "
@@ -364,15 +368,32 @@ class ChatFileService:
             f"SOURCE: {source}\nRequest it was made for: {' '.join(request.split())[:800]}\n\n"
             f"# FILE CONTENTS (read back from the saved file)\n{describe(data, str(card.get('format') or ''))}"
         )
+        call = dict(user=user, system=OVERVIEW_SYSTEM, profile=GENERAL,
+                    thinking=False, temperature=0.3, max_tokens=600)
+        gateway = get_chat_gateway()
+        streamed = False
         try:
-            async for event in get_chat_gateway().stream(
-                user=user, system=OVERVIEW_SYSTEM, profile=GENERAL,
-                thinking=False, temperature=0.3, max_tokens=600,
-            ):
+            async for event in gateway.stream(**call):
                 if event.kind == "content" and event.text:
+                    streamed = True
                     yield event.text
         except Exception as e:  # noqa: BLE001
+            if streamed:
+                # Half a note is already on screen; a second one would repeat it.
+                logger.warning(f"File overview cut short: {e}")
+                return
+            logger.warning(f"File overview stream unavailable ({e}); trying once without streaming")
+        if streamed:
+            return
+        # A provider can refuse a stream it would answer whole ("temporarily
+        # overloaded" on the stream alone), so the note gets one plain try.
+        try:
+            result = await gateway.complete(**call)
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"File overview unavailable: {e}")
+            return
+        if result.text:
+            yield result.text
 
     async def _run_task(
         self, plan: FilePlan, *, conversation_id: str, user_id: str, org_id: str, message: str,

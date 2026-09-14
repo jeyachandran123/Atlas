@@ -27,9 +27,17 @@ _FILE_NOUNS = re.compile(
     r"word\s+(?:doc|document|file)|docx|markdown|report|file|document)\b",
     re.IGNORECASE,
 )
+# "generate" also as it gets typed in a hurry: genarate, genearate, genrate…
 _MAKE_VERBS = re.compile(
-    r"\b(generate|genarate|create|make|build|prepare|produce|export|convert|"
-    r"compile|draft|put|turn|save|download|give\s+me)\b",
+    r"\b(gen[aeiou]*r[aeiou]*t(?:e[ds]?|ing)|create|make|build|prepare|produce|export|convert|"
+    r"compile|draft|put|turn|save|download|give|send|share|provide)\b",
+    re.IGNORECASE,
+)
+# "…as an Excel file", "in PDF", "into a spreadsheet": a format named as the
+# shape of the answer asks for a file, whatever the verb.
+_AS_FORMAT = re.compile(
+    r"\b(?:as|in|into|to)\s+(?:an?\s+|the\s+)?"
+    r"(?:pdf|excel|xlsx|xls|csv|spreadsheet|workbook|docx|word)\b",
     re.IGNORECASE,
 )
 _DATA_ASK = re.compile(
@@ -50,6 +58,8 @@ def worth_deciding(message: str, *, has_spreadsheet: bool, after_clarifier: bool
     if after_clarifier:
         return True
     if _FILE_NOUNS.search(message) and _MAKE_VERBS.search(message):
+        return True
+    if _AS_FORMAT.search(message):
         return True
     return has_spreadsheet and bool(_DATA_ASK.search(message))
 

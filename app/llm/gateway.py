@@ -232,6 +232,20 @@ class ChatGateway:
                 429: "The chat model is rate-limited right now.",
             }.get(status, f"The chat model returned HTTP {status}.")
             return LLMGatewayError(reason, retryable=status in _RETRYABLE_STATUS, status=status)
+        if isinstance(exc, openai.APIError):
+            # An error sent inside a stream has no HTTP status; the provider's
+            # own code says what it was. NVIDIA's "Service temporarily
+            # overloaded" arrives this way, as code 503 — worth another try.
+            body = exc.body if isinstance(exc.body, dict) else {}
+            code = body.get("code") if isinstance(body.get("code"), int) else None
+            if code is None and body.get("type") == "service_unavailable":
+                code = 503
+            if code is not None:
+                reason = {
+                    429: "The chat model is rate-limited right now.",
+                    503: "The chat model is temporarily overloaded.",
+                }.get(code, f"The chat model reported error {code}.")
+                return LLMGatewayError(reason, retryable=code in _RETRYABLE_STATUS, status=code)
         return LLMGatewayError(f"The chat call failed ({type(exc).__name__}).", retryable=False)
 
     async def _backoff(self, attempt: int, error: LLMGatewayError) -> None:
