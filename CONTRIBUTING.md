@@ -1,4 +1,4 @@
-# Contributing to AI Coding Assistant
+# Contributing to AI Assistant
 
 ## Adding a New Feature
 

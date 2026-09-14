@@ -58,7 +58,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from loguru import logger
 
     configure_logging()
-    logger.info(f"Starting AI Coding Assistant [{cfg.app_env}]")
+    logger.info(f"Starting AI Assistant [{cfg.app_env}]")
 
     # Initialize Firebase Admin SDK
     from app.firebase_admin import initialize_firebase
@@ -124,7 +124,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as e:
             logger.warning(f"In-process document workers not started: {e}")
 
-    logger.info(f"AI Coding Assistant started on {cfg.app_host}:{cfg.app_port}")
+    logger.info(f"AI Assistant started on {cfg.app_host}:{cfg.app_port}")
 
     yield  # ← Application runs here
 
@@ -152,9 +152,9 @@ def create_app() -> FastAPI:
     Creates and configures the FastAPI instance.
     """
     app = FastAPI(
-        title="AI Coding Assistant",
+        title="AI Assistant",
         description=(
-            "Local-first AI coding assistant. "
+            "Local-first AI assistant. "
             "Understands large codebases via semantic indexing and retrieval."
         ),
         version="1.0.0",
@@ -244,7 +244,7 @@ def create_app() -> FastAPI:
     @app.get("/", include_in_schema=False)
     async def root() -> dict:
         return {
-            "service": "AI Coding Assistant",
+            "service": "AI Assistant",
             "version": "1.0.0",
             "docs": "/docs" if cfg.app_debug else "Disabled in production",
         }

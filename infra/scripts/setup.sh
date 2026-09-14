@@ -1,8 +1,8 @@
 #!/bin/bash
-# First-time setup script for AI Coding Assistant
+# First-time setup script for AI Assistant
 set -e
 
-echo "AI Coding Assistant — Setup"
+echo "AI Assistant — Setup"
 echo "═══════════════════════════"
 
 # Check dependencies

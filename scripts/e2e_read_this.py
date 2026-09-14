@@ -19,7 +19,7 @@ with httpx.Client(timeout=300) as c:
     import docx
     d = docx.Document()
     d.add_paragraph("Atlas Platform Vision")
-    d.add_paragraph("Atlas is an AI coding assistant with semantic code search across large codebases.")
+    d.add_paragraph("Atlas is an AI assistant with semantic code search across large codebases.")
     d.add_paragraph("Roadmap: IDE extensions in Q3, team collaboration in Q4, enterprise SSO in 2027.")
     d.add_paragraph("Pricing: free tier for individuals, $12/user/month for teams.")
     buf = io.BytesIO()

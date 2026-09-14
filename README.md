@@ -1,6 +1,6 @@
-# AI Coding Assistant
+# AI Assistant
 
-A local-first AI coding assistant that understands large codebases. Built to compete with Cursor, Claude Code, and GitHub Copilot — running entirely on your own infrastructure.
+A local-first AI assistant that understands large codebases. Built to compete with Cursor, Claude Code, and GitHub Copilot — running entirely on your own infrastructure.
 
 ## What it does
 

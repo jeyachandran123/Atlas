@@ -22,8 +22,8 @@ RUN python -m venv /opt/venv && \
 # ─────────────────────────────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
 
-LABEL org.opencontainers.image.title="AI Coding Assistant" \
-      org.opencontainers.image.description="Local-first AI coding assistant" \
+LABEL org.opencontainers.image.title="AI Assistant" \
+      org.opencontainers.image.description="Local-first AI assistant" \
       org.opencontainers.image.version="1.0.0"
 
 # Copy venv from builder

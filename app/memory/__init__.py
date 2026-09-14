@@ -1,5 +1,5 @@
 """
-Memory system for Atlas AI Coding Assistant.
+Memory system for Atlas AI Assistant.
 
 Provides both short-term (session) and long-term (persistent) memory:
 
