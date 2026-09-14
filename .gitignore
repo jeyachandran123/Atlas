@@ -29,7 +29,7 @@ Thumbs.db
 
 # # Firebase credentials (NEVER commit)
 # firebase-service-account.json
-*-service-account.json
+# *-service-account.json
 
 # Real CCTV source footage — kept on disk, never in git.
 # Identifiable workers appear in every frame, and git history is permanent.
