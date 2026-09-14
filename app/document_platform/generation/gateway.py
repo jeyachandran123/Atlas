@@ -77,6 +77,7 @@ class GenerationGateway:
     async def generate(
         self, user_id: str, org_id: str, prompt: str, format_name: str,
         document_id: str | list[str] | None = None,
+        context_text: str | None = None,
     ):
         builder = self._factory.get(format_name)   # UnknownFormatError → 422 upstream
         artifact = await self._repo.create_artifact(
@@ -84,7 +85,7 @@ class GenerationGateway:
         )
         result = artifact
         async for kind, payload in self._pipeline(
-            artifact, builder, prompt, org_id, document_id,
+            artifact, builder, prompt, org_id, document_id, context_text,
         ):
             if kind in ("ready", "failed"):
                 result = payload
@@ -93,6 +94,8 @@ class GenerationGateway:
     async def generate_stream(
         self, user_id: str, org_id: str, prompt: str, format_name: str,
         document_id: str | list[str] | None = None,
+        context_text: str | None = None,
+        spec_review=None,  # optional async (spec) -> spec, run after planning
     ):
         """SSE variant: emits live per-stage progress (planning → shaping →
         building → storing) so the UI can show what is actually happening,
@@ -116,7 +119,8 @@ class GenerationGateway:
                            "format": format_name})
         final = artifact
         async for kind, payload in self._pipeline(
-            artifact, builder, prompt, org_id, document_id,
+            artifact, builder, prompt, org_id, document_id, context_text,
+            spec_review=spec_review,
         ):
             if kind == "stage":
                 yield fmt("stage", payload)
@@ -133,6 +137,8 @@ class GenerationGateway:
     async def _pipeline(
         self, artifact, builder, prompt: str, org_id: str,
         document_id: str | list[str] | None,
+        context_text: str | None = None,
+        spec_review=None,
     ):
         """The one generation pipeline. Yields ("stage", {stage, detail})
         progress tuples, then exactly one terminal ("ready"|"failed",
@@ -146,13 +152,25 @@ class GenerationGateway:
                             "detail": {"note": "AI is planning the document content"}}
             await self._repo.transition(artifact, GenerationLifecycle.PLANNING)
             with collector.timed("planning_ms"):
-                plan = await self._planner.plan(prompt, org_id, artifact.format, document_id)
+                plan = await self._planner.plan(
+                    prompt, org_id, artifact.format, document_id,
+                    context_text=context_text,
+                )
             collector.metrics.prompt_tokens = plan.prompt_tokens
             collector.metrics.completion_tokens = plan.completion_tokens
             await self._publish(artifact, GenerationEventType.PLAN_COMPLETED,
                                 duration_ms=collector.metrics.planning_ms,
                                 detail={"grounded": plan.grounded,
                                         "sources": len(plan.source_knowledge_ids)})
+
+            # ── Review (optional: the caller checks the plan) ───────────────
+            if spec_review is not None:
+                yield "stage", {"stage": "verifying",
+                                "detail": {"note": "Checking the content against the request"}}
+                try:
+                    plan.spec = await spec_review(plan.spec)
+                except Exception as e:  # a failed check never costs the file
+                    logger.warning(f"Spec review skipped for {artifact.id}: {e}")
 
             # ── Transform (engine decides HOW data is shaped) ───────────────
             yield "stage", {"stage": "shaping_content",

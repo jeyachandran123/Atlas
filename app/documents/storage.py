@@ -91,6 +91,14 @@ class DocumentStorage:
         except BlobNotFoundError as e:
             raise DocumentStorageError(f"Document file not found: {storage_key}") from e
 
+    async def signed_url(
+        self, storage_key: str, *, expires_in: int = 300, download_filename: str | None = None,
+    ) -> str | None:
+        """A time-limited direct link to the file, or None when the backend cannot mint one."""
+        return await self._blobs.signed_url(
+            storage_key, expires_in=expires_in, download_filename=download_filename,
+        )
+
     async def delete(self, attachment: DocumentAttachment) -> None:
         for key in (attachment.storage_path, attachment.text_path):
             await self._blobs.delete(key)

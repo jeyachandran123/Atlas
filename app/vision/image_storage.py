@@ -90,6 +90,14 @@ class ImageStorage:
         except BlobNotFoundError as e:
             raise ImageStorageError(f"Image not found: {storage_key}") from e
 
+    async def signed_url(
+        self, storage_key: str, *, expires_in: int = 300, download_filename: str | None = None,
+    ) -> str | None:
+        """A time-limited direct link to the image, or None when the backend cannot mint one."""
+        return await self._blobs.signed_url(
+            storage_key, expires_in=expires_in, download_filename=download_filename,
+        )
+
     async def delete(self, attachment: ImageAttachment) -> None:
         """Delete an image from storage."""
         await self._blobs.delete(attachment.storage_path)

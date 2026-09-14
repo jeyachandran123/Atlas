@@ -96,6 +96,7 @@ class TransformationEngine:
                    for i, h in enumerate(headers_raw[:MAX_COLUMNS])]
         width = len(headers)
         rows: list[list[str]] = []
+        seen: set[tuple[str, ...]] = set()
         if isinstance(rows_raw, list):
             for row in rows_raw[:MAX_ROWS]:
                 if isinstance(row, list):
@@ -106,5 +107,12 @@ class TransformationEngine:
                     cells = [_clean(row.get(h, ""), 2000) for h in headers]
                 else:
                     continue
-                rows.append((cells + [""] * width)[:width])
+                cells = (cells + [""] * width)[:width]
+                # A model writing a long table can loop back and repeat a
+                # block of rows; an identical row is never new information.
+                key = tuple(c.casefold() for c in cells)
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(cells)
         return ContentTable(name=_clean(raw.get("name", ""), 100), headers=headers, rows=rows)

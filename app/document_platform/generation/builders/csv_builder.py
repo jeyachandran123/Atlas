@@ -1,7 +1,12 @@
-"""CSV builder (pandas). CSV is flat — the first table wins; multiple
-tables are concatenated with a blank separator row and a name banner."""
+"""CSV builder (stdlib csv). CSV is flat — the first table wins; multiple
+tables are concatenated with a blank separator row and a name banner.
+
+Writing rows needs no dataframe: the stdlib writer quotes exactly as pandas'
+``to_csv`` did (minimal quoting), and keeping CSV off pandas means a missing
+or broken pandas install can never take CSV generation down with it."""
 from __future__ import annotations
 
+import csv
 import io
 
 from app.document_platform.generation.builders.base import AbstractFileBuilder, BuildError
@@ -16,27 +21,25 @@ class CsvBuilder(AbstractFileBuilder):
 
     def build(self, model: ContentModel) -> bytes:
         try:
-            import pandas as pd
+            buf = io.StringIO()
+            writer = csv.writer(buf, lineterminator="\n")
 
             tables = model.tables
             if not tables:
                 # No tabular content — degrade honestly to a two-column
                 # key/value dump of sections rather than an empty file.
-                rows = [(s.heading, " ".join(s.paragraphs + s.bullets))
-                        for s in model.sections]
-                df = pd.DataFrame(rows, columns=["section", "content"])
-                return df.to_csv(index=False, lineterminator="\n").encode("utf-8-sig")
+                writer.writerow(["section", "content"])
+                for s in model.sections:
+                    writer.writerow([s.heading, " ".join(s.paragraphs + s.bullets)])
+                return buf.getvalue().encode("utf-8-sig")
 
-            buf = io.StringIO()
             for i, table in enumerate(tables):
                 if len(tables) > 1:
                     buf.write(f"# {table.name}\n")
                 width = len(table.headers)
-                normalized = [
-                    (row + [""] * width)[:width] for row in table.rows
-                ]
-                df = pd.DataFrame(normalized, columns=table.headers)
-                df.to_csv(buf, index=False, lineterminator="\n")
+                writer.writerow(table.headers)
+                for row in table.rows:
+                    writer.writerow((row + [""] * width)[:width])
                 if i < len(tables) - 1:
                     buf.write("\n")
             return buf.getvalue().encode("utf-8-sig")

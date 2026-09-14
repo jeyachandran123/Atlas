@@ -590,7 +590,124 @@ def _stream_cognitive_response(
     )
 
 
+async def _maybe_stream_file_response(
+    *, db: AsyncSession, conv_repo: ConversationRepository, conv_id: str,
+    user: User, message: str, request_id: str,
+) -> Optional[StreamingResponse]:
+    """Hand the turn to the file flow when it asks for a file, or about a sheet.
+
+    Returns None for everything else and the chat carries on exactly as before.
+    A decision that fails for any reason is also None: making files is an
+    addition to chat and must never be the reason a reply is lost.
+    """
+    import json
+    import time as _time
+
+    from loguru import logger
+
+    from app.chat_artifacts.service import ChatFileService, session_text
+
+    try:
+        # Attachment text lives in a 24h cache; rebuild it for older chats so
+        # "make a PDF of this document" still has the document to work from.
+        await _ensure_document_context(db, conv_id)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"Document context not rebuilt for a file request: {e}")
+
+    service = ChatFileService(db)
+    try:
+        plan = await service.decide(conversation_id=conv_id, message=message)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"File-request decision failed; answering as chat: {e}")
+        return None
+    if plan is None:
+        return None
+
+    async def events() -> AsyncGenerator[str, None]:
+        start = _time.monotonic()
+        content, agent_used = "", "file_artifact"
+        try:
+            async for ev in service.run(
+                plan, conversation_id=conv_id, user_id=user.id,
+                org_id=user.org_id, message=message,
+            ):
+                if ev.get("type") == "_final":
+                    content, agent_used = ev["content"], ev["agent_used"]
+                    continue
+                yield f"data: {json.dumps(ev)}\n\n"
+
+            latency_ms = int((_time.monotonic() - start) * 1000)
+            assistant_msg = await conv_repo.add_message(
+                conversation_id=conv_id, role="assistant", content=content,
+                agent_used=agent_used, tokens_used=max(1, len(content) // 4),
+                latency_ms=latency_ms,
+            )
+            await db.commit()
+            await push_session_message(user.id, conv_id, "user", message)
+            await push_session_message(
+                user.id, conv_id, "assistant", session_text(content, agent_used),
+            )
+            done = {"type": "done", "conversation_id": conv_id,
+                    "message_id": assistant_msg.id, "tokens_used": 0,
+                    "latency_ms": latency_ms}
+            yield f"data: {json.dumps(done)}\n\n"
+        except Exception as e:  # noqa: BLE001 - the stream must end with a verdict
+            logger.exception(f"File request failed: {e}")
+            try:
+                await db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            err = {"type": "error", "conversation_id": conv_id,
+                   "message": "I could not create that file. Please try again."}
+            yield f"data: {json.dumps(err)}\n\n"
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no",
+                 "X-Request-ID": request_id, "Connection": "keep-alive"},
+    )
+
+
+def _announces_turn(endpoint):
+    """Open the stream with the saved turn: its conversation and user message.
+
+    The client shows the user's message before the server has saved it, under
+    a temporary id. Without this, a reply the user stops never delivers the
+    real one — so editing or retrying that message afterwards acted on the
+    temporary id, left the saved message in place, and the prompt appeared
+    twice; in a brand-new chat, the conversation itself was never learned.
+
+    ``functools.wraps`` keeps the endpoint's signature, so FastAPI still sees
+    every Form, File and Depends parameter.
+    """
+    import functools
+    import json
+
+    @functools.wraps(endpoint)
+    async def wrapper(*args, **kwargs):
+        response = await endpoint(*args, **kwargs)
+        request = kwargs.get("request")
+        turn = getattr(getattr(request, "state", None), "chat_turn", None)
+        if turn and isinstance(response, StreamingResponse):
+            conversation_id, user_message_id = turn
+            meta = {"type": "meta", "conversation_id": conversation_id,
+                    "user_message_id": user_message_id}
+            body = response.body_iterator
+
+            async def announced():
+                yield f"data: {json.dumps(meta)}\n\n"
+                async for chunk in body:
+                    yield chunk
+
+            response.body_iterator = announced()
+        return response
+
+    return wrapper
+
+
 @router.post("/stream")
+@_announces_turn
 async def stream_message(
     req: ChatRequest,
     request: Request,
@@ -623,10 +740,19 @@ async def stream_message(
         )
         await conv_repo.auto_generate_title(conv.id, req.message)
 
-    await conv_repo.add_message(conv.id, "user", req.message)
+    user_msg = await conv_repo.add_message(conv.id, "user", req.message)
     await db.commit()
+    request.state.chat_turn = (conv.id, user_msg.id)
 
     session_messages = await get_session_messages(current_user.id, conv.id)
+
+    # ── Files: create one, or compute over an attached spreadsheet ───────────
+    file_response = await _maybe_stream_file_response(
+        db=db, conv_repo=conv_repo, conv_id=conv.id, user=current_user,
+        message=req.message, request_id=request_id,
+    )
+    if file_response is not None:
+        return file_response
 
     # ── Document follow-up routing ────────────────────────────────────────────
     # If this conversation has uploaded documents (PDF/Word/text), answer with
@@ -745,6 +871,7 @@ async def stream_message(
 
 
 @router.post("/stream/vision")
+@_announces_turn
 async def stream_vision_message(
     request: Request,
     message: str = Form(...),
@@ -795,7 +922,7 @@ async def stream_vision_message(
             raise HTTPException(
                 400,
                 f"Unsupported document type: {filename}. "
-                "Supported: PDF, Word (.docx), and text files.",
+                "Supported: PDF, Word (.docx), Excel (.xlsx), CSV and text files.",
             )
         data = await doc.read()
         if len(data) > max_doc_bytes:
@@ -844,6 +971,7 @@ async def stream_vision_message(
 
     user_msg = await conv_repo.add_message(conv.id, "user", message)
     await db.commit()
+    request.state.chat_turn = (conv.id, user_msg.id)
 
     # Persist image metadata linked to the user message
     for att in stored_attachments:
@@ -881,6 +1009,18 @@ async def stream_vision_message(
         db.add(db_doc)
     if stored_docs:
         await db.commit()
+
+    # ── Files: create one, or compute over an attached spreadsheet ───────────
+    # Images still go to the vision model; a file request that arrives with
+    # documents or spreadsheets (or none) is handled here.
+    if not image_bytes_list:
+        file_response = await _maybe_stream_file_response(
+            db=db, conv_repo=conv_repo, conv_id=conv.id, user=current_user,
+            message=message,
+            request_id=getattr(request.state, "request_id", "") or str(uuid.uuid4()),
+        )
+        if file_response is not None:
+            return file_response
 
     # Determine routing: vision, documents, or text
     has_new_images = len(image_bytes_list) > 0

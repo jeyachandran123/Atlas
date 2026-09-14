@@ -50,6 +50,12 @@ _SYSTEM = (
 )
 
 
+_PLAN_MAX_TOKENS = 8192
+"""A plan is the whole document written out as JSON, so its length is the
+document's. A table of a few hundred rows does not fit the chat default of
+2048 tokens: the JSON is cut off mid-row and the plan fails to parse."""
+
+
 class PlanningError(Exception):
     """The LLM could not produce a parseable generation spec."""
 
@@ -77,28 +83,39 @@ class GenerationPlanner:
     async def plan(
         self, prompt: str, org_id: str, format_name: str,
         document_id: str | list[str] | None = None,
+        context_text: str | None = None,
     ) -> GenerationPlan:
         sources_text = ""
         grounded = False
         knowledge_ids: list[str] = []
-        retrieval = await self._retrieval.retrieve(
-            "semantic", prompt, org_id, self._top_k, document_id,
-        )
-        if retrieval.chunks:
-            ranked = self._ranking.rank(retrieval.chunks, retrieval.manifest_facts)
-            bundle = self._context_builder.build(ranked)
-            if bundle.sources:
-                grounded = True
-                knowledge_ids = sorted({s.knowledge_id for s in bundle.sources})
-                sources_text = "# SOURCES\n" + "\n\n".join(
-                    f"[{s.source_id}] {s.text}" for s in bundle.sources
-                )
+        if context_text and context_text.strip():
+            # The caller already holds the source — a chat attachment, or the
+            # conversation itself — which retrieval cannot see, because only
+            # workspace documents are indexed. It is used as-is.
+            grounded = True
+            sources_text = "# SOURCES\n[S1] " + context_text.strip()
+        else:
+            retrieval = await self._retrieval.retrieve(
+                "semantic", prompt, org_id, self._top_k, document_id,
+            )
+            if retrieval.chunks:
+                ranked = self._ranking.rank(retrieval.chunks, retrieval.manifest_facts)
+                bundle = self._context_builder.build(ranked)
+                if bundle.sources:
+                    grounded = True
+                    knowledge_ids = sorted({s.knowledge_id for s in bundle.sources})
+                    sources_text = "# SOURCES\n" + "\n\n".join(
+                        f"[{s.source_id}] {s.text}" for s in bundle.sources
+                    )
 
         user = (
             (sources_text + "\n\n" if sources_text else "")
             + f"# REQUEST\nTarget format: {format_name}\n{prompt}"
         )
-        structured = StructuredPrompt(system=_SYSTEM, user=user, strategy="generation_plan")
+        structured = StructuredPrompt(
+            system=_SYSTEM, user=user, strategy="generation_plan",
+            max_output_tokens=_PLAN_MAX_TOKENS,
+        )
 
         last_error: Exception | None = None
         prompt_tokens = completion_tokens = 0
