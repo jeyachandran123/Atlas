@@ -112,12 +112,29 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         logger.warning("Ollama not available — AI responses will fail until Ollama is running")
 
+    # Drain the document queues here unless a deployment says otherwise. An
+    # upload that is never processed is the one failure the user cannot
+    # diagnose: it succeeds, it lists, and it answers nothing.
+    if cfg.dip_inprocess_workers:
+        try:
+            from app.workers.inprocess import start_inprocess_workers
+            await start_inprocess_workers()
+        except Exception as e:
+            logger.warning(f"In-process document workers not started: {e}")
+
     logger.info(f"AI Coding Assistant started on {cfg.app_host}:{cfg.app_port}")
 
     yield  # ← Application runs here
 
     # ── Shutdown ──────────────────────────────────────────────────────────────
     logger.info("Shutting down...")
+
+    if cfg.dip_inprocess_workers:
+        try:
+            from app.workers.inprocess import stop_inprocess_workers
+            await stop_inprocess_workers()
+        except Exception as e:
+            logger.warning(f"In-process document workers did not stop cleanly: {e}")
 
     from app.ollama_client import close_ollama_client
     await close_ollama_client()

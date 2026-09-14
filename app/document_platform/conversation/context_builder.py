@@ -17,6 +17,61 @@ def _estimate_tokens(text: str) -> int:
 
 
 @dataclass(frozen=True)
+class DocumentFacts:
+    """Whole-document totals the platform counted at processing time.
+
+    Retrieval hands the model a handful of excerpts, and the prompt tells it to
+    answer only from what it was given. Asked "how many rows are there?", a
+    model obeying that instruction counts the excerpts and states the result as
+    the document total: for a 1252-row spreadsheet delivered as eight chunks it
+    answered "There are 20 rows". That is a fabrication produced by a prompt
+    that never said the excerpts were a sample.
+
+    These are measured values, not a summary, so they are exact and cheap. They
+    ride into the prompt as an ordinary numbered source, which means a total the
+    model quotes carries a citation like any other claim.
+    """
+
+    document_id: str
+    filename: str = ""
+    doc_type: str = ""
+    title: str = ""
+    chunk_count: int = 0
+    word_count: int = 0
+    table_count: int = 0
+    table_rows: int = 0
+    page_count: int | None = None
+    sheet_count: int | None = None
+
+    def as_source_text(self) -> str:
+        name = self.filename or self.title or self.document_id
+        lines = [f"Whole-document totals for {name}"]
+        if self.doc_type:
+            lines.append(f"- file type: {self.doc_type}")
+        if self.title and self.title != name:
+            lines.append(f"- title / sheet: {self.title}")
+        if self.table_rows:
+            lines.append(
+                f"- table rows: {self.table_rows} "
+                f"(every row of the table, header row included)"
+            )
+        if self.table_count:
+            lines.append(f"- tables: {self.table_count}")
+        if self.page_count:
+            lines.append(f"- pages: {self.page_count}")
+        if self.sheet_count:
+            lines.append(f"- sheets: {self.sheet_count}")
+        if self.word_count:
+            lines.append(f"- words: {self.word_count}")
+        if self.chunk_count:
+            lines.append(
+                f"- indexed pieces: {self.chunk_count} "
+                f"(the sources above are a few of these, not all of them)"
+            )
+        return "\n".join(lines)
+
+
+@dataclass(frozen=True)
 class ContextSource:
     source_id: str                   # "S1", "S2", … — cited by the model
     document_id: str
@@ -48,7 +103,10 @@ class ContextBuilder:
     def __init__(self, token_budget: int) -> None:
         self._budget = token_budget
 
-    def build(self, ranked: list[RankedChunk]) -> ContextBundle:
+    def build(
+        self, ranked: list[RankedChunk],
+        document_facts: list[DocumentFacts] | None = None,
+    ) -> ContextBundle:
         # Dedupe by chunk_id, keeping the highest-confidence occurrence
         # (list arrives confidence-ordered from the Ranking Engine).
         seen: set[str] = set()
@@ -97,6 +155,31 @@ class ContextBuilder:
                 token_estimate=tokens,
             ))
             total += tokens
+
+        # Facts go last so the excerpt numbering above stays stable, and they
+        # are exempt from the token budget: the block is a few dozen tokens and
+        # dropping it is what lets the model invent a total.
+        present = {s.document_id for s in sources}
+        for facts in document_facts or []:
+            if facts.document_id not in present:
+                continue                 # its content did not make the bundle
+            text = facts.as_source_text()
+            sources.append(ContextSource(
+                source_id=f"S{len(sources) + 1}",
+                document_id=facts.document_id,
+                knowledge_id="",
+                chunk_ids=[],            # measured over the document, not one chunk
+                seqs=[],
+                section_path="document facts",
+                text=text,
+                # Counted by the platform rather than matched semantically, so
+                # citing it is as grounded as a citation gets. It cannot lift a
+                # weak answer past the gate either: best_confidence below is
+                # taken from the retrieved chunks alone.
+                confidence=1.0,
+                token_estimate=_estimate_tokens(text),
+            ))
+            total += _estimate_tokens(text)
 
         best = max((r.confidence for r in unique), default=0.0)
         return ContextBundle(

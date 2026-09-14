@@ -10,6 +10,7 @@ the layers. No layer below this one knows any other layer exists.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, AsyncIterator, Optional
 
@@ -17,6 +18,8 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.document_platform.conversation.assistant import answer_directly
+from app.document_platform.conversation.attribution import attribute
 from app.document_platform.conversation.citations import CitationBuilder, CitationOutcome
 from app.document_platform.conversation.context import ConversationContext
 from app.document_platform.conversation.context_builder import ContextBuilder, ContextBundle
@@ -26,12 +29,13 @@ from app.document_platform.conversation.events import (
     PersistingConversationEventPublisher,
 )
 from app.document_platform.conversation.intent import IntentType, get_intent_classifier
-from app.document_platform.conversation.llm import StreamStats, get_llm_provider
+from app.document_platform.conversation.llm import STREAM_SLICE, get_llm_provider
 from app.document_platform.conversation.memory import ConversationMemory
 from app.document_platform.conversation.metrics import ConversationMetricsCollector
 from app.document_platform.conversation.planner import ConversationPlanner
 from app.document_platform.conversation.prompts import (
     REFUSAL_SENTENCE,
+    UNVERIFIED_SENTENCE,
     PromptBuilder,
     StructuredPrompt,
 )
@@ -42,6 +46,49 @@ from app.document_platform.conversation.retrieval import RetrievalEngine, Retrie
 from app.document_platform.conversation.streaming import StreamingEngine
 from app.document_platform.conversation.validator import ResponseValidator
 from app.document_platform.semantic.repository import SemanticRepository
+
+
+_UNKNOWN_MARKER = re.compile(r"\s*\[S\d+\]")
+
+
+def _recoverable(refusal_reason: str | None) -> bool:
+    """True when the answer failed over its markers and nothing else.
+
+    Two failures qualify, and they are the same failure wearing different
+    clothes. ``missing_citations`` is a model that wrote none;
+    ``invented_citations`` is a model that wrote ones that do not resolve -
+    measured, it produced [S3] and [S4] against a two-source bundle. Neither
+    says anything about whether the sources support the answer, which is the
+    question that actually matters and is settled further down by asking the
+    sources.
+
+    A grounding score below the floor is NOT recoverable: there the citation
+    resolved and the source it points at does not support the claim well
+    enough, which is a real verdict and must stand.
+    """
+    if not refusal_reason or not refusal_reason.startswith("validation_failed:"):
+        return False
+    reasons = refusal_reason.split(":", 1)[1].split(";")
+    return all(
+        reason == "missing_citations" or reason.startswith("invented_citations")
+        for reason in reasons
+    )
+
+
+def _strip_unknown_markers(text: str, bundle: ContextBundle) -> str:
+    """Delete citation markers that point at no source.
+
+    A marker that resolves to nothing conveys nothing, so removing it loses no
+    information - and what is left is either an answer with real citations, or
+    an uncited answer that then has to earn its attribution like any other.
+    Keeping it would be the actual danger: it looks like provenance and is not.
+    """
+    known = bundle.source_ids
+    return _UNKNOWN_MARKER.sub(
+        lambda m: m.group(0) if m.group(0).strip() in
+        {f"[{sid}]" for sid in known} else "",
+        text,
+    )
 
 
 def _scalar_doc(document_id: str | list[str] | None) -> str | None:
@@ -86,6 +133,7 @@ class ConversationGateway:
         self._validator = ResponseValidator(cfg.dip_grounding_min_score)
         self._streaming = StreamingEngine()
         self._min_score = cfg.dip_grounding_min_score
+        self._min_support = cfg.dip_attribution_min_support
 
     # ── Conversation lifecycle ───────────────────────────────────────────────
 
@@ -123,16 +171,7 @@ class ConversationGateway:
                 return prepared
 
             prompt, bundle = prepared
-            with collector.timed("llm_ms"):
-                llm_result = await self._reasoning.generate(prompt)
-            collector.metrics.prompt_tokens = llm_result.prompt_tokens
-            collector.metrics.completion_tokens = llm_result.completion_tokens
-            await self._publish(ctx, ConversationEventType.REASONING_COMPLETED,
-                                duration_ms=llm_result.latency_ms,
-                                detail={"model": llm_result.model,
-                                        "completion_tokens": llm_result.completion_tokens})
-
-            result = await self._finalize(ctx, llm_result.text, bundle, collector)
+            result = await self._answer_and_validate(ctx, prompt, bundle, collector)
             await self._persist(turn, ctx, result, collector)
             return result
         except ReasoningError as e:
@@ -177,6 +216,18 @@ class ConversationGateway:
                     prepared = _payload
             if isinstance(prepared, TurnResult):        # refused before the LLM
                 await self._persist(turn, ctx, prepared, collector)
+                # Stream the refusal like any other answer. A turn that ends
+                # before the model is reached - nothing retrieved, nothing
+                # confident enough, nothing supported - still has something to
+                # say, and it was being put in the `done` frame only. The
+                # surface builds its bubble from `token` frames, so the user
+                # saw an empty reply and no reason for it: the question looked
+                # answered and wasn't. This is the state a document sits in
+                # while it is still queued for processing, which is exactly
+                # when a person is most likely to ask about it.
+                refused = prepared.answer or ""
+                for index in range(0, len(refused), STREAM_SLICE):
+                    yield fmt("token", {"text": refused[index : index + STREAM_SLICE]})
                 yield fmt("citations", {"citations": [], "grounded": False,
                                         "grounding_score": 0.0})
                 yield fmt("done", {"status": prepared.status,
@@ -190,19 +241,22 @@ class ConversationGateway:
             yield fmt("stage", {"stage": "generating_answer",
                                 "detail": {"model": self._reasoning.provider.model_name}})
             await self._publish(ctx, ConversationEventType.RESPONSE_STREAM_STARTED)
-            stats = StreamStats()
-            with collector.timed("streaming_ms"):
-                async for token in self._reasoning.provider.stream(prompt, stats):
-                    yield fmt("token", {"text": token})
-            collector.metrics.llm_ms = stats.latency_ms
-            collector.metrics.prompt_tokens = stats.prompt_tokens
-            collector.metrics.completion_tokens = stats.completion_tokens
-            await self._publish(ctx, ConversationEventType.REASONING_COMPLETED,
-                                duration_ms=stats.latency_ms,
-                                detail={"completion_tokens": stats.completion_tokens})
 
-            result = await self._finalize(ctx, stats.full_text, bundle, collector)
+            # Generate, validate, persist - and only then emit. Tokens used to
+            # go out as they arrived, before the validator had seen them, so a
+            # rejected answer was read by the user and then stored as NULL: it
+            # was on screen, and gone on the next page load, with nothing to
+            # explain where it went. There is no real token stream behind this
+            # (both providers fetch the whole answer and pace it out), so
+            # nothing is lost by deciding first and showing second.
+            result = await self._answer_and_validate(ctx, prompt, bundle, collector)
             await self._persist(turn, ctx, result, collector)
+
+            # Exactly what was saved, paced out so the surface still fills in.
+            shown = result.answer or ""
+            with collector.timed("streaming_ms"):
+                for index in range(0, len(shown), STREAM_SLICE):
+                    yield fmt("token", {"text": shown[index : index + STREAM_SLICE]})
             yield fmt("citations", {"citations": result.citations,
                                     "grounded": result.grounded,
                                     "grounding_score": result.grounding_score})
@@ -235,6 +289,31 @@ class ConversationGateway:
         await self._publish(ctx, ConversationEventType.INTENT_DETECTED,
                             detail={"intent": ctx.intent.value})
         ctx.plan = self._planner.plan(ctx.intent, ctx.document_id)
+
+        if ctx.intent is IntentType.CONVERSATIONAL:
+            # Spoken to, not searched. This never touches retrieval, so there
+            # is nothing to cite and nothing to validate - and the turn is
+            # recorded as ungrounded, which is the honest description of a
+            # greeting and keeps it out of the grounded history the document
+            # path reads back.
+            yield "stage", {"stage": "thinking", "detail": {}}
+            history = await self._memory.chat_window(ctx.conversation_id)
+            reply = await answer_directly(
+                ctx.question, reasoning=self._reasoning,
+                conversation_id=ctx.conversation_id, user_id=ctx.user_id,
+                org_id=ctx.org_id, history=history,
+            )
+            if reply is not None:
+                yield "refused", TurnResult(
+                    turn_id=ctx.turn_id, conversation_id=ctx.conversation_id,
+                    correlation_id=ctx.correlation_id, status="completed",
+                    intent=ctx.intent.value, answer=reply.text,
+                    grounded=False, grounding_score=0.0, refusal_reason=None,
+                    metrics={"answered_from": reply.source, "model": reply.model},
+                )
+                return
+            # Nothing could answer even a greeting: fall through and let the
+            # normal path produce its normal refusal rather than silence.
 
         if ctx.intent is IntentType.UNSUPPORTED:
             yield "refused", self._refusal(
@@ -270,7 +349,10 @@ class ConversationGateway:
 
         yield "stage", {"stage": "reading_documents",
                         "detail": {"sources": len(ranked)}}
-        bundle = self._context_builder.build(ranked)
+        facts = await self._repo.document_facts(
+            sorted({r.chunk.document_id for r in ranked if r.chunk.document_id})
+        )
+        bundle = self._context_builder.build(ranked, facts)
         await self._publish(ctx, ConversationEventType.CONTEXT_BUILT,
                             detail={"sources": len(bundle.sources),
                                     "tokens": bundle.total_tokens,
@@ -281,7 +363,7 @@ class ConversationGateway:
 
         yield "stage", {"stage": "preparing_prompt",
                         "detail": {"sources": len(bundle.sources)}}
-        history = await self._memory.window(ctx.conversation_id)
+        history = await self._memory.window(ctx.conversation_id, ctx.document_id)
         prompt = self._prompt_builder.build(
             ctx.plan.reasoning_strategy, ctx.question, bundle, history,
         )
@@ -308,11 +390,16 @@ class ConversationGateway:
         collector.metrics.citation_count = len(outcome.citations)
 
         if not validation.valid:
+            # The model's text is not shown - it failed the grounding contract
+            # and letting it through is exactly what the validator is for. But
+            # the turn still gets a visible answer, because a turn stored with
+            # no answer renders as a question the assistant never replied to,
+            # and the user is left thinking their chat lost messages.
             return TurnResult(
                 turn_id=ctx.turn_id, conversation_id=ctx.conversation_id,
                 correlation_id=ctx.correlation_id, status="rejected",
                 intent=ctx.intent.value if ctx.intent else "",
-                answer=None, grounded=False,
+                answer=UNVERIFIED_SENTENCE, grounded=False,
                 grounding_score=validation.grounding_score,
                 refusal_reason="validation_failed:" + ";".join(validation.reasons),
             )
@@ -325,6 +412,76 @@ class ConversationGateway:
             refusal_reason="no_knowledge_found" if validation.is_refusal else None,
             citations=[asdict(c) for c in outcome.citations],
         )
+
+    async def _answer_and_validate(
+        self, ctx: ConversationContext, prompt: StructuredPrompt,
+        bundle: ContextBundle, collector: ConversationMetricsCollector,
+    ) -> TurnResult:
+        """Generate, validate, and repair a missing citation once.
+
+        Only ``missing_citations`` is repaired. An invented citation or a
+        grounding score below the floor means the answer is not supported by
+        the sources, and asking again would be asking the model to justify
+        something it should not have said.
+        """
+        with collector.timed("llm_ms"):
+            llm_result = await self._reasoning.generate(prompt)
+        collector.metrics.prompt_tokens = llm_result.prompt_tokens
+        collector.metrics.completion_tokens = llm_result.completion_tokens
+        await self._publish(ctx, ConversationEventType.REASONING_COMPLETED,
+                            duration_ms=llm_result.latency_ms,
+                            detail={"model": llm_result.model,
+                                    "completion_tokens": llm_result.completion_tokens})
+
+        result = await self._finalize(ctx, llm_result.text, bundle, collector)
+        if result.status != "rejected" or not _recoverable(result.refusal_reason):
+            return result
+
+        # Markers pointing at nothing come off first. Often that alone settles
+        # it: an answer citing [S1] and a hallucinated [S3] is a correctly
+        # cited answer once the hallucination is gone.
+        text = _strip_unknown_markers(llm_result.text, bundle)
+        if text != llm_result.text:
+            logger.info(f"Turn {ctx.turn_id}: dropped citations that resolve to nothing")
+            cleaned = await self._finalize(ctx, text, bundle, collector)
+            if cleaned.status == "completed":
+                return cleaned
+
+        logger.info(f"Turn {ctx.turn_id}: answer was uncited, asking for citations")
+        repair = self._prompt_builder.build_repair(
+            ctx.question, bundle, text,
+        )
+        try:
+            repaired = await self._reasoning.generate(repair)
+        except ReasoningError:
+            repaired = None        # fall through to attribution
+        if repaired is not None:
+            collector.metrics.completion_tokens += repaired.completion_tokens
+            second = await self._finalize(ctx, repaired.text, bundle, collector)
+            if second.status == "completed":
+                return second
+
+        # The model would not mark its own answer - measured, it hands the
+        # draft back unchanged - so the link is established from the evidence
+        # instead: a paragraph whose content words are present in a source did
+        # come from that source, whatever the model chose to type. This is a
+        # stricter test than the marker it skipped, because a marker can sit
+        # under an invented sentence and this cannot.
+        attribution = attribute(text, bundle, self._min_support)
+        if not attribution.attached:
+            logger.info(
+                f"Turn {ctx.turn_id}: no source supports this answer "
+                f"(best {attribution.best_support}); the refusal stands"
+            )
+            return result
+        logger.info(
+            f"Turn {ctx.turn_id}: attributed {attribution.attached} paragraph(s) "
+            f"to their sources by content (best {attribution.best_support})"
+        )
+        # Straight back through the same validator: the citations still have to
+        # resolve and the grounding score still has to clear its floor.
+        third = await self._finalize(ctx, attribution.text, bundle, collector)
+        return third if third.status == "completed" else result
 
     # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -354,6 +511,11 @@ class ConversationGateway:
         collector: ConversationMetricsCollector,
     ) -> None:
         metrics = collector.finish()
+        # Anything the turn already recorded about itself survives. The timing
+        # numbers are collected here, but facts like which engine answered are
+        # known only where the answering happened, and overwriting the whole
+        # dict silently dropped them on the way to the client.
+        carried = dict(result.metrics or {})
         result.metrics = {
             "retrieval_ms": metrics.retrieval_ms, "ranking_ms": metrics.ranking_ms,
             "llm_ms": metrics.llm_ms, "streaming_ms": metrics.streaming_ms,
@@ -364,6 +526,9 @@ class ConversationGateway:
             "grounding_score": metrics.grounding_score,
             "citation_count": metrics.citation_count,
         }
+        result.metrics.update(
+            {k: v for k, v in carried.items() if k not in result.metrics}
+        )
         await self._repo.finish_turn(
             turn, status=result.status, answer=result.answer,
             intent=result.intent, grounded=result.grounded,

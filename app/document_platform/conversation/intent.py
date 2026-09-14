@@ -21,6 +21,7 @@ class IntentType(str, Enum):
     DOCUMENT_LOOKUP = "document_lookup"
     METADATA_LOOKUP = "metadata_lookup"
     CALCULATION = "calculation"
+    CONVERSATIONAL = "conversational"
     UNSUPPORTED = "unsupported"
 
 
@@ -39,6 +40,56 @@ class RuleBasedIntentClassifier(AbstractIntentClassifier):
     """
 
     name = "rule_based"
+
+    _PLEASANTRIES = frozenset({
+        "hi", "hey", "hello", "yo", "hiya", "howdy", "sup", "greetings",
+        "morning", "afternoon", "evening", "night", "good", "day",
+        "thanks", "thank", "thankyou", "thx", "ty", "cheers",
+        "ok", "okay", "k", "cool", "nice", "great", "awesome", "got", "it",
+        "bye", "goodbye", "see", "you", "later", "please", "sorry", "welcome",
+        "there", "up", "and", "a", "im", "i", "am", "hai",
+        "how", "are", "is", "doing", "your", "u", "r", "hru", "wassup",
+        "yes", "no", "yeah", "yep", "nope", "sure", "alright", "fine", "well",
+    })
+    """Words a message can be built entirely out of and still say nothing.
+
+    Matching on the *whole* message rather than its opening is what makes
+    "hey hi" and "thanks, great" work without letting "hi, how many rows are
+    in the sheet?" escape the grounded path - that one carries "rows" and
+    "sheet", so it is not small talk and never reaches this set.
+    """
+
+    _ABOUT_THE_ASSISTANT = re.compile(
+        r"^\s*(who|what)\s+(are|is|r)\s+(you|u|this)"
+        r"|^\s*(what|which)\s+(can|do)\s+you\s+(do|know)"
+        r"|^\s*how\s+(are|r)\s+(you|u)"
+        r"|^\s*(introduce|tell\s+me\s+about)\s+your(self)?"
+        r"|^\s*(are|r)\s+(you|u)\s+(there|ok|real|an?\s+(ai|bot|robot))",
+        re.IGNORECASE,
+    )
+    """Questions addressed to the assistant rather than to the documents."""
+
+    _WORDS = re.compile(r"[A-Za-z']+")
+
+    def _is_conversational(self, question: str) -> bool:
+        """Is this talk directed at the assistant, not at the knowledge base?
+
+        A greeting has no answer in a set of documents, and searching for one
+        produces the single worst thing this product does: replying "I don't
+        have enough information in the knowledge base to answer that" to "hey
+        hi". That is not grounding working, it is the assistant failing to
+        notice it was being spoken to.
+
+        Narrow on purpose. A message carrying any word that is not small talk
+        stays on the grounded path, because routing a real question away from
+        the documents that answer it is the more expensive mistake.
+        """
+        if self._ABOUT_THE_ASSISTANT.search(question):
+            return True
+        words = [w.lower() for w in self._WORDS.findall(question)]
+        if not words or len(words) > 6:
+            return False
+        return all(word in self._PLEASANTRIES for word in words)
 
     _UNSUPPORTED = re.compile(
         r"\b(generate|create|make|produce|build|write)\b.{0,40}\b"
@@ -70,6 +121,8 @@ class RuleBasedIntentClassifier(AbstractIntentClassifier):
     ]
 
     def classify(self, question: str) -> IntentType:
+        if self._is_conversational(question):
+            return IntentType.CONVERSATIONAL
         if self._UNSUPPORTED.search(question):
             return IntentType.UNSUPPORTED
         for intent, pattern in self._RULES:

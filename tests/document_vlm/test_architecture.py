@@ -159,15 +159,26 @@ class TestApiDependsOnNeither:
             assert name not in code, f"the API's executable code mentions '{name}'"
 
     def test_only_the_composition_root_builds_a_provider(self) -> None:
-        """One place chooses; everything else receives."""
-        builders = [
-            path
+        """One place *per process* chooses; everything else receives.
+
+        Two processes reach a vision model: the API, and the background
+        document-processing worker that fills the pipeline's OCR stage. A
+        worker has no request to hang dependency injection off, so it composes
+        its own stage once at startup — a second composition root, not a leak.
+        Both build the provider a single time and neither lets the choice reach
+        anything downstream of them.
+
+        The roots are named rather than counted so that adding a third is a
+        deliberate edit to this line and not a silent drift.
+        """
+        builders = {
+            path.name
             for path in python_files(BACKEND / "app")
             if "get_document_vlm(" in path.read_text(encoding="utf-8")
             and "registry.py" not in path.name
-        ]
-        assert [p.name for p in builders] == ["dependencies.py"], (
-            f"provider construction leaked into: {[str(p) for p in builders]}"
+        }
+        assert builders == {"dependencies.py", "document_worker.py"}, (
+            f"provider construction leaked into: {sorted(builders)}"
         )
 
     def test_the_response_schema_is_provider_neutral(self) -> None:

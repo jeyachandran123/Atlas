@@ -16,8 +16,15 @@ import time
 
 from loguru import logger
 
+from app.adapters.document_vlm.registry import get_document_vlm
+from app.config import get_settings
 from app.database import get_db_session
 from app.document_platform.processing.events import PersistingEventPublisher
+from app.document_platform.processing.ocr import (
+    OcrService,
+    TesseractOcrProvider,
+    VlmOcrProvider,
+)
 from app.document_platform.processing.orchestrator import ProcessingOrchestrator
 from app.document_platform.processing.persistence import ProcessingRepository
 from app.document_platform.processing.queue import dequeue_processing_job
@@ -26,6 +33,46 @@ from app.observability import configure_logging
 
 _running = True
 
+_ocr: OcrService | None = None
+
+
+def ocr_service() -> OcrService:
+    """The OCR stage this worker runs, chosen once.
+
+    This is the worker's composition root. A background process has no request
+    to hang dependency injection off, so the single place that picks a provider
+    for this process is here — and, as in the API, nothing downstream of this
+    function can observe which one was picked.
+
+    Why a vision model rather than nothing: an image reaching the pipeline with
+    no text stage produces no chunks, and a document with no chunks is
+    retrievable by nothing. The platform then answers every question about that
+    image with "I don't have enough information in the knowledge base" — true,
+    useless, and indistinguishable to the user from the upload having been
+    ignored. Describing the picture gives the rest of the pipeline the text it
+    already knows how to index.
+    """
+    global _ocr
+    if _ocr is not None:
+        return _ocr
+
+    settings = get_settings()
+    if settings.document_ocr_provider == "tesseract":
+        _ocr = OcrService(TesseractOcrProvider())
+        logger.info("OCR stage: tesseract")
+        return _ocr
+
+    try:
+        _ocr = OcrService(VlmOcrProvider(get_document_vlm(settings=settings)))
+        logger.info(f"OCR stage: vision model ({_ocr.provider_name})")
+    except Exception as e:  # noqa: BLE001 - degrade, do not die
+        # No vision provider configured, or it failed to bind. Documents still
+        # parse, store and list; images simply carry no description, which is
+        # exactly the behaviour that existed before this stage was filled.
+        logger.warning(f"OCR stage: none - could not bind a vision model ({e})")
+        _ocr = OcrService()
+    return _ocr
+
 
 def _handle_signal(sig: int, frame: object) -> None:
     global _running
@@ -33,9 +80,40 @@ def _handle_signal(sig: int, frame: object) -> None:
     _running = False
 
 
+TERMINAL_JOB_STATUSES = frozenset({"knowledge_ready", "failed"})
+"""A job in one of these has already had its outcome recorded."""
+
+
+async def _already_finished(job_id: str) -> bool:
+    """Has this job already run to a conclusion?
+
+    The queue is at-least-once and nothing removes an entry when its job
+    finishes by another route — a retry that created a fresh row, a recovery
+    sweep that re-enqueued, a run driven directly. Entries therefore
+    accumulate, and a worker starting after a quiet spell finds a backlog of
+    work that is already done. Re-running it is not corrupting, but it
+    re-parses, re-chunks, re-embeds and re-calls a vision model for every
+    image, and to anyone watching the UI it looks like the whole library has
+    spontaneously begun reprocessing itself.
+
+    Only terminal statuses are skipped. A row still ``queued`` or ``processing``
+    is exactly what recovery re-enqueues on purpose, and must still run.
+    """
+    try:
+        async with get_db_session() as session:
+            row = await ProcessingRepository(session).get_job(job_id)
+            return row is not None and row.status in TERMINAL_JOB_STATUSES
+    except Exception as e:  # noqa: BLE001 - a failed check must not skip work
+        logger.warning(f"Could not check job {job_id} state ({e}); processing it")
+        return False
+
+
 async def process_job(job: dict) -> None:
     document_id = job["document_id"]
     job_id = job["job_id"]
+    if await _already_finished(job_id):
+        logger.info(f"Job {job_id} already finished — dropping stale queue entry")
+        return
     logger.info(f"Processing document {document_id} (job {job_id}, attempt {job.get('attempt', 1)})")
     triggered_knowledge_id: str | None = None
     triggered_correlation_id: str | None = None
@@ -56,13 +134,16 @@ async def process_job(job: dict) -> None:
             trigger = EmbeddingTriggerEventPublisher(
                 PersistingEventPublisher(ProcessingRepository(session))
             )
-            orchestrator = ProcessingOrchestrator(session, event_publisher=trigger)
+            orchestrator = ProcessingOrchestrator(
+                session, event_publisher=trigger, ocr=ocr_service(),
+            )
             await orchestrator.run(document_id, job_id)
             await session.commit()
         triggered_knowledge_id = trigger.triggered_knowledge_id
         triggered_correlation_id = trigger.triggered_correlation_id
     except Exception as e:
         logger.exception(f"Document job {job_id} crashed: {e}")
+        await _mark_job_crashed(document_id, job_id, e)
         return
 
     # Only after the document-processing transaction has committed do we
@@ -70,6 +151,43 @@ async def process_job(job: dict) -> None:
     # commit-before-publish discipline applied to document processing itself.
     if triggered_knowledge_id:
         await _enqueue_embedding(triggered_knowledge_id, triggered_correlation_id)
+
+
+async def _mark_job_crashed(document_id: str, job_id: str, exc: Exception) -> None:
+    """
+    Terminate a job that died *before* the orchestrator could own its failure.
+
+    ProcessingOrchestrator records its own failures — retry, DLQ, job_finished.
+    But anything that raises before `run()` is reached (the pre-wipe below, or
+    building the orchestrator itself) leaves the row exactly as
+    `recover_orphaned_jobs` looks for it: status `queued`, dead_lettered false.
+    The sweep then re-enqueues it every 60s, re-publishing the SAME attempt
+    number, so MAX_RECOVERY_ATTEMPTS never trips — the document loops forever
+    while the UI shows "Processing…" and the reason lives only in this log.
+
+    Marking it failed here makes the failure terminal and, more importantly,
+    visible: the document leaves "Processing…" and the error reaches the API.
+
+    Uses a fresh session because the one that raised may hold a broken
+    transaction, and never re-raises — the worker must survive to take the
+    next job.
+    """
+    error = f"{type(exc).__name__}: {exc}"[:2000]
+    try:
+        async with get_db_session() as session:
+            repo = ProcessingRepository(session)
+            job = await repo.get_job(job_id)
+            if job is not None:
+                await repo.job_finished(job, "failed", error, dead_lettered=True)
+                await repo.add_event(
+                    job_id, document_id, "worker", "failed", detail={"error": error}
+                )
+            doc = await repo.get_document(document_id)
+            if doc is not None:
+                await repo.set_processing_status(doc, "failed")
+            await session.commit()
+    except Exception as e:  # noqa: BLE001 — last resort; the log is the record
+        logger.error(f"Could not mark document job {job_id} as failed: {e}")
 
 
 async def _wipe_stale_embeddings(session, document_id: str) -> None:

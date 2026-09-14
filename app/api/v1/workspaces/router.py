@@ -14,6 +14,9 @@ from app.db.models import User
 from app.document_platform.validation import DocumentValidationError
 from app.workspace.export import EXPORT_FORMATS, export_conversation
 from app.workspace.intelligence import WorkspaceIntelligence, rule_based_suggestions
+from app.document_platform.constants import STORAGE_PREFIX as DOCUMENT_STORAGE_PREFIX
+from app.db.models import Document as DocumentRow
+from app.storage import get_blob_storage
 from app.workspace.schemas import (
     AddDocumentIn,
     ArtifactEventIn,
@@ -33,6 +36,7 @@ from app.workspace.schemas import (
     WorkspaceConversationOut,
     WorkspaceCreateIn,
     WorkspaceDocumentOut,
+    WorkspaceDocumentTaskIn,
     WorkspaceGenerateIn,
     WorkspaceOut,
     WorkspaceUpdateIn,
@@ -399,6 +403,47 @@ async def restore_conversation(
         return await service.restore_payload(ws, conversation_id)
     except WorkspaceNotFoundError:
         raise HTTPException(404, detail="Conversation not found")
+
+
+@router.post("/{workspace_id}/documents/{document_id}/task/stream")
+async def workspace_document_task_stream(
+    workspace_id: str,
+    document_id: str,
+    body: WorkspaceDocumentTaskIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """Do what the instruction says to this document, and stream the progress.
+
+    The work runs for tens of seconds - read the file, write code, run it,
+    repair it if it fails, check the result - so it streams rather than blocks.
+    A produced file lands in the same artifact store as any other generated
+    document and downloads through the same route.
+    """
+    service = WorkspaceService(db)
+    ws = await _require(service, workspace_id, current_user)
+    if not await service.repo.document_in_workspace(ws.id, document_id):
+        raise HTTPException(404, detail="Document not found in this workspace")
+
+    # Read the stored original directly. The full document service wants an
+    # audit sink and a request id it does not have here, and this is a plain
+    # read of a row the workspace membership check above already authorised.
+    document = await db.get(DocumentRow, document_id)
+    if document is None or document.is_deleted:
+        raise HTTPException(404, detail="Document not found")
+    try:
+        data = await get_blob_storage(DOCUMENT_STORAGE_PREFIX).get(document.storage_key)
+    except Exception:
+        raise HTTPException(404, detail="The stored file could not be read")
+
+    return StreamingResponse(
+        service.document_task_stream(
+            ws, body.conversation_id, document_id,
+            document.original_filename, data, body.instruction, body.format,
+        ),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/{workspace_id}/conversations/{conversation_id}/ask/stream")

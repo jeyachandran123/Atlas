@@ -56,6 +56,7 @@ class WorkspaceIntelligence:
                         f"Generated artifacts: {stats['artifacts']}"
                     ),
                     strategy="workspace_summary",
+                    max_output_tokens=256,
                 )
                 result = await provider.generate(prompt)
                 summary_text = result.text.strip()[:2000]

@@ -44,7 +44,20 @@ class ExcelParser(AbstractDocumentParser):
             ))
             merged = [str(r) for r in getattr(ws, "merged_cells", []).ranges] if getattr(ws, "merged_cells", None) else []
 
-            rows_iter = ws.iter_rows(max_row=_MAX_ROWS_PER_SHEET, max_col=_MAX_COLS)
+            # `max_col` is a **ceiling**, not a width. Asking openpyxl for 200
+            # columns returns 200 cells per row whether or not the sheet is
+            # that wide, and every one of the empties used to be kept — so a
+            # four-column grocery list rendered as
+            # `Milk | 2 | Dairy | 3.5 |  |  |  | ...` out to column 200.
+            #
+            # That padding was not cosmetic. It inflated one six-row sheet into
+            # a 62,000-character chunk, which the embedding model refused
+            # outright ("the input length exceeds the context length"), so the
+            # document was never indexed and every question about it was
+            # answered "I don't have enough information in the knowledge base"
+            # — with nothing anywhere reporting a fault.
+            width = min(ws.max_column or 1, _MAX_COLS)
+            rows_iter = ws.iter_rows(max_row=_MAX_ROWS_PER_SHEET, max_col=width)
             all_rows: list[list[str]] = []
             for row in rows_iter:
                 cells: list[str] = []
@@ -57,11 +70,23 @@ class ExcelParser(AbstractDocumentParser):
                         if s.startswith("="):
                             formula_count += 1
                         cells.append(s)
+                # Trailing empties carry no information and cost separator noise
+                # in the embedded text. `ws.max_column` is itself often inflated
+                # by stray formatting on an otherwise empty column, so trimming
+                # per row is what actually keeps a narrow sheet narrow.
+                while cells and not cells[-1]:
+                    cells.pop()
                 if any(c for c in cells):
                     all_rows.append(cells)
 
             if not all_rows:
                 continue
+
+            # Rectangular again, at the width the data actually occupies, so
+            # `headers` and every row still line up column for column.
+            true_width = max(len(r) for r in all_rows)
+            for r in all_rows:
+                r.extend([""] * (true_width - len(r)))
 
             table = sheet_node.add(DocumentNode(
                 type=NodeType.TABLE, page=sheet_no,

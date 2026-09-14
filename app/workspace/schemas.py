@@ -82,6 +82,22 @@ class AttachDocumentIn(BaseModel):
     document_id: str
 
 
+class WorkspaceDocumentTaskIn(BaseModel):
+    """Do something to a document, described in words.
+
+    ``format`` is optional and usually should be: the task decides whether it
+    produces a file or an answer, and a transform normally wants the same
+    format it started in. Naming one forces the output extension.
+    """
+
+    instruction: str = Field(min_length=1, max_length=20000)
+    format: Optional[str] = Field(default=None, max_length=20)
+    conversation_id: Optional[str] = None
+    """Which conversation the result belongs to. Without it the artifact is
+    produced and stored but tied to nothing, so reopening the chat shows
+    none of it."""
+
+
 class WorkspaceGenerateIn(BaseModel):
     prompt: str = Field(min_length=1, max_length=4000)
     format: str = Field(min_length=1, max_length=20)

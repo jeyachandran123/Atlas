@@ -79,10 +79,14 @@ class Settings(BaseSettings):
     ollama_code_temperature: float = 0.15  # more deterministic for code blocks
 
     # ── LLM Provider ─────────────────────────────────────────────────────────────
-    llm_provider: Literal["ollama", "nvidia"] = "ollama"
+    llm_provider: Literal["ollama", "nvidia"] = "nvidia"
 
     # ── NVIDIA ───────────────────────────────────────────────────────────────────
     nvidia_api_key: SecretStr = SecretStr("")
+    # The vision stack carries its own NVIDIA key; the same credential in
+    # practice, but named separately so a vision deployment can be rotated
+    # without touching the chat one. Either is accepted for code generation.
+    vision_nvidia_api_key: SecretStr = SecretStr("")
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     nvidia_chat_model: str = "openai/gpt-oss-120b"
     nvidia_temperature: float = 1   # 1.0 is a creative-writing setting; it fabricates
@@ -95,9 +99,9 @@ class Settings(BaseSettings):
     # stays on local Ollama — the same split DOCUMENT_VLM_PROVIDER already allows
     # for invoice extraction. Empty means "follow llm_provider", so a deployment
     # that sets neither behaves exactly as it did before this field existed.
-    vision_provider: Literal["", "ollama", "nvidia"] = "nvidia"
+    vision_provider: Literal["", "ollama", "nvidia", "unityworks"] = "nvidia"
     # vision_model: str = "qwen2.5vl:7b"  # Ollama vision model
-    vision_model: str = "meta/llama-3.2-90b-vision-instruct"  # NVIDIA vision model
+    vision_model: str = "nvidia/ising-calibration-1.5-31b"  # NVIDIA vision model
     vision_storage_dir: str = "data/vision_uploads"
     vision_max_image_size_mb: int = 20
     vision_max_images_per_message: int = 5
@@ -130,6 +134,10 @@ class Settings(BaseSettings):
     # ── Semantic Intelligence Layer (Phase 3) ────────────────────────────────────
     # Model/endpoint/timeout for the ollama provider reuse the existing
     # ollama_embed_model / ollama_timeout settings above — no duplication.
+    # Stays local, and cannot move: the UnityWorks deployment is a
+    # vision-language endpoint (prompt in, text out) with no embedding route.
+    # Retrieval needs vectors, so this is nomic-embed-text on Ollama — small
+    # (0.3 GB), fast, and unrelated to the slow chat model that was removed.
     dip_embedding_provider: Literal["ollama"] = "ollama"
     dip_embedding_max_retries: int = 3
     dip_vector_store_provider: Literal["chroma"] = "chroma"
@@ -142,12 +150,24 @@ class Settings(BaseSettings):
     # Registering a future provider (claude / gemini / openai / qwen) widens the
     # accepted values through the adapter registry — this field stays a plain str
     # rather than a Literal so a registered provider needs no edit here.
-    document_vlm_provider: str = "ollama"
+    document_vlm_provider: str = "unityworks"  # nvidia | ollama | unityworks
+
+    # UnityWorks self-hosted VLM (LitServe behind an API key). Serves both
+    # DOCUMENT_VLM_PROVIDER=unityworks and VISION_PROVIDER=unityworks.
+    #
+    # The URL has no default on purpose: a Lightning cloudspace hostname changes
+    # whenever the space restarts, so a stale default would point confidently at
+    # someone else's deployment rather than failing to start.
+    unityworks_base_url: str = ""
+    unityworks_api_key: SecretStr = SecretStr("")
+    # A label, not a routing key — the deployment serves whatever model it was
+    # built with. It exists so telemetry and health have a name to report.
+    unityworks_model: str = "unityworks-vlm"
 
     # NVIDIA cloud VLM. nvidia_api_key / nvidia_base_url are shared with the chat
     # provider above (same account, same endpoint); the *model* is separate
     # because a VLM and a text model are different deployments.
-    nvidia_model: str = "meta/llama-3.2-90b-vision-instruct"
+    nvidia_model: str = "nvidia/ising-calibration-1.5-31b"
     # Chat vision (/chat/stream/vision) may need a *different* deployment from
     # document extraction: llama-3.2-11b-vision answers in under a second but
     # rejects any prompt carrying more than one image, which suits chat uploads
@@ -196,8 +216,8 @@ class Settings(BaseSettings):
     # total, and a page image costs ~4000 prompt tokens — so 8192 leaves ample
     # headroom while allowing ~80 line items. Asking for the full window instead
     # produces an immediate HTTP 400 on every request.
-    document_vlm_max_output_tokens: int = 8192
-    document_vlm_temperature: float = 0.0      # extraction is not a creative task
+    document_vlm_max_output_tokens: int = 32768
+    document_vlm_temperature: float = 1.00    # extraction is not a creative task
     document_vlm_max_file_size_mb: int = 20
     # Pages sent to the model per request. Measured against Nemotron VL: each
     # page image costs ~3,330 prompt tokens, and five pages exceed the server's
@@ -211,15 +231,83 @@ class Settings(BaseSettings):
     # ── Conversational Knowledge Intelligence (Phase 4) ──────────────────────────
     # Endpoint/timeout for the ollama LLM provider reuse ollama_host /
     # ollama_timeout / ollama_num_ctx / ollama_num_predict above.
-    dip_llm_provider: Literal["ollama"] = "ollama"
-    dip_chat_model: str = "qwen3:8b"
+    # The document workspace answers and generates on the self-hosted UnityWorks
+    # deployment alone. A Literal of one is the point: local inference on CPU
+    # took minutes per answer and streamed with no read timeout, so a slow model
+    # left the UI on "Generating answer…" indefinitely. Reads
+    # UNITYWORKS_BASE_URL / _API_KEY / _MODEL above.
+    dip_llm_provider: Literal["unityworks"] = "unityworks"
     dip_chat_temperature: float = 0.2
     dip_llm_max_retries: int = 2
+    # The endpoint answers in one shot and decodes at roughly 11 tokens a
+    # second, so this budget is a wait: 8192 tokens is 745s against the 300s
+    # ceiling below, which a long generation plan reached as a timeout and
+    # the user read as nothing being generated at all. 2048 finishes inside
+    # the timeout with room to spare. Conversation answers set their own,
+    # smaller ceiling on the prompt; this is the fallback the generation
+    # planner uses.
+    dip_max_output_tokens: int = 2048
+    # A real ceiling, deliberately not None: an unbounded read is what turned a
+    # slow model into a spinner that never resolved.
+    dip_llm_timeout_seconds: float = 300.0
     dip_retrieval_top_k: int = 8
     dip_context_token_budget: int = 4000
     dip_history_max_turns: int = 6
     # Below this best-hit similarity the platform refuses rather than answers.
     dip_grounding_min_score: float = 0.35
+
+    # Last resort when a correct answer carries no [S#] marker and the model
+    # will not add one: the fraction of an answer's content words that must
+    # appear in a source before that source is recorded as where it came from.
+    # Measured, not guessed. Real grounded summaries of a real document scored
+    # 0.64, 0.88 and 0.92 against their source. The failures scored far lower:
+    # 0.37 for an answer whose source turned out to be the wrong extraction,
+    # 0.29 for a summary carrying invented personal details, 0.18 for an answer
+    # about a different document, 0.00 for one from outside knowledge. The gap
+    # between 0.37 and 0.64 is where this belongs. A short answer dilutes the
+    # score with connective filler - "as indicated by the Class field" - and
+    # measured at 0.48 while being entirely correct, so the bar sits below
+    # that. It is not the only test: every figure in the passage must also
+    # appear in the source, which is what actually separates a summary of
+    # this document from a confident summary of a different one.
+    dip_attribution_min_support: float = 0.45
+
+    # Drain the document and embedding queues inside the API process as well
+    # as (or instead of) the standalone workers. On by default because the
+    # failure it prevents is silent and total: with no consumer running, an
+    # upload succeeds, the document appears in the sidebar, and every question
+    # about it is refused forever for want of a single chunk. Redis gives a
+    # queued job to exactly one consumer, so running the standalone workers
+    # too is safe - they share the queue rather than duplicating work. Turn
+    # this off where the API should serve requests and nothing else.
+    dip_inprocess_workers: bool = True
+
+    # Natural-language document tasks: the model writes Python, the sandbox
+    # runs it. The image is the one the workers already use - it carries
+    # pandas, openpyxl, python-docx and pypdf, so nothing extra is built.
+    dip_sandbox_image: str = "ai-coding-assistant:latest"
+    dip_sandbox_timeout_seconds: int = 120
+    dip_sandbox_memory: str = "2g"
+    dip_sandbox_cpus: str = "2"
+    # One attempt plus two repairs. A mistyped column is fixed on the first
+    # retry; a model still failing on the third has misread the request, and
+    # more attempts only make the wait longer.
+    dip_task_max_attempts: int = 3
+
+    # The code-writing model follows DOCUMENT_VLM_PROVIDER: 'nvidia' uses the
+    # endpoint below, 'unityworks' uses the self-hosted deployment. Measured,
+    # same prompt and file and sandbox with only the model varied: the
+    # self-hosted 7-8B produced 1251 rows with concatenated codes over three
+    # failed attempts; the hosted 31B produced the correct 3136 on the first,
+    # in nine seconds.
+    dip_codegen_url: str = "https://integrate.api.nvidia.com/v1/chat/completions"
+    dip_codegen_model: str = "nvidia/ising-calibration-1.5-31b"
+    dip_codegen_timeout_seconds: float = 300.0
+    # Sample rows help the model see the shape of the data, and are the only
+    # part of the document that would leave the machine. Turn this off and the
+    # prompt carries column names and types alone; the rows themselves are
+    # never sent either way - they are read inside the offline container.
+    dip_codegen_send_samples: bool = True
 
     @field_validator("ollama_host", "ollama_base_url", mode="before")
     @classmethod

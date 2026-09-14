@@ -11,15 +11,21 @@ import json
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import func, select
+from loguru import logger
+from sqlalchemy import func, or_, select
+from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
     ConversationEventRecord,
     DipConversation,
     DipConversationTurn,
+    Document,
     DocumentChunk,
+    DocumentMetadataRow,
+    KnowledgeObject,
 )
+from app.document_platform.conversation.context_builder import DocumentFacts
 from app.document_platform.conversation.events import ConversationEvent
 from app.document_platform.conversation.metrics import TurnMetrics
 
@@ -105,16 +111,147 @@ class ConversationRepository:
         ).scalars().all()
         return list(rows)
 
+    async def document_facts(self, document_ids: list[str]) -> list[DocumentFacts]:
+        """Whole-document totals for the documents a turn is scoped to.
+
+        Read-only across the frozen Knowledge Platform tables, the same
+        sanctioned pattern the document_chunks.page read already uses. The
+        counts were computed once at processing time; nothing is derived from
+        the excerpts, which is the entire point.
+        """
+        if not document_ids:
+            return []
+        rows = (
+            await self._db.execute(
+                select(
+                    Document.id,
+                    Document.original_filename,
+                    KnowledgeObject.doc_type,
+                    KnowledgeObject.title,
+                    KnowledgeObject.chunk_count,
+                    KnowledgeObject.word_count,
+                    KnowledgeObject.table_count,
+                    DocumentMetadataRow.page_count,
+                    DocumentMetadataRow.sheet_count,
+                )
+                .select_from(Document)
+                .outerjoin(KnowledgeObject, KnowledgeObject.document_id == Document.id)
+                .outerjoin(DocumentMetadataRow, DocumentMetadataRow.document_id == Document.id)
+                .where(Document.id.in_(document_ids))
+            )
+        ).all()
+
+        table_rows = await self._table_row_counts(document_ids)
+        return [
+            DocumentFacts(
+                document_id=r[0],
+                filename=r[1] or "",
+                doc_type=r[2] or "",
+                title=r[3] or "",
+                chunk_count=r[4] or 0,
+                word_count=r[5] or 0,
+                table_count=r[6] or 0,
+                table_rows=table_rows.get(r[0], 0),
+                page_count=r[7],
+                sheet_count=r[8],
+            )
+            for r in rows
+        ]
+
+    async def _table_row_counts(self, document_ids: list[str]) -> dict[str, int]:
+        """Real row totals, summed from the row_count each table chunk recorded.
+
+        The chunker already counted the rows it put in every part, so the total
+        is an aggregate rather than a scan of the content. The JSON accessor is
+        PostgreSQL's; on any other engine this returns nothing and the facts
+        block simply omits row totals rather than reporting a wrong one.
+        """
+        try:
+            rows = (
+                await self._db.execute(
+                    sql_text(
+                        "SELECT document_id, "
+                        "SUM((meta_json::json->>'row_count')::int) AS row_total "
+                        "FROM document_chunks "
+                        "WHERE document_id = ANY(:ids) AND node_type = 'table' "
+                        "AND meta_json IS NOT NULL "
+                        "AND meta_json::json->>'row_count' IS NOT NULL "
+                        "GROUP BY document_id"
+                    ),
+                    {"ids": list(document_ids)},
+                )
+            ).all()
+        except Exception as e:  # noqa: BLE001 - a missing total beats a wrong one
+            logger.debug(f"Table row totals unavailable on this engine: {e}")
+            return {}
+        return {r[0]: int(r[1] or 0) for r in rows}
+
     async def completed_turns(
         self, conversation_id: str, limit: int,
+        document_ids: list[str] | None = None,
     ) -> list[DipConversationTurn]:
-        """Most recent successfully-answered turns, oldest→newest, for memory."""
+        """Most recent genuinely-answered turns, oldest-to-newest, for memory.
+
+        Two filters here are load-bearing, and both were missing.
+
+        ``grounded is True`` keeps refusals out. A refusal is stored exactly the
+        way a good answer is - status "completed", with REFUSAL_SENTENCE as its
+        answer - so the window fed the model its own "I don't have enough
+        information in the knowledge base to answer that", which is the single
+        most effective way to get that sentence back again. One refusal turned
+        into a conversation that could no longer answer anything.
+
+        ``document_ids`` keeps another document's answers out. Turn rows record
+        the document scope they were asked under; the window ignored it, so
+        changing the selected document left the previous document's questions
+        and answers sitting in the prompt, and the model answered from them.
+        Turns asked with no document scope stay in - they were asked over the
+        whole workspace, so they are not some other document's answer.
+        """
+        conditions = [
+            DipConversationTurn.conversation_id == conversation_id,
+            DipConversationTurn.status == "completed",
+            DipConversationTurn.grounded.is_(True),
+            DipConversationTurn.answer.is_not(None),
+        ]
+        if document_ids:
+            conditions.append(or_(
+                DipConversationTurn.document_id.is_(None),
+                DipConversationTurn.document_id.in_(document_ids),
+            ))
+        rows = (
+            await self._db.execute(
+                select(DipConversationTurn)
+                .where(*conditions)
+                .order_by(DipConversationTurn.seq.desc())
+                .limit(limit)
+            )
+        ).scalars().all()
+        return list(reversed(rows))
+
+    async def chat_turns(
+        self, conversation_id: str, limit: int,
+    ) -> list[DipConversationTurn]:
+        """Recent small-talk turns only, oldest-to-newest.
+
+        General chat gets its own memory, separate from the document window
+        above, because the two poison each other in opposite directions.
+        Feeding document answers into a greeting is not hypothetical: asked
+        "thanks!" with a document answer sitting at the end of the history,
+        the model replied by repeating that document answer verbatim. And
+        feeding chit-chat into a grounded prompt gives the model uncited text
+        to copy, which the validator then throws the whole answer away for.
+
+        They are told apart by the intent recorded on the row, which is the
+        same decision that routed the turn in the first place.
+        """
         rows = (
             await self._db.execute(
                 select(DipConversationTurn)
                 .where(
                     DipConversationTurn.conversation_id == conversation_id,
                     DipConversationTurn.status == "completed",
+                    DipConversationTurn.intent == "conversational",
                     DipConversationTurn.answer.is_not(None),
                 )
                 .order_by(DipConversationTurn.seq.desc())

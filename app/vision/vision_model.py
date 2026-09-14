@@ -4,6 +4,7 @@ Vision Model — routes image+text requests to a vision-capable LLM.
 Supports:
   - Ollama vision models (llava, llama3.2-vision, bakllava)
   - NVIDIA multimodal models (via OpenAI-compatible API)
+  - UnityWorks self-hosted VLM (single-prompt, single-image, API-key endpoint)
 
 The model router automatically selects the vision model when images are present.
 Which provider serves it is VISION_PROVIDER, falling back to LLM_PROVIDER when
@@ -23,6 +24,9 @@ settings = get_settings()
 
 # Vision model configuration — reads from settings
 OLLAMA_VISION_MODEL = getattr(settings, "vision_model", "qwen2.5vl:7b")
+
+_STREAM_SLICE = 40
+"""Characters per emitted chunk when a provider answers in one shot."""
 
 
 # Magic-byte prefixes, longest-first where they overlap.
@@ -63,7 +67,12 @@ class VisionModel:
         temperature: float = 0.3,
     ) -> str:
         """Single-turn vision chat. Returns complete response."""
-        if settings.vision_provider_resolved == "nvidia":
+        provider = settings.vision_provider_resolved
+        if provider == "unityworks":
+            return await self._unityworks_vision_chat(
+                prompt, system_prompt, image_data, temperature
+            )
+        if provider == "nvidia":
             return await self._nvidia_vision_chat(prompt, system_prompt, image_data, temperature)
         return await self._ollama_vision_chat(prompt, system_prompt, image_data, temperature)
 
@@ -75,7 +84,11 @@ class VisionModel:
         temperature: float = 0.3,
     ) -> AsyncGenerator[str, None]:
         """Streaming vision chat. Yields text chunks."""
-        if settings.vision_provider_resolved == "nvidia":
+        provider = settings.vision_provider_resolved
+        if provider == "unityworks":
+            async for chunk in self._unityworks_vision_stream(prompt, system_prompt, image_data, temperature):
+                yield chunk
+        elif provider == "nvidia":
             async for chunk in self._nvidia_vision_stream(prompt, system_prompt, image_data, temperature):
                 yield chunk
         else:
@@ -154,6 +167,66 @@ class VisionModel:
             "images": images_b64,
         })
         return messages
+
+    # ── UnityWorks Vision (self-hosted) ───────────────────────────────────────
+
+    @staticmethod
+    def _unityworks_body(
+        prompt: str, system_prompt: str, image_data: list[bytes], max_tokens: int
+    ) -> dict:
+        """The endpoint's request shape: one prompt string, at most one image.
+
+        Several attachments are stacked into a single image rather than dropped,
+        for the same reason the document adapter stacks pages — answering about
+        the first of four images, without saying so, is worse than being slow.
+        """
+        from app.adapters.document_vlm.unityworks import stitch_image_bytes
+
+        body: dict = {
+            "prompt": f"{system_prompt.strip()}\n\n{prompt}" if system_prompt.strip() else prompt,
+            "max_new_tokens": max_tokens,
+        }
+        if image_data:
+            single = image_data[0] if len(image_data) == 1 else stitch_image_bytes(image_data)
+            b64 = base64.b64encode(single).decode("utf-8")
+            body["image_url"] = f"data:{_sniff_mime(single)};base64,{b64}"
+        return body
+
+    async def _unityworks_vision_chat(
+        self, prompt: str, system_prompt: str, image_data: list[bytes], temperature: float
+    ) -> str:
+        """Self-hosted multimodal chat. One request, one JSON reply."""
+        url = settings.unityworks_base_url.strip()
+        if not url:
+            raise RuntimeError(
+                "VISION_PROVIDER=unityworks but UNITYWORKS_BASE_URL is not set"
+            )
+        body = self._unityworks_body(
+            prompt, system_prompt, image_data, settings.nvidia_max_tokens
+        )
+        async with httpx.AsyncClient(timeout=httpx.Timeout(300)) as client:
+            response = await client.post(
+                url,
+                json=body,
+                headers={"X-API-Key": settings.unityworks_api_key.get_secret_value()},
+            )
+            response.raise_for_status()
+            return str(response.json().get("output", ""))
+
+    async def _unityworks_vision_stream(
+        self, prompt: str, system_prompt: str, image_data: list[bytes], temperature: float
+    ) -> AsyncGenerator[str, None]:
+        """The endpoint answers in one shot, so the stream is paced afterwards.
+
+        The reply is emitted in small slices rather than as one block: the chat
+        surface renders progressively, and a single enormous chunk would make a
+        completed answer look like a frozen one.
+        """
+        text = await self._unityworks_vision_chat(
+            prompt, system_prompt, image_data, temperature
+        )
+        for index in range(0, len(text), _STREAM_SLICE):
+            yield text[index : index + _STREAM_SLICE]
 
     # ── NVIDIA Vision ─────────────────────────────────────────────────────────
 

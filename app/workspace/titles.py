@@ -28,6 +28,7 @@ async def generate_title(question: str, answer: str) -> str:
             ),
             user=f"Question: {question[:400]}\n\nAnswer summary: {answer[:400]}",
             strategy="title",
+            max_output_tokens=32,
         )
         result = await provider.generate(prompt)
         title = _QUOTE.sub("", result.text.split("\n")[0])[:60]

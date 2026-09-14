@@ -6,11 +6,14 @@ and factual answers actually cite something. Refusals (the model's honest
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from app.document_platform.conversation.citations import CitationOutcome
 from app.document_platform.conversation.context_builder import ContextBundle
 from app.document_platform.conversation.prompts import REFUSAL_SENTENCE
+
+_MARKERS = re.compile(r"\[S\d+\]")
 
 
 @dataclass(frozen=True)
@@ -30,7 +33,11 @@ class ResponseValidator:
         self, answer: str, outcome: CitationOutcome, bundle: ContextBundle,
     ) -> ValidationResult:
         text = answer.strip()
-        if not text:
+        # Strip the markers before judging emptiness: a reply of "[S6]" is well
+        # cited and says nothing, and it used to pass every check here and
+        # reach the user as an answer consisting of one footnote.
+        without_markers = _MARKERS.sub("", text).strip()
+        if not text or not any(c.isalnum() for c in without_markers):
             return ValidationResult(
                 valid=False, grounded=False, grounding_score=0.0,
                 reasons=["empty_response"],

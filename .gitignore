@@ -36,3 +36,7 @@ firebase-service-account.json
 # These files are the only PPE-violation footage in the project: archive them
 # somewhere durable, because ignoring them means this machine is their only copy.
 media/
+
+.env.*
+!.env.example
+test_api.py

@@ -396,8 +396,36 @@ class WorkspaceService:
         scope = await self._conversation_scope(ws, conversation_id)
         await self._db.commit()
 
+        # A counting question over a spreadsheet is arithmetic, and retrieval
+        # cannot do arithmetic - it can only produce something that reads like
+        # an answer. Asked how many dishes are Halal and Pureed, retrieval saw
+        # four chunks, wrote a confident analysis, and passed validation with a
+        # number that was wrong; computing it over all 1251 rows gives 183.
+        # A plausible wrong answer is worse than a slow right one, so for these
+        # questions the file is read first and retrieval is the fallback.
+        computable_first = await self._single_computable_document(scope)             if self._is_computational(question) else None
+        if computable_first is not None:
+            answered = False
+            async for frame in self._answer_by_computation(
+                ws, conversation_id, computable_first, question,
+            ):
+                answered = True
+                yield frame
+            if answered:
+                return
+            logger.info(
+                f"Could not compute an answer to {question[:60]!r}; "
+                f"falling back to retrieval"
+            )
+
         gateway = ConversationGateway(self._db)
         done_payload: dict | None = None
+        # Progress is forwarded live; the answer is held until it is known to be
+        # an answer. If retrieval could not produce one and the question is
+        # about a single spreadsheet, the sheet is read instead - and the user
+        # should never see the failed attempt flash past on the way there.
+        held: list[str] = []
+        computable = None   # computation already had its turn, above
         async for frame in gateway.ask_stream(conv, question, scope):
             if frame.startswith("event: done"):
                 for line in frame.split("\n"):
@@ -406,6 +434,31 @@ class WorkspaceService:
                             done_payload = json.loads(line[6:])
                         except json.JSONDecodeError:
                             pass
+            if computable is not None and frame.startswith(
+                ("event: token", "event: citations", "event: done")
+            ):
+                held.append(frame)
+                continue
+            yield frame
+
+        if (
+            computable is not None
+            and self._is_computational(question)
+            and self._needs_computation(done_payload)
+        ):
+            logger.info(
+                f"Retrieval could not answer {question[:60]!r}; "
+                f"computing it from {computable.original_filename}"
+            )
+            answered = False
+            async for frame in self._answer_by_computation(
+                ws, conversation_id, computable, question,
+            ):
+                answered = True
+                yield frame
+            if answered:
+                return
+        for frame in held:
             yield frame
 
         # Post-answer bookkeeping — separate transaction, never blocks tokens.
@@ -472,6 +525,220 @@ class WorkspaceService:
         )
         await self._db.commit()
         return wc.title
+
+    async def _answer_by_computation(self, ws, conversation_id, doc, question):
+        """Answer by running code over the whole file, in ask-shaped events.
+
+        The surface is the chat, so the frames are the chat's: stage, token,
+        citations, done. No [S#] markers are attached and none are needed - the
+        number was not retrieved from a source that could be cited, it was
+        computed from every row of the document, which is a stronger claim than
+        a citation makes.
+        """
+        import json as _json
+
+        from app.document_platform.constants import STORAGE_PREFIX
+        from app.document_platform.execution import DocumentTaskRunner
+        from app.storage import get_blob_storage
+
+        def sse(event: str, payload: dict) -> str:
+            return f"event: {event}\ndata: {_json.dumps(payload, default=str)}\n\n"
+
+        try:
+            data = await get_blob_storage(STORAGE_PREFIX).get(doc.storage_key)
+        except Exception:  # noqa: BLE001 - fall back to the retrieval verdict
+            logger.exception(f"Could not read {doc.id} to compute an answer")
+            return
+
+        yield sse("stage", {"stage": "reading_the_file",
+                            "detail": {"filename": doc.original_filename}})
+        try:
+            # Said explicitly, because the runner always offers an
+            # OUTPUT_PATH and a model given one tends to use it: the answer
+            # ended up inside a spreadsheet nobody asked for, and the reply
+            # came back empty.
+            asked = (
+                f"{question}\n\n"
+                "Answer this question about the file. Compute the answer over "
+                "every row and print() it as a short, readable sentence. "
+                "Do NOT write any output file."
+            )
+            result = await DocumentTaskRunner().run(
+                data, doc.original_filename, asked,
+            )
+        except Exception:  # noqa: BLE001 - the retrieval verdict still stands
+            logger.exception("Computing an answer failed")
+            return
+        if not result.ok or not result.answer.strip():
+            return
+
+        answer = result.answer.strip()
+
+        # Saved as an ordinary turn. A computed answer that is not persisted
+        # looks right until the page is reloaded and the conversation has a
+        # question with no reply under it - the same disappearing-message
+        # failure, arriving by a different route.
+        try:
+            from app.document_platform.conversation.repository import (
+                ConversationRepository,
+            )
+            from app.document_platform.conversation.metrics import TurnMetrics
+
+            repo = ConversationRepository(self._db)
+            conv = await repo.get_conversation(conversation_id, ws.user_id)
+            if conv is not None:
+                turn = await repo.create_turn(conv, question, doc.id)
+                await repo.finish_turn(
+                    turn, status="completed", answer=answer,
+                    intent="analytics", grounded=True, refusal_reason=None,
+                    citations_json=None,
+                    metrics=TurnMetrics(
+                        llm_ms=result.llm_ms, total_ms=result.llm_ms + result.sandbox_ms,
+                        grounding_score=1.0,
+                    ),
+                    llm_provider="computed", llm_model="generated_code",
+                    error=None,
+                )
+                await self._db.commit()
+        except Exception:  # noqa: BLE001 - the answer is still worth showing
+            logger.exception("Could not persist the computed turn")
+
+        for index in range(0, len(answer), 40):
+            yield sse("token", {"text": answer[index : index + 40]})
+        yield sse("citations", {"citations": [], "grounded": True,
+                                "grounding_score": 1.0})
+        yield sse("done", {"status": "completed", "refusal_reason": None,
+                           "metrics": {"llm_ms": result.llm_ms,
+                                       "sandbox_ms": result.sandbox_ms,
+                                       "computed": True}})
+
+    # ── Answering by computation ─────────────────────────────────────────────
+
+    COMPUTABLE_SUFFIXES = (".xlsx", ".xlsm", ".xls", ".csv", ".tsv")
+    """Formats where a question usually has an exact answer in the data.
+
+    Retrieval hands the model a handful of text chunks out of hundreds. That is
+    the right tool for prose and the wrong one for a spreadsheet: "how many rows
+    are there" over 1251 rows is arithmetic, not recall, and eight chunks cannot
+    produce it. Asked anyway, the model either guesses or writes something it
+    cannot cite, and the user is told the knowledge base has no answer about a
+    file sitting right there.
+    """
+
+    async def _single_computable_document(self, scope):
+        """The one spreadsheet in scope, if exactly one is in scope.
+
+        What matters is that the question has an unambiguous sheet to compute
+        over, not that nothing else is selected. A person asking "how many rows
+        are there" with a screenshot and a spreadsheet both ticked means the
+        spreadsheet — screenshots do not have rows. Requiring the scope to hold
+        exactly one document sent that question to retrieval instead, which
+        answered it from eight text chunks of a 1251-row file.
+
+        Two spreadsheets in scope is a different case and still declines: "how
+        many rows" then has two answers, and picking one silently would be a
+        guess wearing the clothes of a computation.
+        """
+        if not scope:
+            return None
+        from app.db.models import Document
+
+        computable = []
+        for document_id in scope:
+            doc = await self._db.get(Document, document_id)
+            if doc is None or doc.is_deleted:
+                continue
+            if (doc.original_filename or "").lower().endswith(self.COMPUTABLE_SUFFIXES):
+                computable.append(doc)
+        return computable[0] if len(computable) == 1 else None
+
+    COMPUTATIONAL_INTENTS = frozenset({
+        "analytics", "calculation", "extraction", "filtering", "comparison",
+    })
+    """Intents whose answer is derived from the data rather than recalled.
+
+    Gating on intent keeps the sheet from being read for questions it cannot
+    answer. "you know monkey d luffy?" retrieves nothing, and rightly - but
+    without this gate the failure looked like a reason to go and compute
+    something, and the user was told "Input rows: 1251, Output rows: 2" for a
+    question about a cartoon.
+    """
+
+    @staticmethod
+    def _is_computational(question: str) -> bool:
+        from app.document_platform.conversation.intent import get_intent_classifier
+
+        intent = get_intent_classifier().classify(question)
+        return intent.value in WorkspaceService.COMPUTATIONAL_INTENTS
+
+    @staticmethod
+    def _needs_computation(done_payload: dict | None) -> bool:
+        """Did retrieval fail to actually answer?
+
+        Both outcomes qualify. "No source found" means retrieval came back with
+        nothing usable; a rejected turn means something came back that could not
+        be tied to a source. In either case the sheet itself has not been read,
+        and reading it is the thing that was wanted.
+        """
+        if not done_payload:
+            return True
+        if done_payload.get("status") == "rejected":
+            return True
+        reason = done_payload.get("refusal_reason") or ""
+        return reason.startswith(("no_knowledge_found", "low_confidence", "validation_failed"))
+
+    # ── Document tasks ───────────────────────────────────────────────────────
+
+    async def document_task_stream(
+        self, ws, conversation_id: str | None, document_id: str,
+        filename: str, data: bytes, instruction: str,
+        requested_format: str | None = None,
+    ):
+        """Run a natural-language task on one document, inside a conversation.
+
+        The linking at the end is what makes a result survive a reload. An
+        artifact with no workspace link belongs to nothing: it exists, it can
+        be downloaded from Generated Documents, and the conversation that
+        produced it shows nothing at all the next time it is opened - which
+        reads as the chat having lost everything.
+        """
+        from app.document_platform.execution.gateway import DocumentTaskGateway
+
+        if conversation_id:
+            await self.conversation_in_workspace(ws, conversation_id)
+        await self.repo.add_timeline(
+            ws.id, "generation_started",
+            f"Started a task on {filename}",
+            ref_type="conversation", ref_id=conversation_id,
+            detail={"prompt": instruction[:200], "document_id": document_id},
+        )
+        await self._db.commit()
+
+        gateway = DocumentTaskGateway(self._db)
+        artifact_id: str | None = None
+        try:
+            async for kind, payload in gateway.run_stream(
+                user_id=ws.user_id, org_id=ws.org_id, document_id=document_id,
+                filename=filename, data=data, request=instruction,
+                requested_format=requested_format,
+            ):
+                if kind == "done" and payload.get("artifact_id"):
+                    artifact_id = payload["artifact_id"]
+                yield DocumentTaskGateway.sse(kind, payload)
+        finally:
+            if artifact_id:
+                try:
+                    await self.repo.link_artifact(ws.id, artifact_id, conversation_id)
+                    await self.repo.add_timeline(
+                        ws.id, "generation_completed",
+                        f"Produced a file from {filename}",
+                        ref_type="artifact", ref_id=artifact_id,
+                    )
+                    await self._db.commit()
+                except Exception:  # noqa: BLE001 - the file exists either way
+                    logger.exception(
+                        f"Could not link artifact {artifact_id} to workspace {ws.id}"
+                    )
 
     # ── Generation ───────────────────────────────────────────────────────────
 

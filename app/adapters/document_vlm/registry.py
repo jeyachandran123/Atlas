@@ -262,10 +262,15 @@ def _register_builtin_providers() -> None:
     """
     from app.adapters.document_vlm.nvidia import build_nvidia_adapter, describe_nvidia_config
     from app.adapters.document_vlm.ollama import build_ollama_adapter, describe_ollama_config
+    from app.adapters.document_vlm.unityworks import (
+        build_unityworks_adapter,
+        describe_unityworks_config,
+    )
 
     for name, factory, describe in (
         ("nvidia", build_nvidia_adapter, describe_nvidia_config),
         ("ollama", build_ollama_adapter, describe_ollama_config),
+        ("unityworks", build_unityworks_adapter, describe_unityworks_config),
     ):
         try:
             register_document_vlm_provider(name, factory, describe=describe)

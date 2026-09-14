@@ -50,10 +50,12 @@ loguru==0.7.3
 
 # ── Document Extraction ───────────────────────────────────────────────────────
 pypdf==5.1.0               # PDF text extraction
+pypdfium2==5.13.0          # PDF page rendering - a scanned PDF has no text to extract
 python-docx==1.1.2         # Word (.docx) text extraction
 openpyxl==3.1.5            # Excel (.xlsx) parsing — DIP Phase 2
 python-pptx==1.0.2         # PowerPoint (.pptx) parsing — DIP Phase 2
 langdetect==1.0.9          # Language detection — DIP Phase 2
+Pillow==12.3.0             # Page stitching for single-image VLM providers
 
 # ── Content Generation (DIP Phase 5) ─────────────────────────────────────────
 reportlab==4.2.5           # PDF building — Generation Platform
