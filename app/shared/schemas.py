@@ -208,6 +208,10 @@ class UserOut(BaseModel):
     full_name: Optional[str]
     role: str
     created_at: datetime
+    # Whether email + password sign-in works for this account.
+    has_password: bool = False
+    # How the account was first created: "email", "google", …
+    auth_provider: Optional[str] = None
 
 
 class RepoOut(BaseModel):

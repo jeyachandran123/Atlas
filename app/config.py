@@ -358,6 +358,19 @@ class Settings(BaseSettings):
     default_org_plan: str = "free"
     default_org_max_repos: int = 10
     default_org_max_users: int = 100
+    # Self-service sign-up (name, email, password) into the default org.
+    # Addresses are not verified until an email service is configured, so
+    # this is the switch to close sign-ups without a code change.
+    allow_open_registration: bool = True
+
+    # ── Email (Brevo) ─────────────────────────────────────────────────────────
+    # Transactional email for sign-up codes. With no key or no sender, email is
+    # off and sign-up creates accounts without verifying the address.
+    brevo_api_key: SecretStr = SecretStr("")
+    email_sender_address: str = ""   # must be a sender verified in Brevo
+    email_sender_name: str = "UnityWorks"
+    signup_code_ttl_seconds: int = 600
+    signup_resend_cooldown_seconds: int = 60
 
     # ── Rate Limiting ─────────────────────────────────────────────────────────
     rate_limit_chat: str = "20/minute"

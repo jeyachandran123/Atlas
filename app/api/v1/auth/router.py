@@ -6,7 +6,8 @@ Endpoints:
   POST /api/v1/auth/login         → JWT access + refresh tokens (email/password)
   POST /api/v1/auth/refresh       → new access token from refresh token
   POST /api/v1/auth/logout        → invalidate refresh token
-  POST /api/v1/auth/register      → create user (admin only in production)
+  POST /api/v1/auth/register      → self-service sign-up into the default organisation
+  POST /api/v1/auth/password      → add a password to this account, or change it
   POST /api/v1/auth/keys          → create API key
   GET  /api/v1/auth/keys          → list API keys
   DELETE /api/v1/auth/keys/{id}   → revoke API key
@@ -18,8 +19,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import (
@@ -36,6 +39,7 @@ from app.database import get_db
 from app.db.models import APIKey, User
 from app.db.repositories import UserRepository
 from app.shared.schemas import UserOut
+from app.signup.verification import SignupError
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -60,11 +64,29 @@ class RefreshRequest(BaseModel):
 
 
 class RegisterRequest(BaseModel):
+    """Self-service sign-up.
+
+    Role and organisation are not fields: the server decides both. Taking
+    them from the request let anyone register as an admin, or into any
+    organisation.
+    """
     email: EmailStr
-    password: str = Field(..., min_length=8)
-    full_name: Optional[str] = None
-    role: str = Field(default="developer")
-    org_id: str
+    password: str = Field(..., min_length=8, max_length=128)
+    full_name: str = Field(..., min_length=1, max_length=255)
+
+
+class SetPasswordRequest(BaseModel):
+    current_password: Optional[str] = None
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
+class VerifySignupRequest(BaseModel):
+    email: EmailStr
+    code: str = Field(..., min_length=4, max_length=12)
+
+
+class ResendSignupRequest(BaseModel):
+    email: EmailStr
 
 
 class CreateAPIKeyRequest(BaseModel):
@@ -171,7 +193,7 @@ async def _find_or_create_user(
     """Return (user, is_new_user). Creates user on first login."""
     from loguru import logger
     user_repo = UserRepository(db)
-    user = await user_repo.get_by_email(org_id, email)
+    user = await _find_by_email(db, email)
     if user is None:
         user = User(
             org_id=org_id, email=email, full_name=name, role="developer",
@@ -183,6 +205,13 @@ async def _find_or_create_user(
         await db.flush()
         logger.info(f"New user registered via {auth_provider}: {email}")
         return user, True
+    # Sign-up does not verify email addresses, so a password account made for
+    # this address before its owner ever used Google may have been made by
+    # someone else. Google has now proven who owns it: that password stops
+    # working, and the owner can add their own from Settings.
+    if user.firebase_uid is None and not user.email_verified and email_verified and user.hashed_password:
+        user.hashed_password = ""
+        logger.warning(f"Cleared an unverified password on {email}: Google verified the address")
     if user.firebase_uid is None:
         user.firebase_uid = firebase_uid
     if user.profile_picture_url is None and picture:
@@ -201,6 +230,138 @@ async def _store_refresh_token(user_id: str, refresh_token: str) -> None:
     r = get_redis()
     cfg = get_settings()
     await r.setex(f"refresh:{refresh_token}", cfg.jwt_refresh_token_expire_days * 86400, user_id)
+
+
+def _normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
+async def _find_by_email(db: AsyncSession, email: str) -> User | None:
+    """The account for an address, whatever its case: Google reports
+    lower-case addresses, people type whatever they like."""
+    result = await db.execute(
+        select(User)
+        .where(func.lower(User.email) == _normalize_email(email))
+        .order_by(User.created_at)
+    )
+    return result.scalars().first()
+
+
+def _password_matches(plain: str, hashed: str) -> bool:
+    """A Google-only account has no hash; bcrypt raises on that rather than failing."""
+    if not hashed:
+        return False
+    try:
+        return verify_password(plain, hashed)
+    except ValueError:
+        return False
+
+
+def _user_out(user: User) -> UserOut:
+    return UserOut(
+        id=user.id,
+        email=user.email,
+        full_name=user.full_name,
+        role=user.role,
+        created_at=user.created_at,
+        has_password=bool(user.hashed_password),
+        auth_provider=getattr(user, "auth_provider", None),
+    )
+
+
+# ── Sign-up helpers ───────────────────────────────────────────────────────────
+
+
+async def _rate_limit(request: Request, bucket: str, per_minute: int) -> None:
+    """At most ``per_minute`` calls a minute from one address.
+
+    Done here rather than with slowapi's decorator: its wrapper makes FastAPI
+    resolve this module's postponed annotations in slowapi's namespace, which
+    turns the JSON body into a missing query parameter.
+    """
+    from app.redis_client import get_redis
+
+    ip = request.client.host if request.client else "unknown"
+    key = f"ratelimit:auth:{bucket}:{ip}"
+    r = get_redis()
+    count = int(await r.incr(key))
+    if count == 1:
+        await r.expire(key, 60)
+    if count > per_minute:
+        wait = max(int(await r.ttl(key)), 1)
+        raise HTTPException(
+            429, "Too many attempts. Please wait a minute and try again.",
+            headers={"Retry-After": str(wait)},
+        )
+
+
+def _require_open_registration() -> None:
+    from app.config import get_settings
+
+    if not get_settings().allow_open_registration:
+        raise HTTPException(403, "Sign-ups are closed. Ask your administrator for an account.")
+
+
+def _existing_account_error(existing: User) -> HTTPException:
+    if not existing.hashed_password:
+        return HTTPException(
+            409,
+            "This email already signs in with Google. Use “Continue with Google”, "
+            "then add a password in Settings.",
+        )
+    return HTTPException(409, "An account with this email already exists. Sign in instead.")
+
+
+async def _create_member(
+    db: AsyncSession, *, email: str, full_name: str, password_hash: str, email_verified: bool,
+) -> User:
+    """A new developer in the default organisation — the only kind of account sign-up makes."""
+    org_id = await _ensure_default_org(db)
+    user = await UserRepository(db).create(
+        org_id=org_id,
+        email=email,
+        hashed_password=password_hash,
+        full_name=full_name.strip(),
+        role="developer",
+        auth_provider="email",
+        email_verified=email_verified,
+        is_active=True,
+    )
+    await db.commit()
+    return user
+
+
+def _signup_verifier():
+    from app.config import get_settings
+    from app.redis_client import get_redis
+    from app.signup.verification import SignupVerifier
+
+    cfg = get_settings()
+    return SignupVerifier(
+        get_redis(), cfg.secret_key.get_secret_value(),
+        ttl_seconds=cfg.signup_code_ttl_seconds,
+        resend_after=cfg.signup_resend_cooldown_seconds,
+    )
+
+
+def _signup_http(e: SignupError) -> HTTPException:
+    headers = {"Retry-After": str(e.retry_after)} if e.retry_after else None
+    return HTTPException(e.status, e.message, headers=headers)
+
+
+async def _send_signup_code(mailer, verifier, email: str, full_name: str, code: str) -> None:
+    """Email the code. If it cannot be sent, say so — and let the user try again at once."""
+    from loguru import logger
+
+    from app.mailer import EmailSendError
+    from app.mailer.templates import signup_code
+
+    try:
+        await mailer.send(signup_code(email, full_name, code, max(1, verifier.ttl_seconds // 60)))
+    except EmailSendError as e:
+        logger.error(f"Sign-up code not sent: {e}")
+        await verifier.allow_retry(email)
+        raise HTTPException(502, "We couldn't send the verification email just now. Please try again.")
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -238,7 +399,7 @@ async def firebase_login(
         return FirebaseLoginResponse(
             access_token=access_token,
             refresh_token=refresh_token,
-            user=UserOut(id=user.id, email=user.email, full_name=user.full_name, role=user.role, created_at=user.created_at),
+            user=_user_out(user),
             is_new_user=is_new_user,
         )
     except HTTPException:
@@ -256,15 +417,20 @@ async def login(
     """Authenticate with email + password. Returns JWT tokens."""
     user_repo = UserRepository(db)
 
-    # We need the org_id to look up by email.
-    # For V1 single-org setups, look up by email directly.
-    from sqlalchemy import select
-    result = await db.execute(
-        select(User).where(User.email == req.email, User.is_active.is_(True))
-    )
-    user = result.scalar_one_or_none()
+    # Single-organisation setup: the address alone identifies the account.
+    user = await _find_by_email(db, req.email)
+    if user is not None and not user.is_active:
+        user = None
 
-    if not user or not verify_password(req.password, user.hashed_password):
+    if user is not None and not user.hashed_password:
+        # A Google account with no password yet. Saying so beats "incorrect
+        # password" for a password that was never set.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This account signs in with Google. Use “Continue with Google”, "
+                   "then add a password in Settings to sign in with email too.",
+        )
+    if not user or not _password_matches(req.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -289,13 +455,7 @@ async def login(
     return LoginResponse(
         access_token=access_token,
         refresh_token=refresh_token,
-        user=UserOut(
-            id=user.id,
-            email=user.email,
-            full_name=user.full_name,
-            role=user.role,
-            created_at=user.created_at,
-        ),
+        user=_user_out(user),
     )
 
 
@@ -348,46 +508,136 @@ async def logout(req: RefreshRequest) -> dict:
 
 @router.post("/register", response_model=UserOut, status_code=201)
 async def register(
+    request: Request,
     req: RegisterRequest,
     db: AsyncSession = Depends(get_db),
-) -> UserOut:
+):
     """
-    Create a new user account.
-    In production: restrict to admin role or invite-only flow.
-    """
-    user_repo = UserRepository(db)
+    Self-service sign-up into the default organisation, always as a developer.
 
-    existing = await user_repo.get_by_email(req.org_id, req.email)
+    With email set up (BREVO_API_KEY + EMAIL_SENDER_ADDRESS) nothing is
+    created yet: a 6-digit code is emailed and the answer is 202 — the account
+    exists only once /register/verify gets the right code. Without email the
+    account is created as given, its address unverified.
+
+    An address that already has an account is refused; one belonging to a
+    Google account is pointed at Google sign-in and Settings, where its owner
+    can add a password from inside a signed-in session.
+    ALLOW_OPEN_REGISTRATION=false closes sign-up entirely.
+    """
+    from app.mailer import get_mailer
+
+    _require_open_registration()
+    await _rate_limit(request, "register", 10)
+    email = _normalize_email(req.email)
+    existing = await _find_by_email(db, email)
     if existing:
-        raise HTTPException(409, "Email already registered in this organisation")
+        raise _existing_account_error(existing)
 
-    user = await user_repo.create(
-        org_id=req.org_id,
-        email=req.email,
-        hashed_password=hash_password(req.password),
-        full_name=req.full_name,
-        role=req.role,
-    )
+    mailer = get_mailer()
+    if mailer is None:
+        user = await _create_member(
+            db, email=email, full_name=req.full_name,
+            password_hash=hash_password(req.password), email_verified=False,
+        )
+        return _user_out(user)
 
-    return UserOut(
-        id=user.id,
-        email=user.email,
-        full_name=user.full_name,
-        role=user.role,
-        created_at=user.created_at,
+    verifier = _signup_verifier()
+    try:
+        code = await verifier.start(
+            email=email, full_name=req.full_name.strip(), password_hash=hash_password(req.password),
+        )
+    except SignupError as e:
+        raise _signup_http(e)
+    await _send_signup_code(mailer, verifier, email, req.full_name.strip(), code)
+    return JSONResponse(status_code=202, content={
+        "verification": "email_otp",
+        "email": email,
+        "expires_in": verifier.ttl_seconds,
+        "resend_after": verifier.resend_after,
+    })
+
+
+@router.post("/register/verify", response_model=UserOut, status_code=201)
+async def verify_signup(
+    request: Request,
+    req: VerifySignupRequest,
+    db: AsyncSession = Depends(get_db),
+) -> UserOut:
+    """Finish a sign-up with the emailed code: the account is created, its address verified."""
+    _require_open_registration()
+    await _rate_limit(request, "verify", 20)
+    email = _normalize_email(req.email)
+    verifier = _signup_verifier()
+    try:
+        pending = await verifier.verify(email, req.code)
+    except SignupError as e:
+        raise _signup_http(e)
+
+    existing = await _find_by_email(db, email)
+    if existing:  # made some other way while the code was in the inbox
+        await verifier.complete(email)
+        raise _existing_account_error(existing)
+
+    user = await _create_member(
+        db, email=email, full_name=pending.full_name,
+        password_hash=pending.password_hash, email_verified=True,
     )
+    await verifier.complete(email)
+    return _user_out(user)
+
+
+@router.post("/register/resend", status_code=202)
+async def resend_signup_code(request: Request, req: ResendSignupRequest) -> dict:
+    """A fresh code for a sign-up in progress; the previous one stops working."""
+    from app.mailer import get_mailer
+
+    _require_open_registration()
+    await _rate_limit(request, "resend", 5)
+    mailer = get_mailer()
+    if mailer is None:
+        raise HTTPException(400, "Email verification is not set up on this server.")
+    email = _normalize_email(req.email)
+    verifier = _signup_verifier()
+    try:
+        code, full_name = await verifier.resend(email)
+    except SignupError as e:
+        raise _signup_http(e)
+    await _send_signup_code(mailer, verifier, email, full_name, code)
+    return {"email": email, "expires_in": verifier.ttl_seconds, "resend_after": verifier.resend_after}
 
 
 @router.get("/me", response_model=UserOut)
 async def get_me(current_user: User = Depends(get_current_user)) -> UserOut:
     """Return the currently authenticated user."""
-    return UserOut(
-        id=current_user.id,
-        email=current_user.email,
-        full_name=current_user.full_name,
-        role=current_user.role,
-        created_at=current_user.created_at,
+    return _user_out(current_user)
+
+
+@router.post("/password")
+async def set_password(
+    req: SetPasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Add a password to this account, or change it.
+
+    A Google account has no password until its owner adds one here. Being
+    signed in is the proof of ownership that an unverified sign-up form
+    cannot give, which is why this is the only way to put a password on an
+    existing account. Changing a password needs the current one.
+    """
+    if current_user.hashed_password and not _password_matches(
+        req.current_password or "", current_user.hashed_password
+    ):
+        raise HTTPException(400, "Your current password is incorrect.")
+
+    await db.execute(
+        update(User)
+        .where(User.id == current_user.id)
+        .values(hashed_password=hash_password(req.new_password))
     )
+    await db.commit()
+    return {"has_password": True}
 
 
 @router.post("/keys", response_model=CreateAPIKeyResponse, status_code=201)
