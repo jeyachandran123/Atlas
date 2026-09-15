@@ -63,6 +63,11 @@ class AbstractVectorStore(ABC):
         no retrieval exists yet; that's Phase 4."""
 
 
+def _is_missing_collection(e: Exception) -> bool:
+    """Chroma's "no such collection": HTTP 404 from Chroma Cloud, "does not exist" from a local server."""
+    return getattr(e, "status", None) == 404 or "does not exist" in str(e).lower()
+
+
 class ChromaVectorStoreProvider(AbstractVectorStore):
     """
     First implementation, using the SAME ChromaDB server as repo-indexing
@@ -135,7 +140,16 @@ class ChromaVectorStoreProvider(AbstractVectorStore):
         # Phase 3 contract defined for the Retrieval Engine to fill in.
         try:
             client = await self._get_client()
-            coll = await client.get_collection(name=collection)
+            try:
+                coll = await client.get_collection(name=collection)
+            except Exception as e:
+                # Nothing has been embedded for this organisation yet — a new
+                # deployment, or a fresh vector database. That is an empty
+                # knowledge base, not a failure: every caller already knows
+                # what to do with no hits.
+                if _is_missing_collection(e):
+                    return []
+                raise
             where = None
             if filters:
                 # List values become $in (multi-document scope, Phase 5.5's
