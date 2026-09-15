@@ -36,7 +36,8 @@ def run_migrations_offline() -> None:
 
 
 async def run_migrations_online() -> None:
-    engine = create_async_engine(cfg.database_url, echo=False , connect_args={"ssl": "require"})
+    # Same TLS rule as the app (DB_SSL_MODE), so migrations reach Neon and local alike.
+    engine = create_async_engine(cfg.database_url, echo=False, connect_args=cfg.database_connect_args)
     async with engine.begin() as conn:
         await conn.run_sync(
             lambda sync_conn: context.configure(

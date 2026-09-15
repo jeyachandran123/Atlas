@@ -946,7 +946,7 @@ class WorkspaceService:
             return {"documents": [], "conversations": []}
         try:
             provider = get_embedding_provider()
-            qvec = (await provider.embed([query]))[0].vector
+            qvec = (await provider.embed([query], purpose="query"))[0].vector
             hits = await get_vector_store().search(
                 collection_name_for(ws.org_id), qvec, top_k=8,
                 filters={"document_id": candidates},

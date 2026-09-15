@@ -77,15 +77,9 @@ class ChromaVectorStoreProvider(AbstractVectorStore):
 
     async def _get_client(self):
         if self._client is None:
-            import chromadb
-            from chromadb.config import Settings as ChromaSettings
-            from app.config import get_settings
-            cfg = get_settings()
-            self._client = await chromadb.AsyncHttpClient(
-                host=cfg.chroma_host,
-                port=cfg.chroma_port,
-                settings=ChromaSettings(anonymized_telemetry=False),
-            )
+            # One connection recipe for both stores — local server or Chroma Cloud.
+            from app.vector_store.chroma_client import connect_chroma
+            self._client = await connect_chroma()
         return self._client
 
     async def upsert(self, collection: str, records: list[VectorRecord]) -> int:

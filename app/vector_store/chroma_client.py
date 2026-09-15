@@ -210,16 +210,48 @@ class ChromaVectorStore(VectorStore):
 _store: ChromaVectorStore | None = None
 
 
+async def connect_chroma():
+    """An async client for the configured Chroma server: local, or Chroma Cloud.
+
+    Both vector stores (code search and workspace documents) connect through
+    here, so moving to another server is a settings change. With no API key
+    this is exactly the plain local connection it always was.
+    """
+    settings = ChromaSettings(anonymized_telemetry=False)
+    key = cfg.chroma_api_key.get_secret_value()
+    # An empty CHROMA_TENANT= / CHROMA_DATABASE= line means "not set", not "".
+    tenant = cfg.chroma_tenant or "default_tenant"
+    database = cfg.chroma_database or "default_database"
+    if key:
+        # Chroma Cloud. chromadb 0.5.20 (pinned to match the local 0.5.20
+        # server) cannot talk to it: its async client never sends the token,
+        # and neither client can read the newer server's collection records.
+        # A small client for its REST API stands in — see chroma_cloud.
+        from app.vector_store.chroma_cloud import ChromaCloudClient
+
+        return ChromaCloudClient(
+            host=cfg.chroma_host,
+            port=cfg.chroma_port,
+            ssl=cfg.chroma_ssl,
+            tenant=tenant,
+            database=database,
+            api_key=key,
+        )
+    return await chromadb.AsyncHttpClient(
+        host=cfg.chroma_host,
+        port=cfg.chroma_port,
+        ssl=cfg.chroma_ssl,
+        tenant=tenant,
+        database=database,
+        settings=settings,
+    )
+
+
 async def get_chroma_store() -> ChromaVectorStore:
     """Return the production ChromaDB store (HTTP client)."""
     global _store
     if _store is None:
-        client = await chromadb.AsyncHttpClient(
-            host=cfg.chroma_host,
-            port=cfg.chroma_port,
-            settings=ChromaSettings(anonymized_telemetry=False),
-        )
-        _store = ChromaVectorStore(client)
+        _store = ChromaVectorStore(await connect_chroma())
     return _store
 
 

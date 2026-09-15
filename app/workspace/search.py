@@ -57,7 +57,7 @@ class WorkspaceSearch:
         if doc_ids:
             try:
                 provider = get_embedding_provider()
-                qvec = (await provider.embed([q]))[0].vector
+                qvec = (await provider.embed([q], purpose="query"))[0].vector
                 hits = await get_vector_store().search(
                     collection_name_for(org_id), qvec, top_k=6,
                     filters={"document_id": doc_ids},

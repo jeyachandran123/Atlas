@@ -68,7 +68,7 @@ class SemanticRetriever(AbstractRetriever):
         self, question: str, org_id: str, top_k: int,
         document_id: str | list[str] | None = None,
     ) -> RetrievalResult:
-        query_vec = (await self._provider.embed([question]))[0].vector
+        query_vec = (await self._provider.embed([question], purpose="query"))[0].vector
         # Phase 5.5 seam: a list scope maps to the vector store's $in filter.
         filters = {"document_id": document_id} if document_id else None
         hits = await self._vector_store.search(

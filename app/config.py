@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     db_password: SecretStr = SecretStr("postgres")
     db_pool_size: int = 10
     db_max_overflow: int = 20
+    # TLS to Postgres, in libpq's sslmode terms. Managed Postgres (Neon) needs
+    # "require"; the local Docker Postgres has no TLS, so "disable" there.
+    # "prefer" tries TLS and falls back, so a missing setting breaks neither.
+    db_ssl_mode: Literal["disable", "prefer", "require", "verify-ca", "verify-full"] = "prefer"
 
     # ── Redis ─────────────────────────────────────────────────────────────────
     redis_host: str = "localhost"
@@ -63,6 +67,13 @@ class Settings(BaseSettings):
     chroma_host: str = "localhost"
     chroma_port: int = 8000
     chroma_auth_token: SecretStr = SecretStr("")
+    # Chroma Cloud, or any server behind TLS and a token: CHROMA_HOST=api.trychroma.com,
+    # CHROMA_PORT=443, CHROMA_SSL=true, plus the CHROMA_API_KEY / CHROMA_TENANT /
+    # CHROMA_DATABASE the Chroma dashboard shows. Unset, a local server is used as before.
+    chroma_ssl: bool = False
+    chroma_api_key: SecretStr = SecretStr("")
+    chroma_tenant: str = "default_tenant"
+    chroma_database: str = "default_database"
 
     # ── Ollama ───────────────────────────────────────────────────────────────
     # ollama_host: str = "http://localhost:11434"
@@ -156,11 +167,13 @@ class Settings(BaseSettings):
     # ── Semantic Intelligence Layer (Phase 3) ────────────────────────────────────
     # Model/endpoint/timeout for the ollama provider reuse the existing
     # ollama_embed_model / ollama_timeout settings above — no duplication.
-    # Stays local, and cannot move: the UnityWorks deployment is a
-    # vision-language endpoint (prompt in, text out) with no embedding route.
-    # Retrieval needs vectors, so this is nomic-embed-text on Ollama — small
-    # (0.3 GB), fast, and unrelated to the slow chat model that was removed.
-    dip_embedding_provider: Literal["ollama"] = "ollama"
+    # Locally this is nomic-embed-text on Ollama — small (0.3 GB) and fast. A
+    # hosted deployment cannot reach that Ollama, so it sets
+    # DIP_EMBEDDING_PROVIDER=nvidia and embeds with NVIDIA's hosted model using
+    # the chat model's NVIDIA key. Vectors from the two are not interchangeable:
+    # switching provider means re-embedding what is already stored.
+    dip_embedding_provider: Literal["ollama", "nvidia"] = "ollama"
+    nvidia_embed_model: str = "nvidia/nemotron-3-embed-1b"
     dip_embedding_max_retries: int = 3
     dip_vector_store_provider: Literal["chroma"] = "chroma"
 
@@ -397,6 +410,11 @@ class Settings(BaseSettings):
         )
 
     @property
+    def database_connect_args(self) -> dict[str, str]:
+        """asyncpg connection options for the app and migrations alike: TLS per DB_SSL_MODE."""
+        return {} if self.db_ssl_mode == "disable" else {"ssl": self.db_ssl_mode}
+
+    @property
     def redis_url(self) -> str:
         pwd = self.redis_password.get_secret_value()
         auth = f":{pwd}@" if pwd else ""
@@ -405,7 +423,8 @@ class Settings(BaseSettings):
 
     @property
     def chroma_url(self) -> str:
-        return f"http://{self.chroma_host}:{self.chroma_port}"
+        scheme = "https" if self.chroma_ssl else "http"
+        return f"{scheme}://{self.chroma_host}:{self.chroma_port}"
 
     @property
     def nvidia_vision_model_resolved(self) -> str:
@@ -444,10 +463,3 @@ def get_settings() -> Settings:
 # Module-level singleton for non-dependency-injection contexts
 settings = get_settings()
 
-# --- TEMP DEBUG — remove after checking ---
-import os
-print("RAW ENV REDIS_HOST:", os.environ.get("REDIS_HOST"))
-print("RAW ENV REDIS_PORT:", os.environ.get("REDIS_PORT"))
-print("SETTINGS redis_host:", settings.redis_host)
-print("SETTINGS redis_url:", settings.redis_url)
-# --- END TEMP DEBUG ---

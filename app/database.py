@@ -44,7 +44,7 @@ def get_engine() -> AsyncEngine:
             echo=cfg.app_debug,
             pool_pre_ping=True,
             poolclass=NullPool,
-            connect_args={"ssl": "require"},
+            connect_args=cfg.database_connect_args,  # TLS per DB_SSL_MODE
         )
     return _engine
 
