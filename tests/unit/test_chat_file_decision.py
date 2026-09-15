@@ -37,6 +37,21 @@ class TestGate:
         for msg in ("send me that list in excel", "put the plan into a pdf", "give this as an excel"):
             assert worth_deciding(msg, has_spreadsheet=False, after_clarifier=False), msg
 
+    def test_a_follow_up_right_after_a_file_is_looked_at(self):
+        # The message that got a raw JSON "file" from ordinary chat.
+        msg = "Nice then we go with phase three now write the phase 3 analyse"
+        assert not worth_deciding(msg, has_spreadsheet=False, after_clarifier=False)
+        assert worth_deciding(msg, has_spreadsheet=False, after_clarifier=False, after_file=True)
+        for follow_up in ("same for chapter 2", "do the next one", "now make part 4"):
+            assert worth_deciding(follow_up, has_spreadsheet=False, after_clarifier=False, after_file=True), follow_up
+
+    def test_small_talk_after_a_file_is_not(self):
+        for msg in ("thanks!", "great, looks good", "who wrote the theory of relativity?"):
+            assert not worth_deciding(msg, has_spreadsheet=False, after_clarifier=False, after_file=True), msg
+
+    def test_write_with_a_file_word_is_a_file_request(self):
+        assert worth_deciding("write a pdf report on solar energy", has_spreadsheet=False, after_clarifier=False)
+
     def test_ordinary_chat_is_not(self):
         for msg in ("hey there", "what is a pdf?", "explain velocity", "thanks!",
                     "what's new in python 3.13", "how do I get better at cooking"):

@@ -30,7 +30,7 @@ _FILE_NOUNS = re.compile(
 # "generate" also as it gets typed in a hurry: genarate, genearate, genrate…
 _MAKE_VERBS = re.compile(
     r"\b(gen[aeiou]*r[aeiou]*t(?:e[ds]?|ing)|create|make|build|prepare|produce|export|convert|"
-    r"compile|draft|put|turn|save|download|give|send|share|provide)\b",
+    r"compile|draft|write|put|turn|save|download|give|send|share|provide)\b",
     re.IGNORECASE,
 )
 # "…as an Excel file", "in PDF", "into a spreadsheet": a format named as the
@@ -48,14 +48,27 @@ _DATA_ASK = re.compile(
 )
 
 
-def worth_deciding(message: str, *, has_spreadsheet: bool, after_clarifier: bool) -> bool:
+# Right after a file was made, "now write phase 3", "same for chapter 2" or
+# "do the next one" asks for another — with no file word in it at all.
+_FOLLOW_UP = re.compile(
+    r"\b(write|do|make|next|continue|same|another|again|redo|update|phase|part|chapter|section|version)\b",
+    re.IGNORECASE,
+)
+
+
+def worth_deciding(
+    message: str, *, has_spreadsheet: bool, after_clarifier: bool, after_file: bool = False,
+) -> bool:
     """Should this message be looked at as a possible file request?
 
     Deliberately loose — a false positive costs one short model call and then
     falls back to ordinary chat; a false negative means the user asked for a
-    file and got prose.
+    file and got prose, or worse: a chat model that remembers making files
+    but has no way to, and improvises one as JSON in the reply.
     """
     if after_clarifier:
+        return True
+    if after_file and _FOLLOW_UP.search(message):
         return True
     if _FILE_NOUNS.search(message) and _MAKE_VERBS.search(message):
         return True

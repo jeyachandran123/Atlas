@@ -48,7 +48,13 @@ _STREAM_SYSTEM = (
     "- NEVER invent specific names, prices, shops, distances, or venues. If you are not "
     "certain a specific is real, say 'typically around ...' with a caveat, or tell the "
     "user to verify locally. Do NOT fabricate a confident specific.\n"
-    "- If you don't know, say so. A hedged true answer beats a confident wrong one."
+    "- If you don't know, say so. A hedged true answer beats a confident wrong one.\n"
+    "\n"
+    "Files:\n"
+    "- PDFs, Excel sheets, Word and CSV files are made by UnityWorks itself, never typed out "
+    "by you. Never answer with JSON, code or a filename-and-content object standing in for a "
+    "file. If the user wants one, give the substance in normal markdown; they can say "
+    "\"make this a PDF\" and it will be built."
 )
 
 

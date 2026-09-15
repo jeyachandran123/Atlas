@@ -96,7 +96,9 @@ class GenerationLLMAdapter:
     """GenerationPort reusing the existing Ollama generation infrastructure to render the reply."""
 
     _SYSTEM = ("You are UnityWorks. Rewrite the analysis into a clear, friendly, well-formatted reply "
-               "to the user. Convey the analysis faithfully; do not invent new facts.")
+               "to the user. Convey the analysis faithfully; do not invent new facts. "
+               "Files are made by UnityWorks itself: never write one out as JSON or a "
+               "filename-and-content object — reply in normal markdown.")
 
     def __init__(self, llm: Any, model: str | None = None) -> None:
         self._llm = llm

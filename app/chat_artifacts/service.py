@@ -212,9 +212,15 @@ class ChatFileService:
             bool(history) and history[-1].role == "assistant"
             and history[-1].agent_used == CLARIFIER
         )
+        # A file made in the last couple of turns makes a follow-up likely to want the next one.
+        after_file = any(
+            m.role == "assistant" and m.agent_used == FILE_ARTIFACT for m in history[-4:]
+        )
         attachments = await self._attachments(conversation_id)
         has_sheet = any(a.filename.lower().endswith(SPREADSHEET_EXTS) for a in attachments)
-        if not worth_deciding(message, has_spreadsheet=has_sheet, after_clarifier=after_clarifier):
+        if not worth_deciding(
+            message, has_spreadsheet=has_sheet, after_clarifier=after_clarifier, after_file=after_file,
+        ):
             return None
 
         from app.llm import GENERAL, LLMGatewayError, get_chat_gateway
