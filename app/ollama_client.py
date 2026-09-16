@@ -288,6 +288,22 @@ class OllamaClient:
             raise OllamaUnavailableError(str(e)) from e
         return result.text
 
+    @staticmethod
+    def _conversation(
+        prompt: str,
+        system_prompt: Optional[str],
+        history: "list[dict[str, str]] | tuple[dict[str, str], ...] | None",
+    ) -> list[dict[str, str]]:
+        """System, then the earlier turns, then this message. If the history ends on the
+        user's side, this message joins that turn — chat templates expect turns to alternate."""
+        messages = [{"role": "system", "content": system_prompt}] if system_prompt else []
+        messages.extend({"role": m["role"], "content": m["content"]} for m in (history or ()))
+        if messages and messages[-1]["role"] == "user":
+            messages[-1] = {"role": "user", "content": f"{messages[-1]['content']}\n\n{prompt}"}
+        else:
+            messages.append({"role": "user", "content": prompt})
+        return messages
+
     async def _nvidia_chat_stream(
         self,
         prompt: str,
@@ -297,11 +313,12 @@ class OllamaClient:
         profile: Optional[str] = None,
         thinking: Optional[bool] = None,
         include_reasoning: bool = False,
+        history: "list[dict[str, str]] | tuple[dict[str, str], ...] | None" = None,
     ) -> AsyncGenerator[str, None]:
         try:
             async for event in get_chat_gateway().stream(
-                user=prompt, system=system_prompt, profile=profile or GENERAL,
-                thinking=thinking, temperature=temperature,
+                self._conversation(prompt, system_prompt, history),
+                profile=profile or GENERAL, thinking=thinking, temperature=temperature,
             ):
                 if event.kind == "content" and event.text:
                     yield event.text
@@ -393,6 +410,7 @@ class OllamaClient:
         profile: Optional[str] = None,
         thinking: Optional[bool] = None,
         include_reasoning: bool = False,
+        history: "list[dict[str, str]] | tuple[dict[str, str], ...] | None" = None,
     ) -> AsyncGenerator[str, None]:
         """
         Streaming chat completion.
@@ -402,11 +420,15 @@ class OllamaClient:
         ``ReasoningDelta`` chunks a caller can tell apart from the answer.
         Without it, thinking is dropped and only the answer is yielded - the
         behaviour every existing caller was written against.
+
+        ``history`` is the conversation so far, as {role, content} turns sent
+        before ``prompt`` — so the model continues a conversation instead of
+        opening a new one every turn.
         """
         if settings.llm_provider == "nvidia":
             async for chunk in self._nvidia_chat_stream(
                 prompt, system_prompt, temperature, profile=profile,
-                thinking=thinking, include_reasoning=include_reasoning,
+                thinking=thinking, include_reasoning=include_reasoning, history=history,
             ):
                 yield chunk
             return
@@ -416,10 +438,7 @@ class OllamaClient:
 
         temperature = 0.1 if temperature is None else temperature
         model = model or settings.ollama_chat_model
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+        messages = self._conversation(prompt, system_prompt, history)
 
         try:
             async with httpx.AsyncClient(

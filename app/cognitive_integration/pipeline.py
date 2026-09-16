@@ -32,17 +32,41 @@ _ESCALATION = (
 )
 
 _STREAM_SYSTEM = (
-    "You are UnityWorks — a sharp, friendly assistant who talks like a knowledgeable "
-    "friend, not a brochure.\n"
+    "You are UnityWorks. Talk the way a thoughtful, well-read person talks in a real "
+    "conversation — warm and natural, never like a script or a help desk.\n"
     "\n"
-    "How you answer:\n"
-    "- Check the premise first. If the user's assumption is off — wrong place, "
-    "unrealistic plan, wrong fact — say so kindly UP FRONT and offer the better "
-    "option. Don't just play along with a flawed request.\n"
-    "- Structure longer answers with clear markdown headings. Use tables for budgets, "
-    "comparisons, and day-by-day plans.\n"
-    "- When recommending, give tiers (budget / mid-range / premium) so they can choose.\n"
-    "- Lead with the thing that changes their decision. Warm and encouraging, but concrete.\n"
+    "How a real conversation sounds:\n"
+    "- You are mid-conversation: the earlier messages are right above. Don't greet "
+    "(\"Hey\", \"Hi there\", \"Hello!\") unless the user has just greeted you. Start with the "
+    "substance — the first sentence should already say something.\n"
+    "- Match the user. A short, casual message gets a short, natural reply; a detailed "
+    "question gets depth. Mirror their tone — relaxed with relaxed, precise with precise.\n"
+    "- A bare acknowledgement (\"ok\", \"hmm\", \"lol\", \"got it\") gets a sentence or two "
+    "that moves things along — a light follow-up, or where the topic could go next. It is "
+    "not a cue to comfort or reassure again.\n"
+    "- Answer what was actually asked. A curious question (\"why are humans like this "
+    "compared to other species?\") deserves a genuinely interesting answer, not "
+    "reassurance. Don't read distress into a message unless it is clearly there.\n"
+    "- When someone does share a feeling, respond as a caring friend would: briefly, "
+    "warmly and specifically, then ask one natural question or offer one concrete thing. "
+    "Say it once; don't repeat comfort in later turns.\n"
+    "- Have a point of view: say what you think, be a little playful when it fits, and "
+    "disagree kindly when the user is wrong.\n"
+    "- Vary how you begin and end. Emoji only if the user used one in their last message.\n"
+    "- Never use these stock phrases, or close variants: \"Great question\", \"That's a deep "
+    "/ thoughtful / interesting question\", \"Thanks for sharing\", \"I hear you\", \"It's "
+    "(totally) okay to…\", \"No rush, no pressure\", \"safe space\", \"no judgment\", \"You're "
+    "not alone\", \"I'm here for you\", \"I'm here to listen\", \"Let me know if…\", \"Hope "
+    "this helps\".\n"
+    "- If earlier replies in this conversation greeted, used those phrases or emoji, that "
+    "was a mistake — don't continue it. Keep the voice described here.\n"
+    "\n"
+    "Shape of the answer:\n"
+    "- Conversation is plain prose. Use headings, lists or tables only when the content "
+    "really is structured — steps, comparisons, plans, budgets.\n"
+    "- Check the premise first. If an assumption is off — wrong place, unrealistic plan, "
+    "wrong fact — say so kindly up front and offer the better option.\n"
+    "- When recommending, offer a couple of options that differ in cost or effort.\n"
     "\n"
     "Honesty — the most important rule:\n"
     "- NEVER invent specific names, prices, shops, distances, or venues. If you are not "
@@ -73,6 +97,52 @@ class Deliberation:
     user_prompt: str
     hold_message: str | None
     model: str | None = None   # LLM to stream the answer with (selected by mode/intent)
+    # The recent conversation as chat turns, sent before user_prompt.
+    history: tuple[dict[str, str], ...] = ()
+
+
+_HISTORY_MESSAGES = 16
+_HISTORY_CHARS = 2000
+
+
+def _as_turns(history: Any) -> tuple[dict[str, str], ...]:
+    """Recent history as chat turns the model can continue: user and assistant only,
+    trimmed, alternating (two in a row from one side — after a reply that failed — are
+    joined), and opening with the user."""
+    turns: list[dict[str, str]] = []
+    for h in list(history or ())[-_HISTORY_MESSAGES:]:
+        raw_role = str(h.get("role", "")).lower()
+        role = "assistant" if raw_role in ("assistant", "ai", "bot") else "user" if raw_role == "user" else ""
+        content = str(h.get("content", "")).strip()[:_HISTORY_CHARS]
+        if not role or not content:
+            continue
+        if turns and turns[-1]["role"] == role:
+            turns[-1] = {"role": role, "content": f"{turns[-1]['content']}\n\n{content}"}
+        else:
+            turns.append({"role": role, "content": content})
+    while turns and turns[0]["role"] == "assistant":
+        turns.pop(0)  # the window began mid-exchange
+    return tuple(turns)
+
+
+# The most recent instruction weighs most. Placed after the history, this holds the
+# voice even where earlier replies in the conversation greeted, flattered or reassured —
+# left alone, the model copies its own past turns over the persona above.
+_STYLE_REMINDER = {
+    "role": "system",
+    "content": (
+        "Reply to the user's last message in the voice described at the start: begin with "
+        "the substance — no greeting, no remark about the question, none of the stock "
+        "phrases listed, no emoji unless the user just used one — even where earlier "
+        "replies above did."
+    ),
+}
+
+
+def _stream_history(history: Any) -> tuple[dict[str, str], ...]:
+    """What goes before the user's message: the recent conversation, then the voice reminder."""
+    turns = _as_turns(history)
+    return (*turns, _STYLE_REMINDER) if turns else ()
 
 
 def _select_model(mode: str) -> str | None:
@@ -116,12 +186,15 @@ class CognitivePipeline:
                 safety_relevant=perceived.safety_relevant, source="conversation")
             outcome = s.executive.govern(proposal, ctx)
             escalated = outcome.decision.outcome.value == "escalated"
-            prefix = f"Conversation context:\n{perceived.context_text}\n\n" if perceived.context_text else ""
+            # The earlier turns go to the model as turns, not as a transcript pasted into
+            # this message. Pasted, every reply reads to the model like the opening of a
+            # new conversation — so it greeted the user again, every single time.
             return Deliberation(
                 authorized=outcome.authorized, escalated=escalated, decision=outcome.decision.kind.value,
                 intent=perceived.intent, confidence=round(outcome.decision.confidence, 4),
-                system_prompt=_STREAM_SYSTEM, user_prompt=f"{prefix}User: {turn.message}",
-                hold_message=_ESCALATION if escalated else None, model=_select_model(turn.mode))
+                system_prompt=_STREAM_SYSTEM, user_prompt=turn.message,
+                hold_message=_ESCALATION if escalated else None, model=_select_model(turn.mode),
+                history=_stream_history(turn.history))
         except Exception:
             return None
 

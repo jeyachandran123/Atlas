@@ -547,7 +547,7 @@ def _stream_cognitive_response(
                 async for chunk in client.chat_stream(
                     delib.user_prompt, system_prompt=delib.system_prompt, model=delib.model,
                     profile=profile_for_mode(agent_mode), thinking=thinking,
-                    include_reasoning=True,
+                    include_reasoning=True, history=delib.history,
                 ):
                     if not chunk:
                         continue
