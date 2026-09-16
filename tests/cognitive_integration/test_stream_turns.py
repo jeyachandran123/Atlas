@@ -71,10 +71,49 @@ def test_the_voice_reminder_comes_last_before_the_new_message():
     assert [t["role"] for t in turns] == ["user", "assistant", "system"]
 
 
-def test_a_first_message_needs_no_reminder():
-    assert _stream_history(()) == ()
+def test_a_first_message_still_gets_the_reminder():
+    """It used to get none, and it is the reply a new user judges the app by."""
+    assert _stream_history(()) == (_STYLE_REMINDER,)
+    assert _stream_history(None) == (_STYLE_REMINDER,)
 
 
 def test_the_persona_speaks_like_a_person_mid_conversation():
     assert "Don't greet" in _STREAM_SYSTEM
     assert "Answer what was actually asked" in _STREAM_SYSTEM
+
+
+def test_the_persona_asks_for_the_moves_that_make_a_reply_worth_reading():
+    """The mechanics taken from a conversation the user singled out as feeling human:
+    pin where they are, commit to a claim, name the unnamed distinction, block the
+    wrong reading, and land on a statement."""
+    for rule in (
+        "Open by pinning down where they are",
+        "Commit to a claim within the first few lines",
+        "Find the distinction they have not put into words",
+        "block it before they get there",
+        "End on something that lands",
+    ):
+        assert rule in _STREAM_SYSTEM
+
+
+def test_the_persona_states_moves_rather_than_quoting_failures():
+    """A quoted bad example becomes a template on this model: banning one stock phrase
+    made it the most common opening, and quoting a too-short reply reproduced it 5/5.
+    So the persona names no phrase it does not want to see."""
+    assert "I hear you" not in _STREAM_SYSTEM
+    assert "I'm here." not in _STREAM_SYSTEM
+    assert "Great question" not in _STREAM_SYSTEM
+
+
+def test_the_first_sentence_rule_is_about_substance_not_grammar():
+    """Banning "you" from the opening worked (6/6 to 2/6) but would forbid a good
+    concrete opening too. The fault was empty restatement, not second person."""
+    assert "It must carry something specific" in _STREAM_SYSTEM
+    assert _STREAM_SYSTEM.rstrip().endswith("write a different one.")
+
+
+def test_no_domain_leaks_into_the_voice():
+    """Naming shops, venues and distances in the honesty rule taught the model it was a
+    travel assistant: asked what it could do, it offered to plan trips."""
+    for word in ("venues", "shops", "distances", "verify locally"):
+        assert word not in _STREAM_SYSTEM
