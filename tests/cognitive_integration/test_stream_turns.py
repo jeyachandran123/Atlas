@@ -91,9 +91,19 @@ def test_the_persona_asks_for_the_moves_that_make_a_reply_worth_reading():
         "Commit to a claim within the first few lines",
         "Find the distinction they have not put into words",
         "block it before they get there",
-        "End on something that lands",
+        "End with one question you actually want answered",
     ):
         assert rule in _STREAM_SYSTEM
+
+
+def test_long_answers_are_told_to_use_the_markdown_the_renderer_styles():
+    """.assistant-content already styles h1-h4, strong, blockquote, hr and ol. The
+    persona used to forbid headings outright, so every explanation came out as a flat
+    run of single lines with nothing for the eye to land on."""
+    for rule in ("this interface renders real markdown", "**bold**", "> blockquote",
+                 "--- rule", "Group sentences into paragraphs"):
+        assert rule in _STREAM_SYSTEM
+    assert "never report headings" not in _STREAM_SYSTEM
 
 
 def test_the_persona_states_moves_rather_than_quoting_failures():
@@ -109,7 +119,23 @@ def test_the_first_sentence_rule_is_about_substance_not_grammar():
     """Banning "you" from the opening worked (6/6 to 2/6) but would forbid a good
     concrete opening too. The fault was empty restatement, not second person."""
     assert "It must carry something specific" in _STREAM_SYSTEM
-    assert _STREAM_SYSTEM.rstrip().endswith("write a different one.")
+    assert "write a different one." in _STREAM_SYSTEM
+
+
+def test_structure_is_a_threshold_rule_at_the_end_not_advice_in_a_bullet():
+    """Describing headings inside a prose bullet produced them 0 times in 4 samples.
+    Hard format rules stated last are the only kind this model follows, so the
+    requirement is a countable threshold and it lives at the bottom."""
+    assert "Long answers — a second hard format rule" in _STREAM_SYSTEM
+    assert "at least two ## headings" in _STREAM_SYSTEM
+    assert _STREAM_SYSTEM.rstrip().endswith("stays plain prose.")
+
+
+def test_a_bare_acknowledgement_does_not_earn_an_essay():
+    """Dropping this rule in the rewrite let "ok da got it" produce 1054 characters
+    with a closing question attached."""
+    assert "Length follows the message" in _STREAM_SYSTEM
+    assert "gets one or two sentences and no question at all" in _STREAM_SYSTEM
 
 
 def test_no_domain_leaks_into_the_voice():
