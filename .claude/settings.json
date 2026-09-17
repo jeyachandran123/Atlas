@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "unityworks-local": {
+      "source": {
+        "source": "github",
+        "repo": "jeyachandran123/UnityWorks-Team"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "unityworks-team@unityworks-local": true
+  }
+}
