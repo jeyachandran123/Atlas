@@ -5,6 +5,7 @@ from __future__ import annotations
 from app.cognitive_integration.pipeline import (
     _HISTORY_CHARS,
     _HISTORY_MESSAGES,
+    _LAST_REPLY_CHARS,
     _STREAM_SYSTEM,
     _STYLE_REMINDER,
     _as_turns,
@@ -54,7 +55,9 @@ def test_long_histories_are_capped():
     history = [{"role": "user" if i % 2 == 0 else "assistant", "content": "x" * 5000} for i in range(40)]
     turns = _as_turns(history)
     assert len(turns) <= _HISTORY_MESSAGES
-    assert all(len(t["content"]) <= _HISTORY_CHARS for t in turns)
+    *earlier, last = turns
+    assert all(len(t["content"]) <= _HISTORY_CHARS for t in earlier)
+    assert len(last["content"]) <= _LAST_REPLY_CHARS
 
 
 def test_nothing_to_carry_over_is_no_turns():
@@ -126,7 +129,7 @@ def test_structure_is_a_threshold_rule_at_the_end_not_advice_in_a_bullet():
     """Describing headings inside a prose bullet produced them 0 times in 4 samples.
     Hard format rules stated last are the only kind this model follows, so the
     requirement is a countable threshold and it lives at the bottom."""
-    assert "Long answers — a second hard format rule" in _STREAM_SYSTEM
+    assert "Long answers — a further hard format rule" in _STREAM_SYSTEM
     assert "at least two ## headings" in _STREAM_SYSTEM
     assert _STREAM_SYSTEM.rstrip().endswith("stays plain prose.")
 
@@ -143,3 +146,49 @@ def test_no_domain_leaks_into_the_voice():
     travel assistant: asked what it could do, it offered to plan trips."""
     for word in ("venues", "shops", "distances", "verify locally"):
         assert word not in _STREAM_SYSTEM
+
+
+def test_the_latest_reply_is_kept_whole_so_follow_ups_can_refer_to_it():
+    """Trimmed to 2000 characters, "go deeper on step 4" lost step 4."""
+    long_reply = "\n".join(f"{i}. step {i} " + "detail " * 60 for i in range(1, 9)).strip()
+    assert len(long_reply) > _HISTORY_CHARS
+    turns = _as_turns([
+        {"role": "user", "content": "explain it step by step"},
+        {"role": "assistant", "content": long_reply},
+    ])
+    assert turns[-1]["content"] == long_reply
+    assert len(turns[-1]["content"]) <= _LAST_REPLY_CHARS
+
+
+def test_a_how_or_why_question_earns_a_full_walkthrough_however_short():
+    """"A one-line question gets a short answer" gave "how does DNS work?" the same
+    instruction as "ok"."""
+    assert "A one-line question gets a short answer" not in _STREAM_SYSTEM
+    assert "earns a full, patient explanation, however short the question was" in _STREAM_SYSTEM
+
+
+def test_explanations_go_inch_by_inch():
+    for rule in ("Teach it inch by inch", "what happens, why it happens",
+                 "Don't skip a step because it feels obvious", "Define a term the first time"):
+        assert rule in _STREAM_SYSTEM
+
+
+def test_the_walkthrough_is_a_hard_rule_in_the_tail_where_this_model_listens():
+    tail = _STREAM_SYSTEM[_STREAM_SYSTEM.index("First sentence — a hard format rule"):]
+    assert "Explanations — a hard format rule" in tail
+    assert "numbered steps" in tail
+
+
+def test_warmth_is_asked_for_positively_rather_than_pushed_out():
+    """"not a therapist", "not reassurance" and "Don't read distress" told the model
+    to stay cold and said nothing about what warmth should look like."""
+    for removed in ("not a therapist", "not reassurance", "Don't read distress"):
+        assert removed not in _STREAM_SYSTEM
+    assert "warm" in _STREAM_SYSTEM
+    assert "If they sound stuck, frustrated or unsure" in _STREAM_SYSTEM
+
+
+def test_the_reminder_after_history_carries_warmth_and_walkthroughs_too():
+    content = _STYLE_REMINDER["content"]
+    assert "step by step" in content
+    assert "warm" in content

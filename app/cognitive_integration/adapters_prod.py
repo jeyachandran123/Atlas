@@ -10,6 +10,7 @@ duplicates platform logic; each wrapper is a thin translation to a port.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any, Mapping
 
 from .ports import IntentResult, Turn
@@ -45,8 +46,18 @@ class OllamaLLMAdapter:
 class IntentDetectorAdapter:
     """IntentPort reusing the existing Intent Detector, enriched with a safety-risk scan."""
 
-    _DANGER = ("delete", "drop table", "rm -rf", "wipe", "destroy", "erase", "format ", "shutdown",
+    _DANGER = ("delete", "drop table", "rm -rf", "wipe", "destroy", "erase", "format", "shutdown",
                "revoke", "deploy to prod", "force push", "factory reset", "remove all")
+    # Whole words only: a substring scan matched "formatter" and "deleted", and "format "
+    # matched "format a date in Python".
+    _DANGER_RE = re.compile(r"(?<![\w-])(?:" + "|".join(re.escape(d) for d in _DANGER) + r")(?![\w-])")
+    # Asking how something works is not asking for it to be done. Without this,
+    # "How do I format a date in Python?" and "explain step by step how to delete a git
+    # branch" were held for review and never reached the model.
+    _LEARNING_RE = re.compile(
+        r"\b(?:how (?:do|does|did|to|can|could|would|should|is|are)|why|what(?:'s| is| are| does| happens)"
+        r"|difference between|explain|walk me through|teach me|help me understand|understand"
+        r"|step by step|meaning of|what if)\b")
 
     def __init__(self, detector: Any | None = None) -> None:
         self._detector = detector
@@ -63,8 +74,8 @@ class IntentDetectorAdapter:
         except Exception:
             pass
         low = message.lower()
-        hits = tuple(d for d in self._DANGER if d in low)
-        dangerous = bool(hits)
+        hits = tuple(dict.fromkeys(m.group(0) for m in self._DANGER_RE.finditer(low)))
+        dangerous = bool(hits) and not self._LEARNING_RE.search(low)
         return IntentResult(
             intent=intent, is_question=message.strip().endswith("?"),
             stakes=0.95 if dangerous else 0.1, safety_relevant=dangerous, irreversible=dangerous, keywords=hits)
