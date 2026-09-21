@@ -139,6 +139,9 @@ class YouComProvider:
                 "query": query,
                 "count": count,
                 "country": self._country,
+                # Accepted but not validated by the API, so it is a first filter
+                # only; app.web_search.safety is what actually guarantees it.
+                "safesearch": "strict",
                 # Query-relevant passages rather than whole pages: enough to
                 # answer from, a fraction of the tokens a full page costs.
                 "extraction": {"extraction_mode": "highlights"},
@@ -146,18 +149,25 @@ class YouComProvider:
         )
         results = data.get("results") if isinstance(data, dict) else None
         buckets = results if isinstance(results, dict) else {}
+
+        def usable(bucket: str) -> list[WebSource]:
+            items = buckets.get(bucket) or []
+            found = (_as_source(i) for i in items if isinstance(i, dict))
+            return [s for s in found if s]
+
+        news, web = usable("news"), usable("web")
         out: list[WebSource] = []
         seen: set[str] = set()
-        # News before web: when both match, the dated item is the better answer
-        # to the kind of question that reached a search in the first place.
-        for bucket in ("news", "web"):
-            for item in buckets.get(bucket) or []:
-                if not isinstance(item, dict):
-                    continue
-                source = _as_source(item)
-                if source and source.url not in seen:
-                    seen.add(source.url)
-                    out.append(source)
+        # News and web alternate, news leading. News went strictly first, and
+        # for "1 euro to inr today" six market-news items (Fed, yen, bonds,
+        # gold) filled every slot, so the converter pages holding the actual
+        # rate never reached the model. A dated item still leads; it can no
+        # longer crowd out the page that answers the question.
+        for i in range(max(len(news), len(web))):
+            for bucket in (news, web):
+                if i < len(bucket) and bucket[i].url not in seen:
+                    seen.add(bucket[i].url)
+                    out.append(bucket[i])
         return out[:count]
 
     async def contents(self, urls: list[str]) -> dict[str, str]:

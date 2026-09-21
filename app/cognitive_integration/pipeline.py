@@ -215,7 +215,9 @@ _STYLE_REMINDER = {
         "sentences into paragraphs rather than giving each its own line, and where the "
         "answer is long use headings, bold and blockquotes. Name the distinction they "
         "haven't named. End with one real question about what you just said — specific "
-        "enough that it could not be asked at the end of any other reply."
+        "enough that it could not be asked at the end of any other reply. These are how "
+        "the reply moves, not sections of it: write it as flowing speech addressed to "
+        "them as \"you\", with no labels for any of these moves."
     ),
 }
 

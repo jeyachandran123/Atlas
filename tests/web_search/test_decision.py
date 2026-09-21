@@ -224,6 +224,24 @@ class TestImageDecision:
             assert plan is not None and plan.wants_images is False, body
 
 
+class TestSubjectQuery:
+    """What gets searched when someone asks to see something: the thing, not
+    the asking. "show me pictures of" is not what the pictures are of."""
+
+    def test_the_asking_is_stripped_off(self):
+        from app.web_search.decision import subject_query
+
+        cases = {
+            "show me pictures of Lake Annecy": "Lake Annecy",
+            "what does a red panda look like": "a red panda",
+            "can you show me some photos of kerala da": "kerala",
+            "pictures of the eiffel tower pls": "the eiffel tower",
+            "show me a video of the matterhorn": "the matterhorn",
+        }
+        for message, subject in cases.items():
+            assert subject_query(message) == subject, message
+
+
 class TestParseReads:
     urls = ["https://a.com/one", "https://b.com/two"]
 

@@ -16,6 +16,7 @@ from app.web_search.images import (
     is_photograph,
     looks_like_furniture,
     subject_words,
+    vet,
 )
 from app.web_search.schemas import SourceImage
 
@@ -105,16 +106,38 @@ class TestSubject:
         )
         assert not is_about_subject(image, {"switzerland"})
 
-    def test_an_article_photograph_qualifies_without_naming_the_subject(self):
+    def test_an_article_photograph_qualifies_when_its_page_names_the_subject(self):
         """News photographs are filed under a date or behind a CDN id, and
-        their names are rarely the subject."""
+        their names are rarely the subject — so the page title has to be."""
         for url in (
             "https://static.foxnews.com/content/uploads/2026/09/abc123.jpg",
             "https://s.yimg.com/lo/mysterio/api/650c07ee129e920bb9e3f4314c775f25bd485cb0.jpg",
             "https://cdn.shop.com/articles/how-to-make-it.png?v=1699",
         ):
-            image = SourceImage(url=url, source_url="https://x.com/a", title="t")
+            image = SourceImage(url=url, source_url="https://x.com/a",
+                                title="Ten days in Switzerland")
             assert is_about_subject(image, {"switzerland"}), url
+
+    def test_an_article_photograph_about_something_else_does_not(self):
+        """"Which places in Germany": a Swiss ski resort and an airport-malaria
+        mosquito were shown, both filed like article photos, neither about
+        Germany."""
+        words = subject_words("Germany travel destinations 2026")
+        assert words == {"germany"}
+        for url, title in (
+            ("https://imageio.forbes.com/specials-images/imageserve/6512ab34cd56ef7890123456/0x0.jpg",
+             "Andermatt, Switzerland Is Changing The Concept Of Traditional Ski Resorts"),
+            ("https://static.foxnews.com/content/uploads/2026/09/mosquito.jpg",
+             "3 dead in rare 'airport malaria' outbreak linked to one of world's busiest hubs"),
+        ):
+            assert not is_about_subject(SourceImage(url=url, source_url="https://x.com", title=title), words)
+
+    async def test_nothing_related_means_no_picture_rather_than_the_top_result(self):
+        unrelated = SourceImage(
+            url="https://static.foxnews.com/content/uploads/2026/09/mosquito.jpg",
+            source_url="https://foxnews.com/a", title="Airport malaria outbreak",
+        )
+        assert await vet([unrelated], query="Germany travel destinations 2026") == []
 
     def test_with_no_subject_every_picture_qualifies(self):
         image = SourceImage(url="https://x.com/a.png", source_url="https://x.com", title="t")

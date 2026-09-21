@@ -65,6 +65,17 @@ class TestSearch:
         sources = await YouComProvider(api_key="k").search("anything", count=6)
         assert [s.title for s in sources] == ["Beta", "Alpha"]
 
+    async def test_news_cannot_crowd_out_the_web_results(self, patch_client):
+        """"1 euro to inr today": six market-news items filled every slot and the
+        converter pages holding the rate never reached the model."""
+        body = {"results": {
+            "news": [{"url": f"https://news.example.com/{i}", "title": f"N{i}"} for i in range(6)],
+            "web": [{"url": f"https://rates.example.com/{i}", "title": f"W{i}"} for i in range(3)],
+        }}
+        patch_client(lambda request: httpx.Response(200, json=body))
+        sources = await YouComProvider(api_key="k").search("1 euro to inr today", count=6)
+        assert [s.title for s in sources] == ["N0", "W0", "N1", "W1", "N2", "W2"]
+
     async def test_a_result_without_a_usable_url_is_dropped(self, patch_client):
         patch_client(lambda request: httpx.Response(200, json=SEARCH_BODY))
         sources = await YouComProvider(api_key="k").search("anything", count=6)

@@ -14,7 +14,7 @@ do not invent, say so when they disagree.
 
 from __future__ import annotations
 
-from app.web_search.schemas import WebSource
+from app.web_search.schemas import SearchOutcome, WebSource
 
 #: Everything the sources may occupy. Past this, the earlier conversation starts
 #: falling out of the window and the assistant forgets what it was talking about.
@@ -26,6 +26,9 @@ SNIPPET_BUDGET = 1200
 
 _HEADER = (
     "You searched the web and these are the pages you found. Answer from them.\n\n"
+    "- Write the reply itself, spoken to them as \"you\" in your usual voice — the "
+    "finished answer, with the instructions here shaping it rather than appearing "
+    "in it.\n"
     "- Facts, figures and dates in your answer come from these pages, not from memory. "
     "If they do not cover part of the question, say that plainly instead of filling the gap.\n"
     "- Mark a claim with the number of the source it came from, like [1]. One number, "
@@ -102,3 +105,70 @@ def with_web_context(
     if not history:
         return (turn,)
     return (*history[:-1], turn, history[-1])
+
+
+def _plural(n: int, word: str) -> str:
+    """ "1 picture is", "2 pictures are" """
+    return f"{n} {word} is" if n == 1 else f"{n} {word}s are"
+
+
+def screen_note(outcome: SearchOutcome) -> str:
+    """What the user can see above the reply, in the model's terms.
+
+    The model cannot see the interface. Told nothing, it answered "show me
+    pictures" by saying it had no way to show any, directly under the pictures
+    it was showing. Said inside the sources turn, that still lost to the
+    conversation's own earlier replies; said here, in the final turn, it holds.
+    """
+    if outcome.blocked:
+        return (
+            "They asked for sexually explicit material. Nothing was searched and "
+            "nothing is shown. Say in one plain sentence that this is something you "
+            "do not look for or show, without lecturing them, and offer to help with "
+            "something else."
+        )
+    notes: list[str] = []
+    if outcome.images:
+        notes.append(
+            f"{_plural(len(outcome.images), 'picture')} on screen, from the pages "
+            "found, right above your reply. You cannot see them, so leave what "
+            "they show to the pictures themselves and answer the question; at "
+            "most mention in passing that there are pictures above."
+        )
+    elif outcome.wanted_images:
+        notes.append(
+            "They wanted pictures and this search turned up none good enough to "
+            "show. Say in a few words that no good picture came up this time, then "
+            "describe it in words. Showing pictures is part of what you do here; "
+            "this one search simply found none."
+        )
+    if outcome.videos:
+        titles = "; ".join(v.title for v in outcome.videos if v.title)
+        notes.append(
+            f"{_plural(len(outcome.videos), 'YouTube video')} on screen above "
+            f"your reply, playable where they are: {titles}. Point them out briefly."
+        )
+    elif outcome.wanted_videos:
+        notes.append(
+            "They wanted videos and no YouTube video came up for this. Say so in a "
+            "few words. Videos here come from YouTube only."
+        )
+    return " ".join(notes)
+
+
+def with_outcome(
+    history: tuple[dict[str, str], ...], outcome: SearchOutcome
+) -> tuple[dict[str, str], ...]:
+    """The history with everything the search produced placed for the model.
+
+    The sources go before the final turn, as before. What is on screen is added
+    to the final turn itself, because it decides the reply's first sentence.
+    """
+    out = with_web_context(history, outcome.sources, read=set(outcome.read))
+    note = screen_note(outcome)
+    if not note:
+        return out
+    if out and out[-1].get("role") == "system":
+        last = out[-1]
+        return (*out[:-1], {"role": "system", "content": f"{last['content']}\n\n{note}"})
+    return (*out, {"role": "system", "content": note})

@@ -64,7 +64,15 @@ _STOP = {"what", "where", "when", "which", "does", "look", "looks", "looking",
          "like", "about", "the", "and", "for", "with", "from", "this", "that",
          "there", "here", "some", "give", "show", "tell", "located", "location",
          "picture", "pictures", "image", "images", "photo", "photos", "latest",
-         "many", "much", "really", "actually"}
+         "many", "much", "really", "actually",
+         # Words that describe the kind of search, not the thing searched for.
+         # "Germany travel destinations 2026" is about Germany; with "travel"
+         # counted as a subject, a Swiss ski-resort photo on a travel page
+         # passed as a picture of Germany.
+         "travel", "destinations", "destination", "places", "place", "best",
+         "guide", "guides", "trip", "trips", "visit", "visiting", "tourism",
+         "tourist", "things", "beautiful", "famous", "popular", "suggest",
+         "suggestions", "most", "news", "today", "photography"}
 
 
 def subject_words(query: str) -> set[str]:
@@ -83,24 +91,26 @@ _SPECIFIC_PATH = re.compile(
 
 
 def is_about_subject(image: SourceImage, words: set[str]) -> bool:
-    """Does the picture itself connect to what was asked?
+    """Does the picture connect to what was asked?
 
-    The test is deliberately on the image, not on the page. "Where is
-    Switzerland" found a page about Switzerland whose preview image was the
-    publisher's own "world-of-data.png" — relevant page, irrelevant picture,
-    and judging by the page is what let it through.
+    A picture qualifies when its own address names the subject, or when it is
+    an article's own photograph (filed under a year, an articles path or a
+    long CDN id) *on a page whose title names the subject*.
 
-    So a picture qualifies when its own address names the subject, or when it
-    is filed the way an article's photograph is filed: under a year, under an
-    articles path, or behind a long CDN id. A file sitting at /images/ with a
-    generic name belongs to the site, not to the answer.
+    Both halves of the second rule were learned the hard way. Judging by the
+    page alone let a publisher's "world-of-data.png" through as a picture of
+    Switzerland — relevant page, generic graphic. Judging by the file path
+    alone let any news photograph through: "places to visit in Germany"
+    showed a Swiss ski resort and an "airport malaria" mosquito, both filed
+    exactly like article photos, on pages that never mentioned Germany.
     """
     if not words:
         return True
     url = image.url.lower()
     if any(word in url for word in words):
         return True
-    return bool(_SPECIFIC_PATH.search(image.url))
+    title = (image.title or "").lower()
+    return bool(_SPECIFIC_PATH.search(image.url)) and any(word in title for word in words)
 
 
 def dimensions(data: bytes) -> tuple[int, int] | None:
@@ -193,13 +203,13 @@ async def vet(
     Showing nothing is a valid outcome: an answer with no picture reads fine,
     while an answer beside a stranger's logo reads as a mistake.
     """
-    usable = [c for c in candidates if not looks_like_furniture(c.url)]
     words = subject_words(query)
-    # Only when something does relate to the subject — otherwise every result
-    # is equally unrelated and the ranking is the best signal left.
-    related = [c for c in usable if is_about_subject(c, words)]
-    if related:
-        usable = related
+    # Nothing related means no picture. Falling back to the best-ranked
+    # preview is what put a mosquito above a trip to Germany.
+    usable = [
+        c for c in candidates
+        if not looks_like_furniture(c.url) and is_about_subject(c, words)
+    ]
     if not usable:
         return []
     try:

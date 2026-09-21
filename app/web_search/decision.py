@@ -85,6 +85,52 @@ _WANTS_TO_SEE = re.compile(
     r"pictures?\s+of|photos?\s+of|images?\s+of|see\s+(?:a|an|the)\b)",
     re.IGNORECASE,
 )
+# Asking for pictures in so many words. The decision model's images flag is a
+# judgement; this is the user's own request, and it is honoured even when the
+# model thinks a picture would not help.
+_ASKS_FOR_PICTURES = re.compile(
+    r"\b(show\s+(?:me\s+)?(?:some\s+|a\s+few\s+)?(?:pictures?|photos?|images?|pics?)|"
+    r"(?:pictures?|photos?|images?|pics?)\s+of|what\s+(?:does|do|did)\s+.{2,40}\s+look\s+like)",
+    re.IGNORECASE,
+)
+# Asking for videos. Videos only ever come from YouTube.
+_ASKS_FOR_VIDEOS = re.compile(
+    r"\b(videos?|video\s+clips?|clips?\s+of|trailers?|vlogs?|youtube|yt\s+link|"
+    r"watch\s+(?:a|an|the|some)\b)",
+    re.IGNORECASE,
+)
+
+
+def asks_for_pictures(message: str) -> bool:
+    return bool(_ASKS_FOR_PICTURES.search(message or ""))
+
+
+def asks_for_videos(message: str) -> bool:
+    return bool(_ASKS_FOR_VIDEOS.search(message or ""))
+
+
+# The asking, as opposed to the thing asked about: "show me pictures of",
+# "what does … look like", and the conversational glue around them.
+_REQUEST_PHRASING = re.compile(
+    r"\b(?:can|could|would)\s+you\s+|\bplease\b|\bpls\b|"
+    r"\b(?:show|send|give|find|get)\s+(?:me\s+)?(?:some\s+|a\s+few\s+|more\s+|an?\s+|the\s+)?"
+    r"(?:pictures?|photos?|images?|pics?|videos?|clips?)?\s*(?:of|about)?\b|"
+    r"\b(?:pictures?|photos?|images?|pics?|videos?|clips?)\s+(?:of|about)\b|"
+    r"\bwhat\s+(?:does|do|did)\b|\blooks?\s+like\b|\b(?:da|machaa?|bro)\b|[?!.]",
+    re.IGNORECASE,
+)
+
+
+def subject_query(message: str) -> str:
+    """The thing they want to see, with the asking stripped off.
+
+    "show me pictures of Lake Annecy" becomes "Lake Annecy" — a search for the
+    lake, not for the phrase "show me pictures", which is what the search
+    engine would otherwise be handed.
+    """
+    return " ".join(_REQUEST_PHRASING.sub(" ", message or "").split())[:200]
+
+
 # Questions about the conversation or the user's own files answer themselves
 # from context the assistant already holds; the web has nothing to add.
 _SELF_REFERENTIAL = re.compile(
@@ -143,6 +189,8 @@ def worth_searching(
         return False
     if _EXPLICIT.search(text) or _URL.search(text) or _WANTS_TO_SEE.search(text):
         return True
+    if asks_for_pictures(text) or asks_for_videos(text):
+        return True
     if _PLATFORM.search(text):
         return True
     # "ok da", "thanks", "got it" — never worth a model call.
@@ -168,7 +216,7 @@ def worth_searching(
 
 DECIDE_SYSTEM = """You decide whether answering a chat message requires searching the web right now. Reply with ONE JSON object and nothing else.
 
-{"search": true|false, "queries": ["..."], "images": true|false, "reason": "..."}
+{"search": true|false, "queries": ["..."], "images": true|false, "videos": true|false, "reason": "..."}
 
 Answer true when the answer depends on information that changes over time, on events, prices, releases, people or organisations, on any specific product, library or company, or on anything you are not certain of. Answer true when the message contains a URL.
 
@@ -185,6 +233,10 @@ Decide images first, then search — in that order, because they are bound toget
 Worked examples of images=true: "who is sydney sweeney" (a person), "who is kamado tanjiro" (a character has a drawn appearance), "who is the prime minister of india" (an office is held by a person), "what does switzerland look like" (a country), "what is nasi lemak" (a dish), "what is a bugatti chiron" (a car), "tell me about the taj mahal" (a building).
 
 Worked examples of images=false: "what is the price of the you.com api", "what is the aws refund policy", "how do i reverse a linked list", "what is recursion".
+
+videos: true only when the message asks for a video, a clip, a trailer or something to watch. When true, search is true.
+
+queries must name the subject itself, resolved from the conversation: for "show me pictures of that" after a message about Lake Annecy, the query is "Lake Annecy", never "that".
 
 reason: one short clause, for the log.
 
@@ -249,9 +301,15 @@ def parse_plan(text: str, *, message: str) -> SearchPlan | None:
     data = _loads(text)
     if data is None:
         return None
-    if data.get("search") is not True:
+    pictures, videos = asks_for_pictures(message), asks_for_videos(message)
+    # A request to see something is honoured even if the model said no search:
+    # a picture or a video can only come from one.
+    if data.get("search") is not True and not (pictures or videos):
         return None
-    queries = _clean_queries(data.get("queries"), message)
+    # With no usable query from the model, search for the thing they want to
+    # see — not the sentence they asked in.
+    fallback = (subject_query(message) or message) if (pictures or videos) else message
+    queries = _clean_queries(data.get("queries"), fallback)
     if not queries:
         return None
     return SearchPlan(
@@ -259,7 +317,8 @@ def parse_plan(text: str, *, message: str) -> SearchPlan | None:
         reason=str(data.get("reason") or "")[:200],
         # Anything other than an explicit true means no picture: this field is
         # an addition to the answer, so a model that omits it gets the plain one.
-        wants_images=data.get("images") is True,
+        wants_images=data.get("images") is True or pictures,
+        wants_videos=data.get("videos") is True or videos,
     )
 
 

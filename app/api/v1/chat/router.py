@@ -554,7 +554,7 @@ def _stream_cognitive_response(
             # its progress reaches the user while it happens instead of
             # showing an empty screen for the seconds it takes.
             if web_events is not None:
-                from app.web_search.context import with_web_context
+                from app.web_search.context import with_outcome
 
                 async for event in web_events:
                     if event.get("type") == "_sources":
@@ -563,9 +563,11 @@ def _stream_cognitive_response(
                             sources = outcome.sources
                             web_images = outcome.images
                             web_query = outcome.queries[0] if outcome.queries else ""
-                            history = with_web_context(
-                                history, outcome.sources, read=set(outcome.read),
-                            )
+                        # Not only when something was found: a blocked request,
+                        # or pictures asked for and none found, still decides
+                        # what the reply must say.
+                        if outcome.matters_to_the_reply:
+                            history = with_outcome(history, outcome)
                         continue
                     yield f"data: {json.dumps(event)}\n\n"
 

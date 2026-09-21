@@ -13,8 +13,10 @@ turn is answered without the web.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import AsyncGenerator
+from dataclasses import replace
 from typing import Any
 
 from loguru import logger
@@ -24,15 +26,19 @@ from app.web_search.decision import (
     DECIDE_SYSTEM,
     ENOUGH_SYSTEM,
     MAX_READS,
+    asks_for_pictures,
+    asks_for_videos,
     build_decide_user,
     build_enough_user,
     parse_plan,
     parse_reads,
+    subject_query,
     worth_searching,
 )
 from app.web_search.images import vet
 from app.web_search.provider import SearchProvider, SearchUnavailable, YouComProvider, gather_search
-from app.web_search.schemas import SearchOutcome, SearchPlan, SourceImage, WebSource
+from app.web_search.safety import asks_for_explicit, clean
+from app.web_search.schemas import SearchOutcome, SearchPlan, SourceImage, WebSource, youtube_id
 
 #: The decision calls are short and must be certain, not creative.
 _DECIDE_TEMPERATURE = 0.1
@@ -45,6 +51,9 @@ def _stage(stage: str, **extra: Any) -> dict[str, Any]:
 
 #: Two is a glance; more is a gallery, and this is an answer, not an album.
 MAX_IMAGES = 2
+#: Unless pictures are what was asked for: then they are the answer.
+MAX_IMAGES_ASKED = 4
+MAX_VIDEOS = 4
 #: Candidates offered to the vetting step. Most results carry a preview and
 #: most previews are branding, so the shortlist has to be longer than the two
 #: pictures that survive it.
@@ -64,6 +73,10 @@ def pick_images(sources: list[WebSource], *, limit: int = _CANDIDATES) -> list[S
     out: list[SourceImage] = []
     seen: set[str] = set()
     for source in sources:
+        # A YouTube result is shown as a video; its frame again as a picture
+        # would be the same thing twice.
+        if youtube_id(source.url):
+            continue
         url = (source.thumbnail_url or "").strip()
         if not url.startswith(("http://", "https://")) or url in seen:
             continue
@@ -111,15 +124,43 @@ class WebSearchService:
             # The user pressed the globe. Their words are the query; spending a
             # model call to re-ask whether they meant it would be absurd.
             query = " ".join(message.split())[:200]
-            return SearchPlan(queries=(query,), reason="requested by the user") if query else None
+            if not query:
+                return None
+            return SearchPlan(
+                queries=(query,), reason="requested by the user",
+                wants_images=asks_for_pictures(message), wants_videos=asks_for_videos(message),
+            )
+        wants_pictures = asks_for_pictures(message)
+        wants_videos = asks_for_videos(message)
         try:
             text = await self._ask(
                 system=DECIDE_SYSTEM, user=build_decide_user(message, history)
             )
+            plan = parse_plan(text, message=message)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Web search decision unavailable ({e}); answering without it")
-            return None
-        return parse_plan(text, message=message)
+            plan = None
+
+        if not (wants_pictures or wants_videos):
+            return plan
+        # They asked to SEE something, in so many words. The model's opinion on
+        # whether that needs a search does not get a vote: asked for pictures
+        # of Lake Annecy it answered search=false, so nothing was searched, and
+        # the reply then apologised for pictures it had never looked for. What
+        # the model may still contribute is a better query.
+        if plan is None:
+            query = subject_query(message) or " ".join(message.split())[:200]
+            if not query:
+                return None
+            return SearchPlan(
+                queries=(query,), reason="asked to see it",
+                wants_images=wants_pictures, wants_videos=wants_videos,
+            )
+        return replace(
+            plan,
+            wants_images=plan.wants_images or wants_pictures,
+            wants_videos=plan.wants_videos or wants_videos,
+        )
 
     async def _read_more(self, message: str, sources: list[WebSource]) -> tuple[str, ...]:
         """URLs worth opening in full, at most two, never invented."""
@@ -148,20 +189,44 @@ class WebSearchService:
         try:
             from app.config import settings
 
-            plan = (
-                await self._plan(message, history or [], forced=forced)
-                if worth_searching(message, forced=forced, after_search=after_search)
-                else None
-            )
+            outcome.wanted_images = asks_for_pictures(message)
+            outcome.wanted_videos = asks_for_videos(message)
+            if asks_for_explicit(message):
+                # Never searched, so nothing explicit can come back to be
+                # filtered, and the reply is told why there is nothing.
+                logger.info("Web search skipped: request for explicit material")
+                outcome.blocked = True
+                plan = None
+            else:
+                plan = (
+                    await self._plan(message, history or [], forced=forced)
+                    if worth_searching(message, forced=forced, after_search=after_search)
+                    else None
+                )
+            if plan is not None:
+                outcome.wanted_images = outcome.wanted_images or plan.wants_images
+                outcome.wanted_videos = outcome.wanted_videos or plan.wants_videos
             if plan is not None and await budget.claim_search(settings.web_search_daily_cap):
                 yield _stage("searching", queries=list(plan.queries))
-                sources = await gather_search(
-                    self._provider, list(plan.queries),
-                    count=settings.web_search_max_results,
-                    limit=settings.web_search_max_results,
+                sources, found_videos = await asyncio.gather(
+                    gather_search(
+                        self._provider, list(plan.queries),
+                        count=settings.web_search_max_results,
+                        limit=settings.web_search_max_results,
+                    ),
+                    self._videos(plan),
                 )
+                sources = clean(sources)
+                videos = _unique(
+                    [s for s in sources if youtube_id(s.url)] + found_videos
+                )[:MAX_VIDEOS]
+                # Videos found by their own search join the sources, which is
+                # what stores them with the answer for the next page load.
+                known = {s.url for s in sources}
+                sources += [v for v in videos if v.url not in known]
                 if sources:
                     outcome.sources = sources
+                    outcome.videos = videos
                     outcome.queries = list(plan.queries)
                     if plan.wants_images:
                         # Vetted, not just picked: a page's preview image is
@@ -169,7 +234,7 @@ class WebSearchService:
                         # what was asked about.
                         outcome.images = await vet(
                             pick_images(sources),
-                            limit=MAX_IMAGES,
+                            limit=MAX_IMAGES_ASKED if asks_for_pictures(message) else MAX_IMAGES,
                             query=plan.queries[0],
                         )
 
@@ -203,6 +268,24 @@ class WebSearchService:
             }
         yield {"type": "_sources", "outcome": outcome}
 
+    async def _videos(self, plan: SearchPlan) -> list[WebSource]:
+        """YouTube videos for the plan's subject, when videos were asked for.
+
+        Restricted to YouTube by the query itself, then again by the result:
+        only a URL that parses as a YouTube video is kept, so nothing from any
+        other video site can slip through as a video.
+        """
+        if not plan.wants_videos:
+            return []
+        try:
+            found = await self._provider.search(
+                f"{plan.queries[0]} site:youtube.com", count=MAX_VIDEOS + 4
+            )
+        except Exception as e:  # noqa: BLE001 - a missing video is not a failed turn
+            logger.warning(f"Video search failed ({e}); answering without videos")
+            return []
+        return [v for v in clean(found) if youtube_id(v.url)]
+
     async def _open(self, urls: list[str]) -> dict[str, str]:
         """Full text for the chosen pages. One unreachable page is not a failure
         of the turn — the search results are still an answer."""
@@ -211,6 +294,18 @@ class WebSearchService:
         except SearchUnavailable as e:
             logger.warning(f"Could not open pages ({e}); using search results only")
             return {}
+
+
+def _unique(sources: list[WebSource]) -> list[WebSource]:
+    """One entry per video, first occurrence kept."""
+    seen: set[str] = set()
+    out: list[WebSource] = []
+    for s in sources:
+        key = youtube_id(s.url) or s.url
+        if key not in seen:
+            seen.add(key)
+            out.append(s)
+    return out
 
 
 def web_search_available() -> bool:
