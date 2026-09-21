@@ -30,7 +30,8 @@ _HEADER = (
     "finished answer, with the instructions here shaping it rather than appearing "
     "in it.\n"
     "- Facts, figures and dates in your answer come from these pages, not from memory. "
-    "If they do not cover part of the question, say that plainly instead of filling the gap.\n"
+    "If they do not cover part of the question, say so once, briefly, instead of "
+    "filling the gap.\n"
     "- Mark a claim with the number of the source it came from, like [1]. One number, "
     "or two when they genuinely say different things — a claim trailing every number "
     "you were given tells the reader nothing about where it came from.\n"
@@ -156,6 +157,30 @@ def screen_note(outcome: SearchOutcome) -> str:
     return " ".join(notes)
 
 
+#: The shape of an answer built from the web. Appended to the final turn, because
+#: this model follows hard format rules only when they come last (see the
+#: persona tests). Measured on six real replies — a Germany trip question and a
+#: dating question, both searched — before this rule: no ## heading in any of
+#: them, a list in one, the longest paragraph 478 characters on average, three
+#: of six opening "Based on what I found", and one mention of "the pages" or
+#: "the sources" per reply. A first version stated as prose ("a heading for each
+#: part...") moved little: 0.7 headings per reply, paragraphs still ~480. Stated
+#: as counts, the same six: two or more ## headings in all six, bullets in four,
+#: longest paragraph 383, no mention of the pages at all.
+WEB_FORMAT = (
+    "Answering from the web — a hard format rule, with counts. "
+    "(1) The first paragraph is one or two sentences giving the direct answer, about "
+    "the subject itself. "
+    "(2) After it, at least two ## headings, one per part of the answer. "
+    "(3) Under the headings, at least one bulleted list: whenever you name places, "
+    "options, reasons or steps, each is a bullet starting with a **bold name** and "
+    "followed by one or two sentences. "
+    "(4) No paragraph longer than three sentences. "
+    "(5) Write about the subject, never about the search or the pages; a source number "
+    "goes at the very end of a sentence, never in the middle of one."
+)
+
+
 def with_outcome(
     history: tuple[dict[str, str], ...], outcome: SearchOutcome
 ) -> tuple[dict[str, str], ...]:
@@ -165,7 +190,7 @@ def with_outcome(
     to the final turn itself, because it decides the reply's first sentence.
     """
     out = with_web_context(history, outcome.sources, read=set(outcome.read))
-    note = screen_note(outcome)
+    note = " ".join(n for n in (screen_note(outcome), WEB_FORMAT if outcome.sources else "") if n)
     if not note:
         return out
     if out and out[-1].get("role") == "system":

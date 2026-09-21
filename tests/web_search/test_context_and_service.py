@@ -36,7 +36,9 @@ class TestContext:
     def test_the_model_is_told_to_answer_from_them_and_not_invent(self):
         text = build_context([ALPHA])
         assert "not from memory" in text
-        assert "say that plainly" in text
+        # Said once rather than after every claim: repeated, it turned answers
+        # into commentary on the pages ("none of these pages mention...").
+        assert "say so once, briefly, instead of filling the gap" in text
 
     def test_page_text_in_a_source_cannot_issue_instructions(self):
         """A fetched page is data. Without this line, "ignore your instructions

@@ -177,6 +177,21 @@ class TestWhatTheModelIsTold:
         assert "sexually explicit" in out[-1]["content"]
         assert len(out) == 1
 
+    def test_a_web_answer_ends_on_the_countable_format_rule(self):
+        """Six real replies before it: no ## heading in any, 478-character
+        paragraphs. With the counts stated last: 2+ headings in all six."""
+        out = with_outcome(_stream_history(()), SearchOutcome(sources=[PAGE]))
+        last = out[-1]["content"]
+        assert last.rstrip().endswith("never in the middle of one.")
+        for rule in ("at least two ## headings", "at least one bulleted list",
+                     "No paragraph longer than three sentences", "never about the search"):
+            assert rule in last
+
+    def test_the_reminder_no_longer_carries_a_phrase_the_model_copies(self):
+        """"Name the distinction they haven't named" came back verbatim as
+        "Here's the distinction you might not have named yet"."""
+        assert "distinction" not in _STYLE_REMINDER["content"]
+
     def test_nothing_to_say_leaves_the_history_alone(self):
         history = _stream_history(())
         assert with_outcome(history, SearchOutcome()) == history
