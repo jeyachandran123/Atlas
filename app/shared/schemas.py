@@ -273,6 +273,26 @@ class MessageDocumentOut(BaseModel):
     url: str  # served via /chat/documents/{id}
 
 
+class WebSourceOut(BaseModel):
+    """A page the assistant read, as the source card shows it."""
+
+    url: str
+    title: str = ""
+    domain: str = ""
+    description: str = ""
+    thumbnail_url: Optional[str] = None
+    favicon_url: Optional[str] = None
+    published: Optional[str] = None
+
+
+class SourceImageOut(BaseModel):
+    """A picture shown with an answer, and the page it came from."""
+
+    url: str
+    source_url: str
+    title: str = ""
+
+
 class MessageOut(BaseModel):
     id: str
     conversation_id: str
@@ -282,6 +302,12 @@ class MessageOut(BaseModel):
     tokens_used: int
     images: list[MessageImageOut] = []
     documents: list[MessageDocumentOut] = []
+    # Empty for every message that did not search the web, which is most of them.
+    sources: list[WebSourceOut] = []
+    # The one or two pictures shown with the answer, when pictures helped.
+    source_images: list[SourceImageOut] = []
+    # What was searched for, for the header line.
+    search_query: Optional[str] = None
     created_at: datetime
 
 
@@ -295,6 +321,9 @@ class ChatRequest(BaseModel):
     # None = the profile's default. True/False force the model's thinking pass
     # on or off for this one message.
     thinking: Optional[bool] = None
+    # True = the user pressed the globe, so search without asking the model
+    # whether it is needed. None/False leaves the decision where it belongs.
+    web_search: Optional[bool] = None
 
 
 class ChatResponse(BaseModel):

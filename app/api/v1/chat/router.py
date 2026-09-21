@@ -39,6 +39,8 @@ from app.shared.schemas import (
     MessageDocumentOut,
     MessageImageOut,
     MessageOut,
+    SourceImageOut,
+    WebSourceOut,
 )
 from app.vision.service import get_vision_service
 from app.vision.image_storage import ALLOWED_MIME_TYPES, MAX_IMAGE_SIZE, get_image_storage
@@ -163,6 +165,10 @@ def _message_to_out(m: Message) -> MessageOut:
             )
             for doc in m.documents
         ]
+    # Sources are stored only for the few answers that searched the web, so this
+    # is empty for almost every message and costs nothing to carry.
+    from app.web_search.store import cards_of, images_of, query_of
+
     return MessageOut(
         id=m.id,
         conversation_id=m.conversation_id,
@@ -172,6 +178,9 @@ def _message_to_out(m: Message) -> MessageOut:
         tokens_used=m.tokens_used,
         images=images,
         documents=documents,
+        sources=[WebSourceOut(**card) for card in cards_of(m)],
+        source_images=[SourceImageOut(**img) for img in images_of(m)],
+        search_query=query_of(m) or None,
         created_at=m.created_at,
     )
 
@@ -520,6 +529,7 @@ def _cognitive_chunks(text: str, size: int = 40):
 def _stream_cognitive_response(
     *, db, conv_repo, conv_id, user_id, message, request_id, delib,
     agent_mode: str = "auto", thinking: Optional[bool] = None,
+    web_events: Optional[AsyncGenerator[dict, None]] = None,
 ) -> StreamingResponse:
     """Stream a brain-governed reply token-by-token (TRUE streaming), then persist it.
 
@@ -534,7 +544,31 @@ def _stream_cognitive_response(
     async def event_generator() -> AsyncGenerator[str, None]:
         start = time.monotonic()
         full = ""
+        sources: list = []
+        web_images: list = []
+        web_query = ""
         try:
+            history = delib.history
+            # ── The web, when this turn needs it ─────────────────────────────
+            # The search runs here rather than before the response starts, so
+            # its progress reaches the user while it happens instead of
+            # showing an empty screen for the seconds it takes.
+            if web_events is not None:
+                from app.web_search.context import with_web_context
+
+                async for event in web_events:
+                    if event.get("type") == "_sources":
+                        outcome = event["outcome"]
+                        if outcome.sources:
+                            sources = outcome.sources
+                            web_images = outcome.images
+                            web_query = outcome.queries[0] if outcome.queries else ""
+                            history = with_web_context(
+                                history, outcome.sources, read=set(outcome.read),
+                            )
+                        continue
+                    yield f"data: {json.dumps(event)}\n\n"
+
             if delib.escalated:
                 for chunk in _cognitive_chunks(delib.hold_message or "Held for review."):
                     full += chunk
@@ -547,7 +581,7 @@ def _stream_cognitive_response(
                 async for chunk in client.chat_stream(
                     delib.user_prompt, system_prompt=delib.system_prompt, model=delib.model,
                     profile=profile_for_mode(agent_mode), thinking=thinking,
-                    include_reasoning=True, history=delib.history,
+                    include_reasoning=True, history=history,
                 ):
                     if not chunk:
                         continue
@@ -557,12 +591,21 @@ def _stream_cognitive_response(
                     full += chunk
                     yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
 
+            from app.web_search.store import WEB_SEARCH_AGENT, save_sources
+
             tokens_used = max(1, len(full) // 4)
             latency_ms = int((time.monotonic() - start) * 1000)
             assistant_msg = await conv_repo.add_message(
                 conversation_id=conv_id, role="assistant", content=full,
-                agent_used="cognitive_os", tokens_used=tokens_used, latency_ms=latency_ms,
+                # This marker is what tells the next turn a follow-up belongs
+                # to a searched conversation.
+                agent_used=WEB_SEARCH_AGENT if sources else "cognitive_os",
+                tokens_used=tokens_used, latency_ms=latency_ms,
             )
+            if sources:
+                await save_sources(
+                    db, assistant_msg.id, sources, images=web_images, query=web_query,
+                )
             await db.commit()
             await push_session_message(user_id, conv_id, "user", message)
             await push_session_message(user_id, conv_id, "assistant", full)
@@ -666,6 +709,31 @@ async def _maybe_stream_file_response(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no",
                  "X-Request-ID": request_id, "Connection": "keep-alive"},
+    )
+
+
+async def _web_events(req, session_messages, db, conversation_id):
+    """The search for this turn, or None when it cannot or should not run.
+
+    Returns the generator unstarted: the route runs it inside the response so
+    its progress is visible, and building it here costs nothing if the gate
+    turns out to reject the message.
+    """
+    from app.web_search.service import WebSearchService, web_search_available
+    from app.web_search.store import last_answer_searched
+
+    if not web_search_available():
+        return None
+    forced = bool(getattr(req, "web_search", False))
+    history = [
+        f"{m.get('role', 'user')}: {(m.get('content') or '')[:300]}"
+        for m in (session_messages or [])[-6:]
+    ]
+    # A follow-up to a searched answer searches too, so "is there any reddit
+    # post about him" is answered from Reddit rather than from memory.
+    after_search = await last_answer_searched(db, conversation_id)
+    return WebSearchService().run(
+        req.message, history=history, forced=forced, after_search=after_search,
     )
 
 
@@ -791,6 +859,7 @@ async def stream_message(
                 db=db, conv_repo=conv_repo, conv_id=conv.id, user_id=current_user.id,
                 message=req.message, request_id=request_id, delib=delib,
                 agent_mode=req.agent_mode, thinking=req.thinking,
+                web_events=await _web_events(req, session_messages, db, conv.id),
             )
 
     state = initial_state(

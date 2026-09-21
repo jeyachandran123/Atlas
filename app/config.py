@@ -386,6 +386,18 @@ class Settings(BaseSettings):
     signup_code_ttl_seconds: int = 600
     signup_resend_cooldown_seconds: int = 60
 
+    # ── Web search (You.com) ──────────────────────────────────────────────────
+    # Lets chat answer from the live web. With no key, search is simply off and
+    # chat behaves exactly as it did before — never an error.
+    web_search_enabled: bool = True
+    you_api_key: SecretStr = SecretStr("")
+    # You.com's free tier is 100 searches a day. Stopping below it means a busy
+    # day degrades to ordinary chat instead of starting a bill.
+    web_search_daily_cap: int = 80
+    web_search_max_results: int = 6
+    web_search_timeout_s: float = 12.0
+    web_search_country: str = "SG"
+
     # ── Rate Limiting ─────────────────────────────────────────────────────────
     rate_limit_chat: str = "20/minute"
     rate_limit_index: str = "5/minute"

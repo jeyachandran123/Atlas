@@ -400,6 +400,10 @@ class Message(Base):
     documents: Mapped[list["MessageDocument"]] = relationship(
         "MessageDocument", back_populates="message", lazy="selectin"
     )
+    sources: Mapped[list["MessageSource"]] = relationship(
+        "MessageSource", back_populates="message", lazy="selectin",
+        order_by="MessageSource.position",
+    )
     agent_executions: Mapped[list[AgentExecution]] = relationship(
         "AgentExecution", back_populates="message"
     )
@@ -436,6 +440,49 @@ class MessageImage(Base):
     )
 
     message: Mapped[Message] = relationship("Message", back_populates="images")
+
+
+class MessageSource(Base):
+    """
+    A web page the assistant read while answering a message.
+
+    Kept so the source cards survive a page refresh: they are streamed once
+    while the answer is written, and without a row here a reload would show
+    the answer with nothing behind it. Only what the card displays is stored —
+    the page text is used to write the reply and then discarded.
+    """
+
+    __tablename__ = "message_sources"
+    __table_args__ = (Index("ix_message_sources_msg", "message_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    # Unlike message_images and message_documents, which every deletion site
+    # clears by hand, these go with the message. Three separate paths delete
+    # messages and all three returned 500 while this was NO ACTION.
+    message_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("messages.id", ondelete="CASCADE"), nullable=False
+    )
+    #: The order the cards were shown in, which is what a "[2]" in the answer
+    #: refers to.
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    domain: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    thumbnail_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
+    favicon_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
+    published: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    #: True on the one or two rows whose picture was shown with the answer.
+    #: Without it a reload keeps the links and silently loses the images.
+    show_image: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: What was searched for, repeated on each row so the header can say it
+    #: after a reload. The same value for every row of one message.
+    query: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+    message: Mapped[Message] = relationship("Message", back_populates="sources")
 
 
 class MessageDocument(Base):
