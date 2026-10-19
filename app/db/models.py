@@ -23,6 +23,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -1476,5 +1477,144 @@ class WorkspaceSummaryRow(Base):
     suggestions_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     model: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SKILLS (Customize → Skills)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class Skill(Base):
+    """A reusable instruction pack (SKILL.md). Changes HOW the agent answers;
+    never adds abilities and is never executed.
+
+    scope: system (built-in, org_id/owner NULL) | org (org_id set) |
+    personal (org_id + owner_user_id set). `body` is the full SKILL.md text."""
+
+    __tablename__ = "skills"
+    __table_args__ = (
+        UniqueConstraint("scope", "org_id", "owner_user_id", "slug", name="uq_skills_scope_slug"),
+        # NULLs are distinct in unique constraints — guard system/org slugs explicitly.
+        Index(
+            "uq_skills_system_slug", "slug", unique=True,
+            postgresql_where=text("scope = 'system'"), sqlite_where=text("scope = 'system'"),
+        ),
+        Index(
+            "uq_skills_org_slug", "org_id", "slug", unique=True,
+            postgresql_where=text("scope = 'org'"), sqlite_where=text("scope = 'org'"),
+        ),
+        Index("ix_skills_org", "org_id"),
+        Index("ix_skills_owner", "owner_user_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    org_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True
+    )
+    owner_user_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    scope: Mapped[str] = mapped_column(String(20), nullable=False)  # system|org|personal
+    slug: Mapped[str] = mapped_column(String(64), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str] = mapped_column(String(1024), nullable=False)
+    icon: Mapped[str] = mapped_column(String(40), nullable=False, default="sparkles")
+    version: Mapped[str] = mapped_column(String(32), nullable=False, default="1.0.0")
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    triggers_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    modes_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    source: Mapped[str] = mapped_column(String(20), nullable=False)  # builtin|upload|editor|git|plugin
+    source_ref: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
+    )
+
+    files: Mapped[list["SkillFile"]] = relationship(
+        "SkillFile", back_populates="skill", cascade="all, delete-orphan",
+        passive_deletes=True, lazy="selectin", order_by="SkillFile.path",
+    )
+
+
+class SkillFile(Base):
+    """Extra text files shipped with a skill (references/, assets/)."""
+
+    __tablename__ = "skill_files"
+    __table_args__ = (UniqueConstraint("skill_id", "path", name="uq_skill_files_path"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    skill_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("skills.id", ondelete="CASCADE"), nullable=False
+    )
+    path: Mapped[str] = mapped_column(String(255), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    skill: Mapped[Skill] = relationship("Skill", back_populates="files")
+
+
+class UserSkillSetting(Base):
+    """Per-user install state. "Installed" = a row exists. System skills
+    without a row count as enabled (built-ins ship on)."""
+
+    __tablename__ = "user_skill_settings"
+    __table_args__ = (UniqueConstraint("user_id", "skill_id", name="uq_user_skill"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    skill_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("skills.id", ondelete="CASCADE"), nullable=False
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    installed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+
+class UserSkillPreference(Base):
+    """Per-user default behaviour for skills (Skills page → settings)."""
+
+    __tablename__ = "user_skill_preferences"
+
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    auto_select: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    max_active: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # None = server default
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
+    )
+
+
+class MessageCapability(Base):
+    """Which skills / plugin tools shaped a reply — so the UI can show
+    "Skills used: …" after a reload. Exactly one of message_id (chat) or
+    turn_id (workspace / DIP turn) is set."""
+
+    __tablename__ = "message_capabilities"
+    __table_args__ = (
+        Index("ix_message_capabilities_message", "message_id"),
+        Index("ix_message_capabilities_turn", "turn_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    message_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("messages.id", ondelete="CASCADE"), nullable=True
+    )
+    turn_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("dip_conversation_turns.id", ondelete="CASCADE"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)  # skill|plugin_tool
+    ref: Mapped[str] = mapped_column(String(200), nullable=False)  # skill slug | plugin__tool
+    label: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )

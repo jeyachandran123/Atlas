@@ -185,6 +185,9 @@ class IntelligenceContext:
     # Tool results (populated after execution)
     tool_results: list[Any] = field(default_factory=list)
 
+    # Skills selected for this turn (list[app.skills.router.ActiveSkill]); empty = none
+    active_skills: list[Any] = field(default_factory=list)
+
     # Metadata
     request_id: str = ""
     extra: dict[str, Any] = field(default_factory=dict)

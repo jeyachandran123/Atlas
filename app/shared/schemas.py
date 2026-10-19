@@ -277,6 +277,8 @@ class MessageOut(BaseModel):
     images: list[MessageImageOut] = []
     documents: list[MessageDocumentOut] = []
     created_at: datetime
+    # Skills / plugin tools used for this reply: [{"kind", "ref", "label"}]
+    capabilities: list[dict] = []
 
 
 class ChatRequest(BaseModel):
@@ -298,6 +300,8 @@ class ChatResponse(BaseModel):
     trace: Optional[dict] = None
     clarification_asked: bool = False
     rewritten_query_used: bool = False
+    # Skills that shaped this reply: [{"slug", "name"}]; empty when none
+    skills: list[dict] = Field(default_factory=list)
 
 
 class SearchRequest(BaseModel):

@@ -23,6 +23,7 @@ from app.document_platform.semantic.vector_store import (
     collection_name_for,
     get_vector_store,
 )
+from app.skills.chat import select_skills
 from app.workspace import titles as titles_mod
 from app.workspace.repository import WorkspaceRepository
 
@@ -396,9 +397,14 @@ class WorkspaceService:
         scope = await self._conversation_scope(ws, conversation_id)
         await self._db.commit()
 
+        # Skills shape the answer's style; grounding rules still win (no-op when disabled).
+        selection = await select_skills(
+            self._db, user_id=conv.user_id, org_id=conv.org_id, message=question,
+        )
+
         gateway = ConversationGateway(self._db)
         done_payload: dict | None = None
-        async for frame in gateway.ask_stream(conv, question, scope):
+        async for frame in gateway.ask_stream(conv, question, scope, skills=selection):
             if frame.startswith("event: done"):
                 for line in frame.split("\n"):
                     if line.startswith("data: "):

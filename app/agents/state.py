@@ -87,6 +87,9 @@ class AgentState(TypedDict):
     # ── Composed Prompt (set by intelligence engine or compose_prompt node) ───
     system_prompt: str
 
+    # ── Skills (selected by SkillRouter before the turn; [] = none) ──────────
+    active_skills: list[Any]
+
     # ── Memory & Retrieval Context ────────────────────────────────────────────
     code_context: list[SearchResult]
     session_messages: list[dict]
@@ -128,6 +131,7 @@ def initial_state(
     request_id: str,
     repo_id: Optional[str] = None,
     agent_mode: str = "auto",
+    active_skills: Optional[list[Any]] = None,
 ) -> AgentState:
     """Create a fresh AgentState with all required defaults."""
     return AgentState(
@@ -162,6 +166,7 @@ def initial_state(
         detected_ai_domain=False,
         # Composed prompt
         system_prompt="",
+        active_skills=list(active_skills or []),
         # Memory & retrieval
         code_context=[],
         session_messages=[],
