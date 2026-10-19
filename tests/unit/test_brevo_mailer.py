@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 
 import httpx
@@ -18,7 +17,7 @@ def mailer_with(handler) -> BrevoMailer:
 
 
 class TestSend:
-    def test_the_request_brevo_receives(self):
+    async def test_the_request_brevo_receives(self):
         seen = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -28,7 +27,7 @@ class TestSend:
             return httpx.Response(201, json={"messageId": "<abc@smtp-relay>"})
 
         message = signup_code("person@example.sg", "Tan Wei", "482913", 10)
-        message_id = asyncio.run(mailer_with(handler).send(message))
+        message_id = await mailer_with(handler).send(message)
 
         assert message_id == "<abc@smtp-relay>"
         assert seen["url"] == BREVO_SEND_URL and seen["key"] == "key-123"
@@ -37,20 +36,20 @@ class TestSend:
         assert body["to"] == [{"email": "person@example.sg", "name": "Tan"}]
         assert "482913" in body["subject"] and "482913" in body["textContent"]
 
-    def test_a_refusal_is_an_error_with_brevos_reason(self):
+    async def test_a_refusal_is_an_error_with_brevos_reason(self):
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(401, json={"code": "unauthorized", "message": "Key not found"})
 
         with pytest.raises(EmailSendError) as e:
-            asyncio.run(mailer_with(handler).send(signup_code("a@b.co", None, "111111", 10)))
+            await mailer_with(handler).send(signup_code("a@b.co", None, "111111", 10))
         assert "401" in str(e.value) and "Key not found" in str(e.value)
 
-    def test_an_unreachable_brevo_is_an_error(self):
+    async def test_an_unreachable_brevo_is_an_error(self):
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("no route")
 
         with pytest.raises(EmailSendError) as e:
-            asyncio.run(mailer_with(handler).send(signup_code("a@b.co", None, "111111", 10)))
+            await mailer_with(handler).send(signup_code("a@b.co", None, "111111", 10))
         assert "Could not reach Brevo" in str(e.value)
 
 
