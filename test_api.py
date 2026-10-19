@@ -129,125 +129,125 @@
 
 
 
-import os
-import requests
-from openai import OpenAI
+# import os
+# import requests
+# from openai import OpenAI
 
-# ============================================================
-# NVIDIA Nemotron 3 Ultra 550B A55B - General Reasoning Test
-# ============================================================
+# # ============================================================
+# # NVIDIA Nemotron 3 Ultra 550B A55B - General Reasoning Test
+# # ============================================================
 
 
-API_KEY = "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"
-if not API_KEY:
-    raise RuntimeError("NVIDIA_API_KEY environment variable is not set")
+# API_KEY = "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"
+# if not API_KEY:
+#     raise RuntimeError("NVIDIA_API_KEY environment variable is not set")
 
-client = OpenAI(
-    base_url="https://integrate.api.nvidia.com/v1",
-    api_key=API_KEY,
-)
+# client = OpenAI(
+#     base_url="https://integrate.api.nvidia.com/v1",
+#     api_key=API_KEY,
+# )
 
-prompt = """
-You are being tested as a general-purpose AI assistant.
+# prompt = """
+# You are being tested as a general-purpose AI assistant.
 
-Answer the following questions carefully:
+# Answer the following questions carefully:
 
-1. Explain what caused the Apollo 11 Moon landing to become possible,
-   including the major technological and scientific developments
-   that led to it.
+# 1. Explain what caused the Apollo 11 Moon landing to become possible,
+#    including the major technological and scientific developments
+#    that led to it.
 
-2. What happened during the Apollo 11 mission from launch to landing
-   and return to Earth? Give a concise chronological explanation.
+# 2. What happened during the Apollo 11 mission from launch to landing
+#    and return to Earth? Give a concise chronological explanation.
 
-3. Explain the difference between:
-   - a black hole's event horizon
-   - the singularity
-   - the accretion disk
+# 3. Explain the difference between:
+#    - a black hole's event horizon
+#    - the singularity
+#    - the accretion disk
 
-4. Now answer this reasoning question:
+# 4. Now answer this reasoning question:
 
-   If humanity discovered a planet 50 light-years away today and
-   observed that an intelligent civilization there destroyed itself
-   in a nuclear war, could that civilization still exist at the
-   present time from their own perspective?
+#    If humanity discovered a planet 50 light-years away today and
+#    observed that an intelligent civilization there destroyed itself
+#    in a nuclear war, could that civilization still exist at the
+#    present time from their own perspective?
 
-   Explain the answer using the finite speed of light.
+#    Explain the answer using the finite speed of light.
 
-5. Finally, clearly separate:
-   - facts you are highly confident about
-   - things that depend on assumptions
-   - information you cannot know without access to current/live data
+# 5. Finally, clearly separate:
+#    - facts you are highly confident about
+#    - things that depend on assumptions
+#    - information you cannot know without access to current/live data
 
-Do not use the internet.
-Do not pretend to have real-time information.
-Focus on accuracy and reasoning.
-"""
+# Do not use the internet.
+# Do not pretend to have real-time information.
+# Focus on accuracy and reasoning.
+# """
 
-print("=" * 70)
-print("NVIDIA NEMOTRON 3 ULTRA 550B A55B")
-print("GENERAL REASONING TEST")
-print("=" * 70)
+# print("=" * 70)
+# print("NVIDIA NEMOTRON 3 ULTRA 550B A55B")
+# print("GENERAL REASONING TEST")
+# print("=" * 70)
 
-completion = client.chat.completions.create(
-    model="nvidia/nemotron-3-ultra-550b-a55b",
+# completion = client.chat.completions.create(
+#     model="nvidia/nemotron-3-ultra-550b-a55b",
 
-    messages=[
-        {
-            "role": "user",
-            "content": prompt
-        }
-    ],
+#     messages=[
+#         {
+#             "role": "user",
+#             "content": prompt
+#         }
+#     ],
 
-    temperature=0.2,
-    top_p=0.95,
-    max_tokens=16384,
+#     temperature=0.2,
+#     top_p=0.95,
+#     max_tokens=16384,
 
-    extra_body={
-        "chat_template_kwargs": {
-            "enable_thinking": False
-        }
-    },
+#     extra_body={
+#         "chat_template_kwargs": {
+#             "enable_thinking": False
+#         }
+#     },
 
-    stream=True
-)
+#     stream=True
+# )
 
-print("\n===== MODEL REASONING =====\n")
+# print("\n===== MODEL REASONING =====\n")
 
-reasoning_started = False
-answer_started = False
+# reasoning_started = False
+# answer_started = False
 
-for chunk in completion:
+# for chunk in completion:
 
-    if not chunk.choices:
-        continue
+#     if not chunk.choices:
+#         continue
 
-    delta = chunk.choices[0].delta
+#     delta = chunk.choices[0].delta
 
-    # Print reasoning tokens
-    reasoning = getattr(delta, "reasoning_content", None)
+#     # Print reasoning tokens
+#     reasoning = getattr(delta, "reasoning_content", None)
 
-    if reasoning:
-        if not reasoning_started:
-            print("[Thinking]\n")
-            reasoning_started = True
+#     if reasoning:
+#         if not reasoning_started:
+#             print("[Thinking]\n")
+#             reasoning_started = True
 
-        print(reasoning, end="", flush=True)
+#         print(reasoning, end="", flush=True)
 
-    # Print final answer
-    if delta.content is not None:
+#     # Print final answer
+#     if delta.content is not None:
 
-        if not answer_started:
-            print("\n\n" + "=" * 70)
-            print("===== FINAL ANSWER =====")
-            print("=" * 70 + "\n")
+#         if not answer_started:
+#             print("\n\n" + "=" * 70)
+#             print("===== FINAL ANSWER =====")
+#             print("=" * 70 + "\n")
 
-            answer_started = True
+#             answer_started = True
 
-        print(delta.content, end="", flush=True)
+#         print(delta.content, end="", flush=True)
 
-print("\n\n" + "=" * 70)
-print("TEST COMPLETE")
-print("=" * 70)
+# print("\n\n" + "=" * 70)
+# print("TEST COMPLETE")
+# print("=" * 70)
 
 
 
@@ -419,67 +419,273 @@ print("=" * 70)
 # print("=" * 70)
 
 
-import os
-import time
+# import os
+# import time
+# from openai import OpenAI
+
+# API_KEY = os.getenv("NVIDIA_API_KEY")
+
+# if not API_KEY:
+#     raise RuntimeError("NVIDIA_API_KEY environment variable is not set")
+
+# client = OpenAI(
+#     base_url="https://integrate.api.nvidia.com/v1",
+#     api_key=API_KEY,
+# )
+
+# prompt = """
+# Explain in simple terms:
+
+# Why is the sky blue?
+
+# Give the answer in 5-8 sentences.
+# Do not overthink the answer.
+# """
+
+# print("Sending request...")
+# start = time.time()
+
+# completion = client.chat.completions.create(
+#     model="deepseek-ai/deepseek-v4-pro-0813",
+
+#     messages=[
+#         {
+#             "role": "user",
+#             "content": prompt
+#         }
+#     ],
+
+#     temperature=0.2,
+#     top_p=0.95,
+
+#     # VERY IMPORTANT
+#     max_tokens=512,
+
+#     seed=42,
+
+#     extra_body={
+#         "chat_template_kwargs": {
+#             "thinking": False
+#         }
+#     },
+
+#     stream=False,
+# )
+
+# elapsed = time.time() - start
+
+# print("\n===== RESPONSE =====\n")
+# print(completion.choices[0].message.content)
+
+# print("\n===== PERFORMANCE =====")
+# print(f"Time: {elapsed:.2f} seconds")
+
+# if completion.usage:
+#     print(f"Input tokens:  {completion.usage.prompt_tokens}")
+#     print(f"Output tokens: {completion.usage.completion_tokens}")
+
+
+import base64
+import json
 from openai import OpenAI
 
-API_KEY = os.getenv("NVIDIA_API_KEY")
+# ============================================================
+# CONFIG
+# ============================================================
+
+API_KEY = "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"
+
+MODEL = "deepseek-ai/deepseek-v4.1-flash"
+
+LOCAL_IMAGE = r"C:\Users\Jayachandran\ProjectsAndDocs\SEA  INVOICE SUBMISSION  SEPTEMBER  1ST BATCH-2 (1).pdf"
+
+# ============================================================
+# VALIDATION
+# ============================================================
 
 if not API_KEY:
-    raise RuntimeError("NVIDIA_API_KEY environment variable is not set")
+    raise RuntimeError("Please put your NVIDIA API key in API_KEY")
+
+# ============================================================
+# IMAGE -> BASE64 DATA URL
+# ============================================================
+
+def image_to_data_url(path: str) -> str:
+    with open(path, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode("utf-8")
+
+    return f"data:image/jpeg;base64,{encoded}"
+
+
+image_data_url = image_to_data_url(LOCAL_IMAGE)
+
+# ============================================================
+# NVIDIA CLIENT
+# ============================================================
 
 client = OpenAI(
     base_url="https://integrate.api.nvidia.com/v1",
     api_key=API_KEY,
 )
 
-prompt = """
-Explain in simple terms:
+# ============================================================
+# INVOICE EXTRACTION PROMPT
+# ============================================================
 
-Why is the sky blue?
+SYSTEM_PROMPT = """
+You are a precise document data extraction engine. You read invoices and
+return structured JSON.
 
-Give the answer in 5-8 sentences.
-Do not overthink the answer.
+Rules you must follow exactly:
+
+1. Return a single JSON object and nothing else — no prose, no markdown
+   fences, no explanation before or after.
+
+2. Copy values from the document. Never infer, never estimate, never
+   complete a value from what an invoice usually says.
+
+3. Use null for anything the document does not state. A null is a correct
+   answer; a plausible guess is not.
+
+4. Numbers must be JSON numbers with no currency symbols and no thousands
+   separators. Keep the decimals exactly as printed.
+
+5. Dates must be YYYY-MM-DD. If a date is ambiguous, copy it as printed
+   rather than guessing the order of day and month.
+
+6. Currency must be the ISO 4217 code (SGD, USD, EUR, ...) when the
+   document makes it unambiguous; otherwise null.
+
+7. Include every line item you can read, in the order they appear.
+
+8. If the document is not an invoice, return the same JSON object with
+   document_type set to what it actually is and every other field null.
 """
 
-print("Sending request...")
-start = time.time()
+USER_PROMPT = """
+Extract the invoice data from this document.
 
-completion = client.chat.completions.create(
-    model="deepseek-ai/deepseek-v4-pro-0813",
+Return JSON with exactly this shape:
 
+{
+  "document_type": "invoice",
+  "invoice_number": null,
+  "purchase_order_number": null,
+  "invoice_date": null,
+  "due_date": null,
+  "currency": null,
+
+  "supplier": {
+    "name": null,
+    "address": null,
+    "tax_id": null,
+    "registration_number": null,
+    "email": null,
+    "phone": null
+  },
+
+  "customer": {
+    "name": null,
+    "address": null,
+    "tax_id": null,
+    "registration_number": null,
+    "email": null,
+    "phone": null
+  },
+
+  "line_items": [
+    {
+      "line_number": null,
+      "description": null,
+      "product_code": null,
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "discount": null,
+      "tax_rate": null,
+      "tax_amount": null,
+      "amount": null
+    }
+  ],
+
+  "totals": {
+    "subtotal": null,
+    "discount_total": null,
+    "tax_total": null,
+    "shipping_total": null,
+    "grand_total": null,
+    "amount_paid": null,
+    "amount_due": null
+  },
+
+  "payment_terms": null,
+  "payment_reference": null,
+  "bank_details": null,
+  "notes": null
+}
+
+Return only the JSON object.
+"""
+
+# ============================================================
+# REQUEST
+# ============================================================
+
+print("Sending invoice to NVIDIA...")
+print(f"Model: {MODEL}")
+print(f"Image: {LOCAL_IMAGE}")
+
+response = client.chat.completions.create(
+    model=MODEL,
     messages=[
         {
+            "role": "system",
+            "content": SYSTEM_PROMPT,
+        },
+        {
             "role": "user",
-            "content": prompt
-        }
+            "content": [
+                {
+                    "type": "text",
+                    "text": USER_PROMPT,
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_data_url,
+                    },
+                },
+            ],
+        },
     ],
-
-    temperature=0.2,
-    top_p=0.95,
-
-    # VERY IMPORTANT
-    max_tokens=512,
-
-    seed=42,
-
-    extra_body={
-        "chat_template_kwargs": {
-            "thinking": False
-        }
-    },
-
-    stream=False,
+    max_tokens=4096,
+    temperature=0.0,
 )
 
-elapsed = time.time() - start
+# ============================================================
+# RESULT
+# ============================================================
 
-print("\n===== RESPONSE =====\n")
-print(completion.choices[0].message.content)
+content = response.choices[0].message.content
 
-print("\n===== PERFORMANCE =====")
-print(f"Time: {elapsed:.2f} seconds")
+print("\n==================================================")
+print("RAW MODEL RESPONSE")
+print("==================================================\n")
 
-if completion.usage:
-    print(f"Input tokens:  {completion.usage.prompt_tokens}")
-    print(f"Output tokens: {completion.usage.completion_tokens}")
+print(content)
+
+# ============================================================
+# PARSE JSON
+# ============================================================
+
+print("\n==================================================")
+print("PARSED JSON")
+print("==================================================\n")
+
+try:
+    invoice_json = json.loads(content)
+
+    print(json.dumps(invoice_json, indent=2, ensure_ascii=False))
+
+except json.JSONDecodeError:
+    print("WARNING: Model did not return valid JSON.")
