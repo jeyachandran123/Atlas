@@ -33,6 +33,12 @@ def no_documents(monkeypatch) -> None:
     monkeypatch.setattr("app.api.v1.chat.router._ensure_document_context", _none)
 
 
+@pytest.fixture(autouse=True)
+def brain_off(monkeypatch) -> None:
+    """The orchestrator path, whatever COGNITIVE_BRAIN_ENABLED is in .env."""
+    monkeypatch.setattr("app.cognitive_integration.cognitive_brain_enabled", lambda: False)
+
+
 async def stream(
     client: AsyncClient, headers: dict, message: str, mode: str = "auto"
 ) -> list[dict]:
@@ -127,6 +133,75 @@ async def test_selection_failure_never_breaks_chat(
     monkeypatch.setattr("app.skills.service.SkillService.select", boom)
     events = await stream(sk_client, auth("dev"), "/review-agent check this")
     assert events[-1]["type"] == "done" and "skills" not in events[-1]
+
+
+# ── /chat/stream through the Cognitive OS ────────────────────────────────────
+
+
+@pytest.fixture
+def brain(monkeypatch) -> dict[str, Any]:
+    """Brain on, with deliberation and the streaming client faked."""
+    from app.cognitive_integration import Deliberation
+
+    seen: dict[str, Any] = {"escalate": False}
+
+    async def deliberate(message, **kw):  # noqa: ANN001
+        seen["deliberated"] = message
+        held = seen["escalate"]
+        return Deliberation(
+            authorized=not held, escalated=held, decision="hold" if held else "answer",
+            intent="q", confidence=0.9, system_prompt="BRAIN RULES",
+            user_prompt=message, hold_message="Held for review." if held else None,
+        )
+
+    class FakeClient:
+        async def chat_stream(self, prompt, **kw):  # noqa: ANN001
+            seen["system_prompt"] = kw["system_prompt"]
+            for chunk in ["BRAIN ", "ANSWER"]:
+                yield chunk
+
+    async def no_web(*a, **k):  # noqa: ANN002, ANN003
+        return None
+
+    monkeypatch.setattr("app.cognitive_integration.cognitive_brain_enabled", lambda: True)
+    monkeypatch.setattr("app.cognitive_integration.service.deliberate_turn", deliberate)
+    monkeypatch.setattr("app.ollama_client.get_ollama_client", lambda: FakeClient())
+    monkeypatch.setattr("app.api.v1.chat.router._web_events", no_web)
+    return seen
+
+
+async def test_brain_stream_uses_skills(
+    sk_client: AsyncClient, sk_session, auth, brain
+) -> None:
+    await seed_builtin_skills(sk_session)
+    events = await stream(sk_client, auth("dev"), "/review-agent check def f(): return 1")
+
+    assert events[0] == {
+        "type": "capabilities",
+        "skills": [{"slug": "review-agent", "name": "Review Agent"}],
+    }
+    done = events[-1]
+    assert done["type"] == "done" and done["brain"] is True
+    assert done["skills"] == [{"slug": "review-agent", "name": "Review Agent"}]
+    assert brain["deliberated"] == "check def f(): return 1"  # token stripped
+    system = brain["system_prompt"]
+    assert system.startswith("BRAIN RULES")  # the brain's rules stay above skills
+    assert "### Skill: Review Agent (/review-agent)" in system
+
+    rows = (await sk_session.execute(select(MessageCapability))).scalars().all()
+    assert [(r.message_id, r.ref) for r in rows] == [(done["message_id"], "review-agent")]
+
+
+async def test_brain_held_turn_reports_no_skills(
+    sk_client: AsyncClient, sk_session, auth, brain
+) -> None:
+    await seed_builtin_skills(sk_session)
+    brain["escalate"] = True
+    events = await stream(sk_client, auth("dev"), "/review-agent check this")
+
+    assert "capabilities" not in [e["type"] for e in events]
+    assert events[-1]["escalated"] is True and "skills" not in events[-1]
+    assert (await sk_session.execute(select(MessageCapability))).scalars().all() == []
 
 
 # ── /chat/message ────────────────────────────────────────────────────────────

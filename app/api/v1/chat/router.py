@@ -568,6 +568,7 @@ def _stream_cognitive_response(
     *, db, conv_repo, conv_id, user_id, message, request_id, delib,
     agent_mode: str = "auto", thinking: Optional[bool] = None,
     web_events: Optional[AsyncGenerator[dict, None]] = None,
+    selection: Optional[SkillSelection] = None,
 ) -> StreamingResponse:
     """Stream a brain-governed reply token-by-token (TRUE streaming), then persist it.
 
@@ -575,9 +576,20 @@ def _stream_cognitive_response(
     escalated, we stream the short hold message; otherwise we stream the answer straight
     from Ollama's ``chat_stream`` so tokens appear progressively (not all at once). The
     'done' frame carries brain metadata additively — the existing frontend is unchanged.
+
+    Active skills are appended to the brain's system prompt, below its own rules.
+    A held turn never reaches the model, so it reports no skills.
     """
     import json
     import time
+
+    if selection is None or delib.escalated:
+        selection = SkillSelection(message=message)
+    system_prompt = delib.system_prompt
+    if selection.skills:
+        from app.skills.prompt import render_skills_section
+
+        system_prompt += "\n\n" + render_skills_section(selection.skills)
 
     async def event_generator() -> AsyncGenerator[str, None]:
         start = time.monotonic()
@@ -586,6 +598,8 @@ def _stream_cognitive_response(
         web_images: list = []
         web_query = ""
         try:
+            if capabilities_frame := capabilities_sse(selection):
+                yield capabilities_frame
             history = delib.history
             # ── The web, when this turn needs it ─────────────────────────────
             # The search runs here rather than before the response starts, so
@@ -619,7 +633,7 @@ def _stream_cognitive_response(
 
                 client = get_ollama_client()
                 async for chunk in client.chat_stream(
-                    delib.user_prompt, system_prompt=delib.system_prompt, model=delib.model,
+                    delib.user_prompt, system_prompt=system_prompt, model=delib.model,
                     profile=profile_for_mode(agent_mode), thinking=thinking,
                     include_reasoning=True, history=history,
                 ):
@@ -647,6 +661,7 @@ def _stream_cognitive_response(
                     db, assistant_msg.id, sources, images=web_images, query=web_query,
                 )
             await db.commit()
+            await record_skill_usage(db, selection.refs, message_id=assistant_msg.id)
             await push_session_message(user_id, conv_id, "user", message)
             await push_session_message(user_id, conv_id, "assistant", full)
             done = {
@@ -655,6 +670,7 @@ def _stream_cognitive_response(
                 # Brain metadata (additive; classic clients ignore unknown fields).
                 "brain": True, "decision": delib.decision, "authorized": delib.authorized,
                 "escalated": delib.escalated, "confidence": delib.confidence, "intent": delib.intent,
+                **done_extras(selection),
             }
             yield f"data: {json.dumps(done)}\n\n"
         except Exception as e:  # noqa: BLE001
@@ -897,15 +913,17 @@ async def stream_message(
     if cognitive_brain_enabled():
         from app.cognitive_integration.service import deliberate_turn
 
+        # The brain sees the message with any /skill token stripped, as the
+        # orchestrator path does; the skills themselves join its system prompt.
         delib = await deliberate_turn(
-            req.message, conversation_id=conv.id, user_id=current_user.id,
+            selection.message, conversation_id=conv.id, user_id=current_user.id,
             org_id=current_user.org_id, history=session_messages,
         )
         if delib is not None:
             return _stream_cognitive_response(
                 db=db, conv_repo=conv_repo, conv_id=conv.id, user_id=current_user.id,
                 message=req.message, request_id=request_id, delib=delib,
-                agent_mode=req.agent_mode, thinking=req.thinking,
+                agent_mode=req.agent_mode, thinking=req.thinking, selection=selection,
                 web_events=await _web_events(req, session_messages, db, conv.id),
             )
 
