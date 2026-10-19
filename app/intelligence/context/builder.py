@@ -89,6 +89,9 @@ class UserContextBuilder(AbstractUserContextBuilder):
 
             # Tool results (populated after execution)
             tool_results=list(state.get("tool_results", [])),
+
+            # Skills selected for this turn (empty → no prompt section)
+            active_skills=list(state.get("active_skills") or []),
         )
 
 

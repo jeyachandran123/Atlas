@@ -12,6 +12,7 @@ Sections assembled (only those that add value are included):
   5. Conversation continuity note
   6. Policy warnings
   7. Domain knowledge modules (from registry, only when relevant)
+  7b. Active skills (SKILL.md instructions chosen by the SkillRouter)
   8. Long-term memory
   9. Code context
   10. Tool results
@@ -238,6 +239,11 @@ class DynamicPromptComposer(AbstractPromptComposer):
         for key in domain_keys:
             fragment = _get_domain_registry().get(key, "")
             add(f"domain:{key}", fragment)
+
+        # 7b. Active skills (only when the SkillRouter selected any)
+        if context.active_skills:
+            from app.skills.prompt import render_skills_section
+            add("skills", render_skills_section(context.active_skills))
 
         # 8. Long-term memory
         add("memory", _build_memory_section(context))

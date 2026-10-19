@@ -11,7 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr, field_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -343,6 +343,21 @@ class Settings(BaseSettings):
     # prompt carries column names and types alone; the rows themselves are
     # never sent either way - they are read inside the offline container.
     dip_codegen_send_samples: bool = True
+
+    # ── Skills (Customize → Skills) ──────────────────────────────────────────────
+    # None = default by environment: on in development/test, off in production
+    # until verified. Set ENABLE_SKILLS explicitly to override.
+    enable_skills: bool | None = None
+    skill_match_threshold: float = 1.0      # min auto-selection score
+    skill_prompt_token_budget: int = 3000   # ~4 chars/token across all active skills
+    skill_max_active: int = 3
+    github_token: SecretStr = SecretStr("")  # optional — skill installer rate limits
+
+    @model_validator(mode="after")
+    def _default_feature_flags(self) -> Settings:
+        if self.enable_skills is None:
+            self.enable_skills = self.app_env != "production"
+        return self
 
     @field_validator("ollama_host", "ollama_base_url", mode="before")
     @classmethod

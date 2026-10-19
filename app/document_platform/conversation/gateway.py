@@ -46,6 +46,7 @@ from app.document_platform.conversation.retrieval import RetrievalEngine, Retrie
 from app.document_platform.conversation.streaming import StreamingEngine
 from app.document_platform.conversation.validator import ResponseValidator
 from app.document_platform.semantic.repository import SemanticRepository
+from app.skills.router import SkillSelection
 
 
 _UNKNOWN_MARKER = re.compile(r"\s*\[S\d+\]")
@@ -189,13 +190,19 @@ class ConversationGateway:
     async def ask_stream(
         self, conversation, question: str,
         document_id: str | list[str] | None = None,
+        skills: Optional[SkillSelection] = None,
     ) -> AsyncIterator[str]:
+        """`skills` (optional) — SkillRouter output: its stripped message is
+        what retrieval and the prompt see, its instructions are appended to the
+        system prompt. None / no skills = the exact pre-skills behaviour."""
+        use_skills = bool(skills and skills.skills)
         turn = await self._repo.create_turn(
             conversation, question, _scalar_doc(document_id))
         ctx = ConversationContext(
             conversation_id=conversation.id, turn_id=turn.id,
             user_id=conversation.user_id, org_id=conversation.org_id,
-            question=question, correlation_id=turn.correlation_id,
+            question=skills.message if (skills and use_skills) else question,
+            correlation_id=turn.correlation_id,
             document_id=document_id,
         )
         collector = ConversationMetricsCollector()
@@ -238,6 +245,15 @@ class ConversationGateway:
                 return
 
             prompt, bundle = prepared
+            skill_extras: dict[str, Any] = {}
+            if skills and use_skills:
+                from app.skills.prompt import render_skills_section
+                prompt = StructuredPrompt(
+                    system=prompt.system + "\n\n" + render_skills_section(skills.skills),
+                    user=prompt.user, strategy=prompt.strategy,
+                )
+                skill_extras = {"skills": skills.refs}
+                yield fmt("capabilities", skill_extras)
             yield fmt("stage", {"stage": "generating_answer",
                                 "detail": {"model": self._reasoning.provider.model_name}})
             await self._publish(ctx, ConversationEventType.RESPONSE_STREAM_STARTED)
@@ -251,6 +267,9 @@ class ConversationGateway:
             # nothing is lost by deciding first and showing second.
             result = await self._answer_and_validate(ctx, prompt, bundle, collector)
             await self._persist(turn, ctx, result, collector)
+            if skills and use_skills:
+                from app.skills.chat import record_skill_usage
+                await record_skill_usage(self._db, skills.refs, turn_id=turn.id)
 
             # Exactly what was saved, paced out so the surface still fills in.
             shown = result.answer or ""
@@ -262,7 +281,7 @@ class ConversationGateway:
                                     "grounding_score": result.grounding_score})
             yield fmt("done", {"status": result.status,
                                "refusal_reason": result.refusal_reason,
-                               "metrics": result.metrics})
+                               "metrics": result.metrics, **skill_extras})
         except Exception as e:
             logger.exception(f"Streaming turn {turn.id} crashed: {e}")
             result = self._failure(ctx, str(e), collector)

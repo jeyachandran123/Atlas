@@ -51,6 +51,14 @@ from app.documents.service import get_document_service
 from app.documents.schemas import DocumentAttachment
 from app.documents.extractor import DocumentExtractionError, is_supported_document
 from app.documents.storage import DocumentStorageError, get_document_storage
+from app.skills.chat import (
+    capabilities_sse,
+    done_extras,
+    record_skill_usage,
+    select_skills,
+    skills_enabled,
+)
+from app.skills.router import SkillSelection
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -309,7 +317,19 @@ async def get_messages(
     if conv.user_id != current_user.id:
         raise HTTPException(403, "Access denied")
 
-    return [_message_to_out(m) for m in conv.messages]
+    out = [_message_to_out(m) for m in conv.messages]
+    if skills_enabled():
+        try:
+            from app.skills.repository import SkillRepository
+            caps = await SkillRepository(db).capabilities_for_messages([m.id for m in out])
+            for m in out:
+                m.capabilities = [
+                    {"kind": c.kind, "ref": c.ref, "label": c.label} for c in caps.get(m.id, [])
+                ]
+        except Exception as e:
+            from loguru import logger
+            logger.warning(f"Loading message capabilities failed (non-blocking): {e}")
+    return out
 
 
 @router.post("/message", response_model=ChatResponse)
@@ -350,9 +370,15 @@ async def send_message(
     # Load session memory from Redis
     session_messages = await get_session_messages(current_user.id, conv.id)
 
+    # Skills: explicit /slug or automatic selection (no-op when disabled)
+    selection = await select_skills(
+        db, user_id=current_user.id, org_id=current_user.org_id,
+        message=req.message, agent_mode=req.agent_mode, history=session_messages,
+    )
+
     # Build initial agent state
     state = initial_state(
-        user_message=req.message,
+        user_message=selection.message,
         conversation_id=conv.id,
         user_id=current_user.id,
         org_id=current_user.org_id,
@@ -360,6 +386,7 @@ async def send_message(
         repo_id=req.repo_id or conv.repo_id,
         agent_mode=req.agent_mode,
         thinking=req.thinking,
+        active_skills=selection.skills,
     )
     state["session_messages"] = session_messages
 
@@ -373,7 +400,7 @@ async def send_message(
     latency_ms = int((time.monotonic() - start) * 1000)
     clarification_asked = result_state.get("should_clarify", False)
     rewritten_query_used = bool(
-        result_state.get("rewritten_query", "") != req.message
+        result_state.get("rewritten_query", "") != selection.message
     )
 
     # Build trace dict for debug mode
@@ -410,6 +437,8 @@ async def send_message(
     await push_session_message(current_user.id, conv.id, "user", req.message)
     await push_session_message(current_user.id, conv.id, "assistant", final_response)
 
+    await record_skill_usage(db, selection.refs, message_id=assistant_msg.id)
+
     return ChatResponse(
         conversation_id=conv.id,
         message_id=assistant_msg.id,
@@ -421,6 +450,7 @@ async def send_message(
         trace=trace_data,
         clarification_asked=clarification_asked,
         rewritten_query_used=rewritten_query_used,
+        skills=selection.refs,
     )
 
 
@@ -436,6 +466,7 @@ async def _stream_document_response(
     agent_mode: str,
     request_id: str,
     session_messages: list[dict],
+    selection: Optional[SkillSelection] = None,
 ) -> StreamingResponse:
     """
     Stream a document-grounded answer via SSE.
@@ -447,6 +478,9 @@ async def _stream_document_response(
     import json
 
     doc_service = get_document_service()
+    raw_message = message
+    selection = selection or SkillSelection(message=message)
+    message = selection.message
 
     # Reuse the intelligence engine for the base system prompt (non-blocking)
     system_prompt = ""
@@ -459,6 +493,7 @@ async def _stream_document_response(
             request_id=request_id,
             repo_id=repo_id,
             agent_mode=agent_mode,
+            active_skills=selection.skills,
         )
         state["session_messages"] = session_messages
         from app.intelligence.engine import get_engine
@@ -473,6 +508,8 @@ async def _stream_document_response(
         full_response = ""
         start = time.monotonic()
         try:
+            if capabilities_frame := capabilities_sse(selection):
+                yield capabilities_frame
             async for chunk in doc_service.chat_stream(
                 message=message,
                 conversation_id=conv_id,
@@ -494,11 +531,12 @@ async def _stream_document_response(
                 tokens_used=tokens_used, latency_ms=latency_ms,
             )
             await db.commit()
+            await record_skill_usage(db, selection.refs, message_id=assistant_msg.id)
 
-            await push_session_message(user_id, conv_id, "user", message)
+            await push_session_message(user_id, conv_id, "user", raw_message)
             await push_session_message(user_id, conv_id, "assistant", full_response)
 
-            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv_id, 'message_id': assistant_msg.id, 'tokens_used': tokens_used, 'latency_ms': latency_ms})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv_id, 'message_id': assistant_msg.id, 'tokens_used': tokens_used, 'latency_ms': latency_ms, **done_extras(selection)})}\n\n"
 
         except Exception as e:
             from loguru import logger
@@ -824,6 +862,12 @@ async def stream_message(
     if file_response is not None:
         return file_response
 
+    # Skills: explicit /slug or automatic selection (no-op when disabled)
+    selection = await select_skills(
+        db, user_id=current_user.id, org_id=current_user.org_id,
+        message=req.message, agent_mode=req.agent_mode, history=session_messages,
+    )
+
     # ── Document follow-up routing ────────────────────────────────────────────
     # If this conversation has uploaded documents (PDF/Word/text), answer with
     # the document pipeline so questions about the files keep working across
@@ -841,6 +885,7 @@ async def stream_message(
             agent_mode=req.agent_mode,
             request_id=request_id,
             session_messages=session_messages,
+            selection=selection,
         )
 
     # ── Cognitive Operating System routing (flag-gated, brain-first with fallback) ──
@@ -865,7 +910,7 @@ async def stream_message(
             )
 
     state = initial_state(
-        user_message=req.message,
+        user_message=selection.message,
         conversation_id=conv.id,
         user_id=current_user.id,
         org_id=current_user.org_id,
@@ -873,6 +918,7 @@ async def stream_message(
         repo_id=req.repo_id or conv.repo_id,
         agent_mode=req.agent_mode,
         thinking=req.thinking,
+        active_skills=selection.skills,
     )
     state["session_messages"] = session_messages
 
@@ -886,6 +932,8 @@ async def stream_message(
         full_response = ""
         start = time.monotonic()
         try:
+            if capabilities_frame := capabilities_sse(selection):
+                yield capabilities_frame
             async for chunk in orch.stream(state):
                 if not chunk:
                     continue
@@ -911,11 +959,12 @@ async def stream_message(
                 latency_ms=latency_ms,
             )
             await db.commit()
+            await record_skill_usage(db, selection.refs, message_id=assistant_msg.id)
 
             await push_session_message(user_id, conv_id, "user", req.message)
             await push_session_message(user_id, conv_id, "assistant", full_response)
 
-            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv_id, 'message_id': assistant_msg.id, 'tokens_used': tokens_used, 'latency_ms': latency_ms})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv_id, 'message_id': assistant_msg.id, 'tokens_used': tokens_used, 'latency_ms': latency_ms, **done_extras(selection)})}\n\n"
 
         except Exception as e:
             from loguru import logger
@@ -1098,10 +1147,16 @@ async def stream_vision_message(
     use_vision = vision_service.should_use_vision(has_new_images, conv.id)
     has_docs = bool(stored_docs) or await _ensure_document_context(db, conv.id)
 
+    # Skills apply to the text part of every branch below (no-op when disabled)
+    session_messages = await get_session_messages(current_user.id, conv.id)
+    selection = await select_skills(
+        db, user_id=current_user.id, org_id=current_user.org_id,
+        message=message, agent_mode=agent_mode, history=session_messages,
+    )
+
     if not use_vision:
         # Documents present (new or from earlier turns) → document Q&A pipeline
         if has_docs:
-            session_messages = await get_session_messages(current_user.id, conv.id)
             return await _stream_document_response(
                 request=request,
                 db=db,
@@ -1114,19 +1169,20 @@ async def stream_vision_message(
                 agent_mode=agent_mode,
                 request_id=request_id,
                 session_messages=session_messages,
+                selection=selection,
             )
 
         # No images at all — delegate to standard text pipeline
         # Build a ChatRequest and reuse the standard stream logic
-        session_messages = await get_session_messages(current_user.id, conv.id)
         state = initial_state(
-            user_message=message,
+            user_message=selection.message,
             conversation_id=conv.id,
             user_id=current_user.id,
             org_id=current_user.org_id,
             request_id=request_id,
             repo_id=repo_id or conv.repo_id,
             agent_mode=agent_mode,
+            active_skills=selection.skills,
         )
         state["session_messages"] = session_messages
         orch = request.app.state.orchestrator
@@ -1138,6 +1194,8 @@ async def stream_vision_message(
             full_response = ""
             start = time.monotonic()
             try:
+                if capabilities_frame := capabilities_sse(selection):
+                    yield capabilities_frame
                 async for chunk in orch.stream(state):
                     if not chunk:
                         continue
@@ -1152,9 +1210,10 @@ async def stream_vision_message(
                     tokens_used=tokens_used, latency_ms=latency_ms,
                 )
                 await db.commit()
+                await record_skill_usage(db, selection.refs, message_id=assistant_msg.id)
                 await push_session_message(user_id, conv_id, "user", message)
                 await push_session_message(user_id, conv_id, "assistant", full_response)
-                yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv_id, 'message_id': assistant_msg.id, 'tokens_used': tokens_used, 'latency_ms': latency_ms})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv_id, 'message_id': assistant_msg.id, 'tokens_used': tokens_used, 'latency_ms': latency_ms, **done_extras(selection)})}\n\n"
             except Exception as e:
                 from loguru import logger
                 logger.exception(f"Vision text fallback stream error: {e}")
@@ -1167,19 +1226,18 @@ async def stream_vision_message(
         )
 
     # ── Vision pipeline ───────────────────────────────────────────────────────
-    session_messages = await get_session_messages(current_user.id, conv.id)
-
     # Run intelligence engine for system prompt (reuse existing pipeline)
     system_prompt = ""
     try:
         state = initial_state(
-            user_message=message,
+            user_message=selection.message,
             conversation_id=conv.id,
             user_id=current_user.id,
             org_id=current_user.org_id,
             request_id=request_id,
             repo_id=repo_id or conv.repo_id,
             agent_mode=agent_mode,
+            active_skills=selection.skills,
         )
         state["session_messages"] = session_messages
         from app.intelligence.engine import get_engine
@@ -1210,8 +1268,10 @@ async def stream_vision_message(
         full_response = ""
         start = time.monotonic()
         try:
+            if capabilities_frame := capabilities_sse(selection):
+                yield capabilities_frame
             async for chunk in vision_service.chat_stream(
-                message=message,
+                message=selection.message,
                 conversation_id=conv_id,
                 image_bytes=image_bytes_list if has_new_images else None,
                 system_prompt=system_prompt,
@@ -1231,11 +1291,12 @@ async def stream_vision_message(
                 tokens_used=tokens_used, latency_ms=latency_ms,
             )
             await db.commit()
+            await record_skill_usage(db, selection.refs, message_id=assistant_msg.id)
 
             await push_session_message(user_id, conv_id, "user", message)
             await push_session_message(user_id, conv_id, "assistant", full_response)
 
-            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv_id, 'message_id': assistant_msg.id, 'tokens_used': tokens_used, 'latency_ms': latency_ms})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv_id, 'message_id': assistant_msg.id, 'tokens_used': tokens_used, 'latency_ms': latency_ms, **done_extras(selection)})}\n\n"
 
         except Exception as e:
             from loguru import logger
