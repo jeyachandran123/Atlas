@@ -39,6 +39,7 @@ from app.api.v1.indexing.router import router as indexing_router
 from app.api.v1.repositories.router import router as repos_router
 from app.api.v1.llm.router import router as llm_router
 from app.api.v1.cognitive_chat.router import router as cognitive_chat_router  # additive: Cognitive OS integration
+from app.api.v1.plugins.router import router as plugins_router
 from app.api.v1.skills.router import router as skills_router
 from app.config import get_settings
 from app.database import close_engine, get_engine
@@ -280,6 +281,7 @@ def create_app() -> FastAPI:
     app.include_router(llm_router, prefix=API_PREFIX)
     app.include_router(cognitive_chat_router, prefix=API_PREFIX)  # additive: feature-flagged Cognitive OS route
     app.include_router(skills_router, prefix=API_PREFIX)
+    app.include_router(plugins_router, prefix=API_PREFIX)
 
     # Root redirect
     @app.get("/", include_in_schema=False)

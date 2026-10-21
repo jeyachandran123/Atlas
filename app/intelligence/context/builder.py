@@ -92,6 +92,9 @@ class UserContextBuilder(AbstractUserContextBuilder):
 
             # Skills selected for this turn (empty → no prompt section)
             active_skills=list(state.get("active_skills") or []),
+
+            # Connected-account data fetched for this turn ('' → no prompt section)
+            plugin_context=str(state.get("plugin_context") or ""),
         )
 
 

@@ -1665,3 +1665,31 @@ class MessageCapability(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )
+
+
+class PluginConnection(Base):
+    """A user's connection to an external service (github | gmail | drive).
+
+    The credential is stored encrypted (app.plugins.crypto): a personal access
+    token for GitHub, an OAuth refresh token for Google. It is never returned by
+    the API and never sent to a model. `enabled` lets the user pause a plugin
+    without disconnecting it.
+    """
+
+    __tablename__ = "plugin_connections"
+    __table_args__ = (UniqueConstraint("user_id", "plugin", name="uq_plugin_connections_user_plugin"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    plugin: Mapped[str] = mapped_column(String(32), nullable=False)
+    account: Mapped[str] = mapped_column(String(255), nullable=False, default="")  # login / email
+    scopes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    secret_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
+    )

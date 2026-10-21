@@ -188,6 +188,9 @@ class IntelligenceContext:
     # Skills selected for this turn (list[app.skills.router.ActiveSkill]); empty = none
     active_skills: list[Any] = field(default_factory=list)
 
+    # Read-only data from the user's connected accounts, rendered; '' = none
+    plugin_context: str = ""
+
     # Metadata
     request_id: str = ""
     extra: dict[str, Any] = field(default_factory=dict)

@@ -58,6 +58,14 @@ from app.skills.chat import (
     select_skills,
     skills_enabled,
 )
+from app.plugins.chat import (
+    capabilities_sse as plugin_capabilities_sse,
+    done_extras as plugin_done_extras,
+    gather_plugin_context,
+    prompt_section as plugin_prompt_section,
+    record_plugin_usage,
+)
+from app.plugins.service import PluginContext
 from app.skills.router import SkillSelection
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
@@ -376,6 +384,9 @@ async def send_message(
         message=req.message, agent_mode=req.agent_mode, history=session_messages,
     )
 
+    # Plugins: data from connected accounts, when the message asks for it
+    plugin_ctx = await gather_plugin_context(db, user_id=current_user.id, message=selection.message)
+
     # Build initial agent state
     state = initial_state(
         user_message=selection.message,
@@ -387,6 +398,7 @@ async def send_message(
         agent_mode=req.agent_mode,
         thinking=req.thinking,
         active_skills=selection.skills,
+        plugin_context=plugin_prompt_section(plugin_ctx),
     )
     state["session_messages"] = session_messages
 
@@ -438,6 +450,7 @@ async def send_message(
     await push_session_message(current_user.id, conv.id, "assistant", final_response)
 
     await record_skill_usage(db, selection.refs, message_id=assistant_msg.id)
+    await record_plugin_usage(db, plugin_ctx.refs, message_id=assistant_msg.id)
 
     return ChatResponse(
         conversation_id=conv.id,
@@ -569,6 +582,7 @@ def _stream_cognitive_response(
     agent_mode: str = "auto", thinking: Optional[bool] = None,
     web_events: Optional[AsyncGenerator[dict, None]] = None,
     selection: Optional[SkillSelection] = None,
+    plugin_message: Optional[str] = None,
 ) -> StreamingResponse:
     """Stream a brain-governed reply token-by-token (TRUE streaming), then persist it.
 
@@ -579,6 +593,10 @@ def _stream_cognitive_response(
 
     Active skills are appended to the brain's system prompt, below its own rules.
     A held turn never reaches the model, so it reports no skills.
+
+    `plugin_message` (the user's message) asks for connected-account data, if any is
+    wanted, fetched inside the stream so its progress isn't a blank screen. It is
+    appended to the system prompt as read-only data, below every rule.
     """
     import json
     import time
@@ -600,6 +618,14 @@ def _stream_cognitive_response(
         try:
             if capabilities_frame := capabilities_sse(selection):
                 yield capabilities_frame
+            plugin_ctx = PluginContext()
+            plugin_section = ""
+            if plugin_message is not None and not delib.escalated:
+                plugin_ctx = await gather_plugin_context(db, user_id=user_id, message=plugin_message)
+                if plugin_frame := plugin_capabilities_sse(plugin_ctx):
+                    yield plugin_frame
+                if section := plugin_prompt_section(plugin_ctx):
+                    plugin_section = "\n\n" + section
             history = delib.history
             # ── The web, when this turn needs it ─────────────────────────────
             # The search runs here rather than before the response starts, so
@@ -633,7 +659,7 @@ def _stream_cognitive_response(
 
                 client = get_ollama_client()
                 async for chunk in client.chat_stream(
-                    delib.user_prompt, system_prompt=system_prompt, model=delib.model,
+                    delib.user_prompt, system_prompt=system_prompt + plugin_section, model=delib.model,
                     profile=profile_for_mode(agent_mode), thinking=thinking,
                     include_reasoning=True, history=history,
                 ):
@@ -662,6 +688,7 @@ def _stream_cognitive_response(
                 )
             await db.commit()
             await record_skill_usage(db, selection.refs, message_id=assistant_msg.id)
+            await record_plugin_usage(db, plugin_ctx.refs, message_id=assistant_msg.id)
             await push_session_message(user_id, conv_id, "user", message)
             await push_session_message(user_id, conv_id, "assistant", full)
             done = {
@@ -671,6 +698,7 @@ def _stream_cognitive_response(
                 "brain": True, "decision": delib.decision, "authorized": delib.authorized,
                 "escalated": delib.escalated, "confidence": delib.confidence, "intent": delib.intent,
                 **done_extras(selection),
+                **plugin_done_extras(plugin_ctx),
             }
             yield f"data: {json.dumps(done)}\n\n"
         except Exception as e:  # noqa: BLE001
@@ -924,8 +952,12 @@ async def stream_message(
                 db=db, conv_repo=conv_repo, conv_id=conv.id, user_id=current_user.id,
                 message=req.message, request_id=request_id, delib=delib,
                 agent_mode=req.agent_mode, thinking=req.thinking, selection=selection,
+                plugin_message=selection.message,
                 web_events=await _web_events(req, session_messages, db, conv.id),
             )
+
+    # Plugins: data from connected accounts, when the message asks for it
+    plugin_ctx = await gather_plugin_context(db, user_id=current_user.id, message=selection.message)
 
     state = initial_state(
         user_message=selection.message,
@@ -937,6 +969,7 @@ async def stream_message(
         agent_mode=req.agent_mode,
         thinking=req.thinking,
         active_skills=selection.skills,
+        plugin_context=plugin_prompt_section(plugin_ctx),
     )
     state["session_messages"] = session_messages
 
@@ -978,11 +1011,12 @@ async def stream_message(
             )
             await db.commit()
             await record_skill_usage(db, selection.refs, message_id=assistant_msg.id)
+            await record_plugin_usage(db, plugin_ctx.refs, message_id=assistant_msg.id)
 
             await push_session_message(user_id, conv_id, "user", req.message)
             await push_session_message(user_id, conv_id, "assistant", full_response)
 
-            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv_id, 'message_id': assistant_msg.id, 'tokens_used': tokens_used, 'latency_ms': latency_ms, **done_extras(selection)})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv_id, 'message_id': assistant_msg.id, 'tokens_used': tokens_used, 'latency_ms': latency_ms, **done_extras(selection), **plugin_done_extras(plugin_ctx)})}\n\n"
 
         except Exception as e:
             from loguru import logger

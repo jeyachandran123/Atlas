@@ -364,10 +364,32 @@ class Settings(BaseSettings):
     skill_max_active: int = 3
     github_token: SecretStr = SecretStr("")  # optional — skill installer rate limits
 
+    # ── Plugins (Customize → Plugins): read-only connections to GitHub, Gmail, Drive ─
+    # None = default by environment, like enable_skills: on in development/test, off in
+    # production until verified. Set ENABLE_PLUGINS explicitly to override.
+    enable_plugins: bool | None = None
+    # Fernet key that encrypts stored tokens (python -c "from cryptography.fernet import
+    # Fernet; print(Fernet.generate_key().decode())"). Blank derives one from
+    # SECRET_KEY, which is fine locally; set it in production so tokens survive a
+    # SECRET_KEY rotation.
+    plugin_encryption_key: SecretStr = SecretStr("")
+    # Google OAuth client (Google Cloud Console -> APIs & Services -> Credentials ->
+    # OAuth client ID, type "Web application"). One client serves Gmail and Drive.
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: SecretStr = SecretStr("")
+    # Where the browser reaches this API (Google redirects here after consent) and
+    # where the app is (we send the user back here).
+    backend_public_url: str = "http://localhost:8000"
+    frontend_url: str = "http://localhost:3000"
+    plugin_request_timeout: float = 8.0     # seconds per upstream call
+    plugin_context_chars: int = 3000        # most plugin data put in one prompt
+
     @model_validator(mode="after")
     def _default_feature_flags(self) -> Settings:
         if self.enable_skills is None:
             self.enable_skills = self.app_env != "production"
+        if self.enable_plugins is None:
+            self.enable_plugins = self.app_env != "production"
         return self
 
     @field_validator("ollama_host", "ollama_base_url", mode="before")

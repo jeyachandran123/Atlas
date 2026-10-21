@@ -93,6 +93,9 @@ class AgentState(TypedDict):
     # ── Skills (selected by SkillRouter before the turn; [] = none) ──────────
     active_skills: list[Any]
 
+    # ── Plugins (data fetched from the user's connected accounts; '' = none) ──
+    plugin_context: str
+
     # ── Memory & Retrieval Context ────────────────────────────────────────────
     code_context: list[SearchResult]
     session_messages: list[dict]
@@ -136,6 +139,7 @@ def initial_state(
     agent_mode: str = "auto",
     thinking: bool | None = None,
     active_skills: Optional[list[Any]] = None,
+    plugin_context: str = "",
 ) -> AgentState:
     """Create a fresh AgentState with all required defaults."""
     return AgentState(
@@ -172,6 +176,7 @@ def initial_state(
         # Composed prompt
         system_prompt="",
         active_skills=list(active_skills or []),
+        plugin_context=plugin_context,
         # Memory & retrieval
         code_context=[],
         session_messages=[],

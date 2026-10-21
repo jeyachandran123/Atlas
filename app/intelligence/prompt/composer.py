@@ -245,6 +245,10 @@ class DynamicPromptComposer(AbstractPromptComposer):
             from app.skills.prompt import render_skills_section
             add("skills", render_skills_section(context.active_skills))
 
+        # 7c. Plugin data (only when the message asked for connected-account data)
+        if context.plugin_context:
+            add("plugins", context.plugin_context)
+
         # 8. Long-term memory
         add("memory", _build_memory_section(context))
 
