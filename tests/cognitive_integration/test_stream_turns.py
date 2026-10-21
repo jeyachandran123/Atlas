@@ -192,3 +192,42 @@ def test_the_reminder_after_history_carries_warmth_and_walkthroughs_too():
     content = _STYLE_REMINDER["content"]
     assert "step by step" in content
     assert "warm" in content
+
+
+# ── Concise vs full persona (CHAT_STYLE) ─────────────────────────────────────
+
+
+def _style(monkeypatch, value):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "chat_style", value)
+
+
+def test_concise_is_the_default_and_is_far_shorter(monkeypatch):
+    from app.cognitive_integration.pipeline import _STREAM_SYSTEM_CONCISE, _stream_system
+
+    _style(monkeypatch, "concise")
+    assert _stream_system() is _STREAM_SYSTEM_CONCISE
+    assert len(_STREAM_SYSTEM_CONCISE) < len(_STREAM_SYSTEM) / 3
+
+
+def test_full_style_keeps_the_long_persona_and_reminder(monkeypatch):
+    from app.cognitive_integration.pipeline import _stream_system, _with_style
+
+    _style(monkeypatch, "full")
+    assert _stream_system() is _STREAM_SYSTEM
+    assert _with_style(_stream_history(())) == (_STYLE_REMINDER,)
+
+
+def test_concise_swaps_only_the_trailing_reminder(monkeypatch):
+    from app.cognitive_integration.pipeline import _STYLE_REMINDER_CONCISE, _with_style
+
+    _style(monkeypatch, "concise")
+    out = _with_style(_stream_history([{"role": "user", "content": "hi"}]))
+    assert out[-1] == _STYLE_REMINDER_CONCISE and out[0]["content"] == "hi"
+
+
+def test_the_concise_persona_keeps_the_honesty_and_file_rules():
+    from app.cognitive_integration.pipeline import _STREAM_SYSTEM_CONCISE as c
+
+    assert "Never invent" in c and "Never answer with JSON" in c

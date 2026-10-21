@@ -41,7 +41,7 @@ def get_engine() -> AsyncEngine:
         # NullPool is safer for async MSSQL — avoids connection reuse issues
         _engine = create_async_engine(
             cfg.database_url,
-            echo=cfg.app_debug,
+            echo=cfg.db_echo,
             pool_pre_ping=True,
             poolclass=NullPool,
             connect_args=cfg.database_connect_args,  # TLS per DB_SSL_MODE

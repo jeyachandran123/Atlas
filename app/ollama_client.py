@@ -237,7 +237,7 @@ import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.config import get_settings
-from app.llm import GENERAL, LLMGatewayError, get_chat_gateway
+from app.llm import GENERAL, LLMGatewayError, get_chat_gateway, resolve_profile
 from app.shared.exceptions import OllamaUnavailableError
 
 settings = get_settings()
@@ -346,13 +346,31 @@ class OllamaClient:
         ``profile`` names the kind of answer wanted - general, reasoning, math,
         coding, agent_planning, document - and ``thinking`` overrides that
         profile's default. ``temperature=None`` lets the profile decide. The
-        Ollama path ignores both and uses one model per agent mode instead.
+        Ollama path takes only the thinking decision from them, and uses one
+        model per agent mode.
         """
         if settings.llm_provider == "nvidia":
             return await self._nvidia_chat(
                 prompt, system_prompt, temperature, profile=profile, thinking=thinking,
             )
-        return await self._ollama_chat(prompt, system_prompt, model, temperature)
+        return await self._ollama_chat(
+            prompt, system_prompt, model, temperature,
+            think=self._ollama_think(profile, thinking),
+        )
+
+    @staticmethod
+    def _ollama_think(profile: Optional[str], thinking: Optional[bool]) -> bool:
+        """Whether Ollama should let the model think first.
+
+        Sent explicitly because leaving it out is not "off": a thinking model
+        such as qwen3 then thinks by default, in a separate `thinking` field.
+        On a CPU that is minutes of reasoning before the first word of the
+        answer - long enough to hit the read timeout with nothing shown.
+        Models that cannot think accept ``think: false`` unchanged.
+        """
+        if thinking is not None:
+            return thinking
+        return resolve_profile(profile or GENERAL).thinking
 
     @retry(
         stop=stop_after_attempt(3),
@@ -365,6 +383,7 @@ class OllamaClient:
         system_prompt: Optional[str],
         model: Optional[str],
         temperature: Optional[float],
+        think: bool = False,
     ) -> str:
         temperature = 0.15 if temperature is None else temperature
         model = model or settings.ollama_chat_model
@@ -380,6 +399,8 @@ class OllamaClient:
                     "model": model,
                     "messages": messages,
                     "stream": False,
+                    "think": think,
+                    "keep_alive": settings.ollama_keep_alive,
                     "options": {
                         "temperature": temperature,
                         "num_ctx": settings.ollama_num_ctx,
@@ -439,6 +460,7 @@ class OllamaClient:
         temperature = 0.1 if temperature is None else temperature
         model = model or settings.ollama_chat_model
         messages = self._conversation(prompt, system_prompt, history)
+        think = self._ollama_think(profile, thinking)
 
         try:
             async with httpx.AsyncClient(
@@ -452,6 +474,8 @@ class OllamaClient:
                         "model": model,
                         "messages": messages,
                         "stream": True,
+                        "think": think,
+                        "keep_alive": settings.ollama_keep_alive,
                         "options": {
                             "temperature": temperature,
                             "num_ctx": settings.ollama_num_ctx,
@@ -469,12 +493,19 @@ class OllamaClient:
                             chunk = _json.loads(line)
                         except _json.JSONDecodeError:
                             continue
-                        content = chunk.get("message", {}).get("content", "")
+                        message = chunk.get("message", {})
+                        # Ollama sends a model's thinking in its own field.
+                        # Passing it on keeps a slow first answer token from
+                        # looking like a reply that never started.
+                        reasoning = message.get("thinking", "")
+                        if reasoning and include_reasoning:
+                            yield ReasoningDelta(reasoning)
+                        content = message.get("content", "")
                         if not content:
                             if chunk.get("done"):
                                 break
                             continue
-                        # Strip <think>...</think> blocks from thinking models (qwen3, deepseek-r1)
+                        # Older Ollama inlines thinking as <think>...</think> in content
                         if "<think>" in content:
                             in_think = True
                         if in_think:

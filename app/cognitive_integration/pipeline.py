@@ -150,6 +150,45 @@ _STREAM_SYSTEM = (
     "uses none of this and stays plain prose."
 )
 
+# The short prompt. On a CPU-only machine every token costs time twice: reading the
+# prompt before the first word, and writing a long answer at a few words a second.
+# The full persona above is ~1,500 tokens and asks for essays; this is ~350 and asks
+# for the length the message deserves. Same voice, same honesty rules.
+_STREAM_SYSTEM_CONCISE = (
+    "You are UnityWorks, a warm, sharp assistant who talks like a knowledgeable friend. "
+    "Be direct and natural; match the user's tone and language.\n\n"
+    "Length - the most important rule:\n"
+    "- A greeting or acknowledgement (hi, ok, thanks): one or two short sentences, "
+    "no lecture, no questions about their feelings.\n"
+    "- A quick factual question: a direct answer in two to four sentences.\n"
+    "- Only when they ask how or why, or ask you to explain, teach or walk through "
+    "something: a clear step-by-step answer, each step short with one concrete example.\n"
+    "- Never pad. Don't repeat their message back, and don't narrate how you are answering.\n\n"
+    "Style:\n"
+    "- You are mid-conversation: don't greet again unless they just greeted you.\n"
+    "- Say the answer first, then the reason. Take a side when asked for an opinion.\n"
+    "- Short answers are plain prose. Use markdown (headings, bold, lists, code blocks) "
+    "only for long or technical answers.\n"
+    "- End with a question only when it names something specific from your answer; "
+    "otherwise end on a statement.\n\n"
+    "Honesty:\n"
+    "- Never invent a name, number, date, price, source or quotation you are not sure of. "
+    "If you don't know, say so plainly.\n"
+    "- If their question rests on a wrong assumption, say so first and offer what would work.\n\n"
+    "Files: PDFs, Excel, Word and CSV files are built by UnityWorks itself. Never answer "
+    "with JSON or code standing in for a file; give the substance in markdown and they "
+    "can ask to make it a PDF."
+)
+
+
+def _stream_system() -> str:
+    """The persona for this deployment: CHAT_STYLE=concise (default) or full."""
+    from app.config import get_settings
+
+    style = (getattr(get_settings(), "chat_style", "concise") or "concise").strip().lower()
+    return _STREAM_SYSTEM if style == "full" else _STREAM_SYSTEM_CONCISE
+
+
 
 @dataclass(frozen=True, slots=True)
 class Deliberation:
@@ -221,6 +260,34 @@ _STYLE_REMINDER = {
 }
 
 
+_STYLE_REMINDER_CONCISE = {
+    "role": "system",
+    "content": (
+        "Reply to the user's last message in the voice described at the start, even where "
+        "earlier replies above did otherwise. Match the length to the message: a greeting "
+        "or acknowledgement gets one or two short sentences; a quick question gets a "
+        "direct answer in a few sentences; only a request to explain or walk through "
+        "something gets a full step-by-step answer. Be natural, don't pad, and don't "
+        "repeat their message back."
+    ),
+}
+
+
+def _with_style(history: tuple[dict[str, str], ...]) -> tuple[dict[str, str], ...]:
+    """Swap the long voice reminder for the short one when CHAT_STYLE is concise.
+
+    The reminder rides last in the conversation, where the model weighs it most; the
+    long one asks for step-by-step walkthroughs and a closing question on every
+    reply, which is most of why a "hi" came back as an essay.
+    """
+    from app.config import get_settings
+
+    style = (getattr(get_settings(), "chat_style", "concise") or "concise").strip().lower()
+    if style == "full" or not history or history[-1] is not _STYLE_REMINDER:
+        return history
+    return (*history[:-1], _STYLE_REMINDER_CONCISE)
+
+
 def _stream_history(history: Any) -> tuple[dict[str, str], ...]:
     """What goes before the user's message: the recent conversation, then the voice
     reminder — including on a first message, where there is no conversation yet.
@@ -279,9 +346,9 @@ class CognitivePipeline:
             return Deliberation(
                 authorized=outcome.authorized, escalated=escalated, decision=outcome.decision.kind.value,
                 intent=perceived.intent, confidence=round(outcome.decision.confidence, 4),
-                system_prompt=_STREAM_SYSTEM, user_prompt=turn.message,
+                system_prompt=_stream_system(), user_prompt=turn.message,
                 hold_message=_ESCALATION if escalated else None, model=_select_model(turn.mode),
-                history=_stream_history(turn.history))
+                history=_with_style(_stream_history(turn.history)))
         except Exception:
             return None
 

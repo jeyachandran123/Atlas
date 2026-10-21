@@ -11,6 +11,7 @@ Wires together:
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -122,6 +123,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     available, latency_ms = await ollama.health_check()
     if available:
         logger.info(f"Ollama available (latency: {latency_ms}ms)")
+        if cfg.ollama_warm_on_start and cfg.llm_provider == "ollama":
+            asyncio.create_task(_warm_chat_model(cfg))
     else:
         logger.warning("Ollama not available — AI responses will fail until Ollama is running")
 
@@ -155,6 +158,32 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await close_engine()
 
     logger.info("Shutdown complete")
+
+
+async def _warm_chat_model(cfg) -> None:
+    """Load the chat model into memory (an empty request does exactly that).
+
+    Never fatal and never awaited by startup: the API is usable at once, and
+    only a message sent in the first seconds can still meet a cold model.
+    """
+    import httpx
+    from loguru import logger
+
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            r = await client.post(
+                f"{cfg.ollama_host.rstrip('/')}/api/chat",
+                json={
+                    "model": cfg.ollama_auto_model,
+                    "messages": [],
+                    "keep_alive": cfg.ollama_keep_alive,
+                    "options": {"num_ctx": cfg.ollama_num_ctx},
+                },
+            )
+            r.raise_for_status()
+        logger.info(f"Chat model {cfg.ollama_auto_model} loaded and kept warm for {cfg.ollama_keep_alive}")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not pre-load the chat model ({e}); the first reply will load it")
 
 
 def create_app() -> FastAPI:

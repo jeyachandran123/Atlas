@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     app_host: str = "0.0.0.0"  # noqa: S104
     app_port: int = 8000
     app_debug: bool = False
+    # Print every SQL statement. Separate from app_debug, which also serves /docs.
+    db_echo: bool = False
     secret_key: SecretStr = SecretStr("change-me")
 
     # ── Cognitive Operating System integration (Version 1) ───────────────────
@@ -86,6 +88,15 @@ class Settings(BaseSettings):
     ollama_timeout: int = 300          # 5 min — long responses need time
     ollama_max_retries: int = 3
     ollama_num_ctx: int = 16384        # context window (tokens)
+    # How long Ollama keeps the model in memory after a request. Its own
+    # default is 5 minutes; after that the next reply first pays to reload
+    # the model and re-read the system prompt, on a CPU a minute or more.
+    ollama_keep_alive: str = "30m"
+    # Load the chat model when the API starts, so the first reply is not slow.
+    ollama_warm_on_start: bool = True
+    # 'concise' = a short system prompt: shorter replies and a faster first word.
+    # 'full' = the long UnityWorks persona (teaches step by step, longer answers).
+    chat_style: str = "concise"
     ollama_num_predict: int = 8192     # max output tokens — never truncate
     ollama_chat_temperature: float = 0.3   # slightly creative for richer prose
     ollama_code_temperature: float = 0.15  # more deterministic for code blocks

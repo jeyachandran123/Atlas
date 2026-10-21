@@ -196,7 +196,15 @@ async def metrics_middleware(request: Request, call_next: Callable) -> Response:
 
 
 def setup_opentelemetry(app: FastAPI) -> None:
-    """Configure OpenTelemetry tracing with OTLP export."""
+    """Configure OpenTelemetry tracing with OTLP export.
+
+    A blank OTEL_EXPORTER_OTLP_ENDPOINT turns tracing off. With an endpoint set
+    but no collector listening, the exporter retries and logs an error every
+    few seconds for as long as the app runs.
+    """
+    if not cfg.otel_exporter_otlp_endpoint.strip():
+        logger.info("OpenTelemetry tracing disabled (no OTLP endpoint)")
+        return
     try:
         from opentelemetry import trace
         from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
