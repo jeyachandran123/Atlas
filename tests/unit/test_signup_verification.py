@@ -13,7 +13,13 @@ EMAIL = "new@example.com"
 
 
 def run(coro):
-    return asyncio.run(coro)
+    """Run a coroutine on a private loop. asyncio.run() also unsets the current event
+    loop on the way out, which breaks every async test that runs after this file."""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 def verifier() -> tuple[SignupVerifier, fakeredis.aioredis.FakeRedis]:
