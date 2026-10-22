@@ -28,13 +28,16 @@ async def select_skills(
     message: str,
     agent_mode: str = "auto",
     history: list[dict] | None = None,
+    picked: list[str] | None = None,
 ) -> SkillSelection:
     if not skills_enabled():
         return SkillSelection(message=message)
     try:
         from app.skills.service import SkillService
 
-        return await SkillService(db).select(user_id, org_id, message, agent_mode, history)
+        return await SkillService(db).select(
+            user_id, org_id, message, agent_mode, history, picked=picked
+        )
     except Exception as e:  # noqa: BLE001 — skills must never break a turn
         logger.warning(f"Skill selection failed (continuing without skills): {e}")
         return SkillSelection(message=message)

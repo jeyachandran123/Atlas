@@ -204,6 +204,49 @@ async def test_brain_held_turn_reports_no_skills(
     assert (await sk_session.execute(select(MessageCapability))).scalars().all() == []
 
 
+async def test_skills_picked_in_the_composer_are_used_for_that_message(
+    sk_client: AsyncClient, sk_session, auth, fake_llm
+) -> None:
+    await seed_builtin_skills(sk_session)
+    resp = await sk_client.post(
+        "/api/v1/chat/stream",
+        json={"message": "How does authentication work?", "agent_mode": "auto", "skills": ["atlas-docs"]},
+        headers=auth("dev"),
+    )
+    events = parse_sse(resp.text)
+    assert events[0] == {"type": "capabilities", "skills": [{"slug": "atlas-docs", "name": "Atlas Docs"}]}
+    assert events[-1]["skills"] == [{"slug": "atlas-docs", "name": "Atlas Docs"}]
+    assert "### Skill: Atlas Docs (/atlas-docs)" in fake_llm.calls[0]["system_prompt"]
+    assert "How does authentication work?" in fake_llm.calls[0]["prompt"]       # the message is untouched
+
+
+async def test_a_picked_skill_that_is_switched_off_still_works_and_others_do_not_sneak_in(
+    sk_client: AsyncClient, sk_session, auth, fake_llm
+) -> None:
+    await seed_builtin_skills(sk_session)
+    listing = (await sk_client.get("/api/v1/skills", headers=auth("dev"))).json()
+    docs_id = next(s["id"] for s in listing["system"] if s["slug"] == "atlas-docs")
+    await sk_client.post(f"/api/v1/skills/{docs_id}/disable", headers=auth("dev"))
+    resp = await sk_client.post(
+        "/api/v1/chat/stream",
+        json={"message": "Please do a code review of this pull request diff", "agent_mode": "code",
+              "skills": ["atlas-docs"]},
+        headers=auth("dev"),
+    )
+    system = fake_llm.calls[0]["system_prompt"]
+    assert "### Skill: Atlas Docs" in system and "Review Agent" not in system   # review-agent would auto-match
+    assert parse_sse(resp.text)[-1]["type"] == "done"
+
+
+async def test_too_many_picked_skills_are_refused(sk_client: AsyncClient, auth) -> None:
+    resp = await sk_client.post(
+        "/api/v1/chat/stream",
+        json={"message": "hi", "skills": ["a", "b", "c", "d", "e", "f"]},
+        headers=auth("dev"),
+    )
+    assert resp.status_code == 422
+
+
 # ── /chat/message ────────────────────────────────────────────────────────────
 
 

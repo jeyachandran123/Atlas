@@ -194,3 +194,36 @@ def test_selection_applies_budget() -> None:
     sel = router(token_budget=1000).choose([long_review], "code review this diff", "code")
     assert sel.skills[0].truncated
     assert len(sel.skills[0].instructions) <= 1000 * CHARS_PER_TOKEN
+
+
+# ── Skills picked in the composer's + menu ───────────────────────────────────
+
+
+def test_picked_skills_are_used_exactly_and_replace_automatic_selection() -> None:
+    sel = router().choose([REVIEW, DOCS, BIZ], "code review this diff", picked=["invoice-helper"])
+    assert [s.slug for s in sel.skills] == ["invoice-helper"]     # not review-agent, though it matches
+
+
+def test_picked_skills_work_when_switched_off() -> None:
+    off = SkillCandidate(**{**REVIEW.__dict__, "enabled": False})
+    assert [s.slug for s in router().choose([off], "hello", picked=["review-agent"]).skills] == ["review-agent"]
+
+
+def test_picked_skills_keep_their_order_and_ignore_unknown_and_duplicate_slugs() -> None:
+    sel = router().choose([REVIEW, DOCS, BIZ], "hi", picked=["atlas-docs", "nope", "review-agent", "atlas-docs"])
+    assert [s.slug for s in sel.skills] == ["atlas-docs", "review-agent"]
+
+
+def test_picking_more_than_the_automatic_limit_is_allowed() -> None:
+    sel = router(max_active=1).choose([REVIEW, DOCS, BIZ], "hi", picked=["review-agent", "atlas-docs", "invoice-helper"])
+    assert len(sel.skills) == 3
+
+
+def test_a_slash_command_still_works_alongside_picks() -> None:
+    sel = router().choose([REVIEW, DOCS], "/atlas-docs what is this", picked=["review-agent"])
+    assert [s.slug for s in sel.skills] == ["review-agent", "atlas-docs"]
+    assert sel.message == "what is this"
+
+
+def test_no_picks_changes_nothing() -> None:
+    assert router().choose([REVIEW], "code review this diff", picked=[]).skills[0].slug == "review-agent"

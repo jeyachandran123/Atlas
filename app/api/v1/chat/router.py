@@ -382,6 +382,7 @@ async def send_message(
     selection = await select_skills(
         db, user_id=current_user.id, org_id=current_user.org_id,
         message=req.message, agent_mode=req.agent_mode, history=session_messages,
+        picked=req.skills,
     )
 
     # Plugins: data from connected accounts, when the message asks for it
@@ -910,6 +911,7 @@ async def stream_message(
     selection = await select_skills(
         db, user_id=current_user.id, org_id=current_user.org_id,
         message=req.message, agent_mode=req.agent_mode, history=session_messages,
+        picked=req.skills,
     )
 
     # ── Document follow-up routing ────────────────────────────────────────────

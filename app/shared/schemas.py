@@ -326,6 +326,10 @@ class ChatRequest(BaseModel):
     # True = the user pressed the globe, so search without asking the model
     # whether it is needed. None/False leaves the decision where it belongs.
     web_search: Optional[bool] = None
+    # Skills the user picked in the composer's + menu, by slug. When present, exactly
+    # these are used for this message (automatic selection is skipped), whether or
+    # not they are switched on in Customize -> Skills.
+    skills: Optional[list[str]] = Field(default=None, max_length=5)
 
 
 class ChatResponse(BaseModel):

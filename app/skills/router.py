@@ -178,10 +178,19 @@ class SkillRouter:
         history: Sequence[dict] | None = None,
         auto_select: bool = True,
         max_active: int | None = None,
+        picked: Sequence[str] | None = None,
     ) -> SkillSelection:
+        """`picked` = slugs chosen in the UI. They are used as written (in that order,
+        beyond the usual cap if need be), and automatic selection is skipped: the
+        user said what they want."""
         limit = max(0, self.max_active if max_active is None else max_active)
         by_slug = {c.slug: c for c in candidates}
         explicit, cleaned = self.parse_explicit(message, by_slug)
+        if picked:
+            chosen_by_user = [s for s in dict.fromkeys(picked) if s in by_slug]
+            explicit = chosen_by_user + [s for s in explicit if s not in chosen_by_user]
+            limit = max(limit, len(explicit))
+            auto_select = False
 
         chosen: list[ActiveSkill] = []
         for slug in explicit[:limit]:

@@ -313,6 +313,7 @@ class SkillService:
         agent_mode: str = "auto",
         history: list[dict] | None = None,
         router: SkillRouter | None = None,
+        picked: list[str] | None = None,
     ) -> SkillSelection:
         candidates = await self.candidates(user_id, org_id)
         if not candidates:
@@ -325,6 +326,7 @@ class SkillService:
             history,
             auto_select=prefs.auto_select,
             max_active=prefs.max_active,
+            picked=picked,
         )
 
     async def preview(self, user: User, message: str, agent_mode: str = "auto") -> dict[str, Any]:
