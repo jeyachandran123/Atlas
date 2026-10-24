@@ -55,8 +55,12 @@ def _view(spec, row: PluginConnection | None) -> dict[str, Any]:
         "last_used_at": row.last_used_at.isoformat() if row and row.last_used_at else None,
         # False when the server lacks what connecting needs (Google OAuth client).
         "available": oauth_ready,
-        "unavailable_reason": "" if oauth_ready else
-        "The server administrator needs to set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET.",
+        "unavailable_reason": "" if oauth_ready else (
+            "Google sign-in isn't set up yet. In backend/.env set GOOGLE_OAUTH_CLIENT_ID and "
+            "GOOGLE_OAUTH_CLIENT_SECRET (Google Cloud Console > APIs & Services > Credentials > "
+            "OAuth client ID, type Web application, with the redirect URI "
+            + google.redirect_uri() + "), then restart the backend."
+        ),
     }
 
 

@@ -54,7 +54,14 @@ async def _get(client: httpx.AsyncClient, token: str, path: str, **params) -> di
 
 async def verify(client: httpx.AsyncClient, token: str) -> str:
     """The account this token belongs to (its login). Raises PluginError if refused."""
-    data = await _get(client, token, "/user")
+    try:
+        data = await _get(client, token, "/user")
+    except PluginError as e:
+        if "rejected the token" in str(e):
+            raise PluginError(
+                "GitHub rejected that token. Check it was copied in full and hasn't expired."
+            ) from e
+        raise
     return str(data.get("login") or "")
 
 
