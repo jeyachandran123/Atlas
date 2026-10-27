@@ -223,11 +223,21 @@ class Settings(BaseSettings):
     # content parts, or an inline <img src="data:…"/> tag. Configurable rather
     # than guessed.
     nvidia_image_format: Literal["image_url", "inline_html"] = "image_url"
-    nvidia_max_inline_image_bytes: int = 180_000
+    # Base64-encoded size. 180 KB was the limit on the older nano VL deployment;
+    # nemotron-3.5-super-vl accepted a 1 MB raw page (1.33 MB encoded) inline.
+    # Must stay >= 4/3 of document_vlm_max_image_bytes, or rendered pages are
+    # dropped before they are sent.
+    nvidia_max_inline_image_bytes: int = 2_000_000
     # Backstop for the model's multimodal embedding budget. Exceeding it returns
     # an opaque HTTP 500, not a degraded answer, so the adapter caps rather than
     # letting the whole extraction fail.
     nvidia_max_images_per_request: int = 4
+    # Whether the VLM reasons before answering. Measured on a 2-receipt scan with
+    # nemotron-3.5-super-vl: thinking on 51.5s / 10,077 completion tokens; off
+    # 8.1-9.0s / ~1,300 over 3 runs - but off misread "22-10-26" as 2022 and
+    # left one receipt's date null, which thinking on read correctly.
+    # "default" sends no switch and leaves the model's own default.
+    nvidia_vlm_thinking: Literal["off", "on", "default"] = "off"
     # Cost estimation stays honest: unset means "unpriced", never a stale
     # hard-coded rate presented as fact.
     nvidia_price_per_million_input_tokens: float = 0.0
@@ -265,6 +275,14 @@ class Settings(BaseSettings):
     document_vlm_max_output_tokens: int = 32768
     document_vlm_temperature: float = 1.00    # extraction is not a creative task
     document_vlm_max_file_size_mb: int = 20
+    # Raw-byte budget for one rendered scan page; the renderer picks the highest
+    # resolution that fits. Four receipts on one A4 photo were read correctly
+    # only at ~1 MB (scale 4); at 121 KB the model invented a total and a date.
+    document_vlm_max_image_bytes: int = 1_400_000
+    # Locate each receipt on a scanned page and read it on its own. A narrow
+    # receipt on a landscape scan read 20.0 for a printed 20.80 in every
+    # whole-page fast run; cut out, it fills the image.
+    document_vlm_split_receipts: bool = True
     # Pages sent to the model per request. Measured against Nemotron VL: each
     # page image costs ~3,330 prompt tokens, and five pages exceed the server's
     # multimodal embedding budget — the request fails outright rather than
@@ -272,7 +290,7 @@ class Settings(BaseSettings):
     # on the response, never dropped silently.
     document_vlm_max_pages: int = 4
     document_vlm_health_timeout_seconds: float = 10.0
-    document_vlm_prompt_version: str = "1.0.0"
+    document_vlm_prompt_version: str = "2.1.0"
 
     # ── Conversational Knowledge Intelligence (Phase 4) ──────────────────────────
     # Endpoint/timeout for the ollama LLM provider reuse ollama_host /

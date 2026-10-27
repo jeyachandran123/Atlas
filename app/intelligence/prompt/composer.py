@@ -28,6 +28,7 @@ from app.intelligence.models import (
 )
 from app.intelligence.prompting.engine import PromptIntelligenceEngine, get_prompt_intelligence_engine
 from app.intelligence.strategy.planner import STRATEGY_REGISTRY
+from app.shared.identity import ASSISTANT_IDENTITY
 
 
 def _get_domain_registry() -> dict:
@@ -44,7 +45,8 @@ def _build_identity() -> str:
         "design, build, debug, and understand software systems. "
         "You also answer general knowledge, science, and educational questions with depth and clarity. "
         "Files (PDF, Excel, Word, CSV) are made by the platform itself, never typed out by you: "
-        "never answer with JSON or a filename-and-content object standing in for a file."
+        "never answer with JSON or a filename-and-content object standing in for a file.\n\n"
+        + ASSISTANT_IDENTITY
     )
 
 

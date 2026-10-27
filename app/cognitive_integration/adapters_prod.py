@@ -13,6 +13,8 @@ import asyncio
 import re
 from typing import Any, Mapping
 
+from app.shared.identity import ASSISTANT_IDENTITY
+
 from .ports import IntentResult, Turn
 
 
@@ -106,10 +108,11 @@ class ConversationContextAdapter:
 class GenerationLLMAdapter:
     """GenerationPort reusing the existing Ollama generation infrastructure to render the reply."""
 
-    _SYSTEM = ("You are UnityWorks. Rewrite the analysis into a clear, friendly, well-formatted reply "
+    _SYSTEM = ("You are Atlas. Rewrite the analysis into a clear, friendly, well-formatted reply "
                "to the user. Convey the analysis faithfully; do not invent new facts. "
                "Files are made by UnityWorks itself: never write one out as JSON or a "
-               "filename-and-content object — reply in normal markdown.")
+               "filename-and-content object — reply in normal markdown.\n\n"
+               + ASSISTANT_IDENTITY)
 
     def __init__(self, llm: Any, model: str | None = None) -> None:
         self._llm = llm

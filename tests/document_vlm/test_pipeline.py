@@ -36,8 +36,8 @@ class TestHappyPath:
     async def test_it_extracts_an_invoice_from_an_image(self, pipeline) -> None:
         outcome = await pipeline.extract_invoice(filename="invoice.png", content=PNG_BYTES)
         assert outcome.success
-        assert outcome.data["invoice_number"] == "INV-2026-0042"
-        assert outcome.data["totals"]["grand_total"] == 305.2
+        assert outcome.data[0]["invoice_number"] == "INV-2026-0042"
+        assert outcome.data[0]["totals"]["grand_total"] == 305.2
 
     async def test_it_reports_the_provider_and_model_that_answered(
         self, pipeline, scripted_vlm
@@ -53,7 +53,7 @@ class TestHappyPath:
         re-examined when a number turns out to be wrong — and one always does."""
         outcome = await pipeline.extract_invoice(filename="invoice.png", content=PNG_BYTES)
         assert outcome.prompt_id == "invoice.extract"
-        assert outcome.prompt_version == "1.0.0"
+        assert outcome.prompt_version == "2.1.0"
         assert outcome.schema_version == "1.0.0"
 
     async def test_it_times_every_stage(self, pipeline) -> None:
@@ -269,7 +269,7 @@ class TestPromptVersionPinning:
         self, pipeline
     ) -> None:
         outcome = await pipeline.extract_invoice(filename="invoice.png", content=PNG_BYTES)
-        assert outcome.prompt_version == "1.0.0"
+        assert outcome.prompt_version == "2.1.0"
 
 
 class TestNoBusinessLogicLeaksIntoTheAdapter:
@@ -287,4 +287,25 @@ class TestNoBusinessLogicLeaksIntoTheAdapter:
         scripted_vlm.structured = {**VALID_INVOICE_JSON, "invoiceNumber": "ALIAS"}
         pipeline = DocumentExtractionPipeline(scripted_vlm)
         outcome = await pipeline.extract_invoice(filename="invoice.png", content=PNG_BYTES)
-        assert outcome.data["invoice_number"] == "INV-2026-0042"
+        assert outcome.data[0]["invoice_number"] == "INV-2026-0042"
+
+
+class TestMultipleInvoices:
+    async def test_every_invoice_in_the_document_is_returned(self, scripted_vlm) -> None:
+        second = {**VALID_INVOICE_JSON, "invoice_number": "INV-2026-0043"}
+        scripted_vlm.structured = {"invoices": [VALID_INVOICE_JSON, second]}
+        pipeline = DocumentExtractionPipeline(scripted_vlm)
+        outcome = await pipeline.extract_invoice(filename="receipts.png", content=PNG_BYTES)
+        assert [d["invoice_number"] for d in outcome.data] == [
+            "INV-2026-0042",
+            "INV-2026-0043",
+        ]
+
+    async def test_a_pinned_single_invoice_prompt_still_returns_a_list(
+        self, pipeline
+    ) -> None:
+        outcome = await pipeline.extract_invoice(
+            filename="invoice.png", content=PNG_BYTES, prompt_version="1.0.0"
+        )
+        assert outcome.prompt_version == "1.0.0"
+        assert isinstance(outcome.data, list) and len(outcome.data) == 1

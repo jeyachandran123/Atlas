@@ -14,6 +14,7 @@ from typing import AsyncGenerator, Optional
 
 from loguru import logger
 
+from app.shared.identity import ASSISTANT_IDENTITY
 from app.vision.image_storage import ImageStorage, get_image_storage
 from app.vision.intent import VisionIntent, detect_vision_intent
 from app.vision.schemas import ImageAttachment
@@ -131,7 +132,10 @@ class VisionService:
         if system_prompt:
             full_system = f"{system_prompt}\n\n## Vision Analysis\n{vision_addition}"
         else:
-            full_system = f"You are Atlas, an AI engineering platform.\n\n{vision_addition}"
+            full_system = (
+                f"You are Atlas, an AI engineering platform.\n\n{ASSISTANT_IDENTITY}"
+                f"\n\n{vision_addition}"
+            )
 
         # Build user prompt with conversation context
         user_prompt = message

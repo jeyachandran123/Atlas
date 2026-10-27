@@ -76,13 +76,13 @@ class TestExtractInvoice:
         assert body["provider"] == "scripted"
         assert body["model"] == "scripted-vlm-1"
         assert isinstance(body["processingTime"], int | float)
-        assert isinstance(body["data"], dict)
+        assert isinstance(body["data"], list)
 
     async def test_the_data_is_the_validated_invoice(self, client) -> None:
         body = (
             await client.post("/api/v1/document/extract-invoice", files=upload())
         ).json()
-        data = body["data"]
+        data = body["data"][0]
         assert data["invoice_number"] == "INV-2026-0042"
         assert data["currency"] == "SGD"
         assert len(data["line_items"]) == 2
@@ -92,7 +92,7 @@ class TestExtractInvoice:
         body = (
             await client.post("/api/v1/document/extract-invoice", files=upload())
         ).json()
-        assert body["promptVersion"] == "1.0.0"
+        assert body["promptVersion"] == "2.1.0"
         assert body["schemaVersion"] == "1.0.0"
         assert body["requestId"]
         assert body["document"]["imagesSent"] == 1
@@ -104,6 +104,24 @@ class TestExtractInvoice:
         ).json()
         assert body["usage"]["promptTokens"] == 100
         assert body["usage"]["totalTokens"] == 150
+
+    async def test_several_invoices_in_one_upload_come_back_as_an_array(
+        self, client, vlm
+    ) -> None:
+        vlm.structured = {
+            "invoices": [
+                {"invoice_number": "T02067275", "totals": {"grand_total": 28.40}},
+                {"invoice_number": "091026/10027/14/00164", "totals": {"grand_total": 90.40}},
+            ]
+        }
+        body = (
+            await client.post("/api/v1/document/extract-invoice", files=upload())
+        ).json()
+        assert body["success"] is True
+        assert [d["invoice_number"] for d in body["data"]] == [
+            "T02067275",
+            "091026/10027/14/00164",
+        ]
 
     async def test_warnings_reach_the_caller(self, client, vlm) -> None:
         vlm.structured = {"invoice_number": "INV-1"}
@@ -140,7 +158,7 @@ class TestExtractInvoice:
         ).json()
         assert "choices" not in body
         assert "eval_count" not in body
-        assert set(body["data"]) >= {"invoice_number", "line_items", "totals"}
+        assert set(body["data"][0]) >= {"invoice_number", "line_items", "totals"}
 
 
 class TestErrorMapping:

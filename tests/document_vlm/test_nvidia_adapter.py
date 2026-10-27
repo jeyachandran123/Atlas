@@ -597,3 +597,40 @@ class TestFactory:
 
 async def _no_sleep(_seconds: float) -> None:
     return None
+
+
+class TestThinkingSwitch:
+    """Thinking on spent ~87% of an extraction's tokens reasoning: 51.5s vs ~8s."""
+
+    @staticmethod
+    def _config(thinking: str, model: str = "nvidia/nemotron-3.5-super-vl-120b-a12b"):
+        return VLMAdapterConfig(
+            base_url="https://integrate.api.nvidia.test/v1",
+            model=model,
+            api_key=SECRET_KEY,
+            extra={"thinking": thinking},
+        )
+
+    async def test_off_turns_thinking_off(self, transport, extraction_request) -> None:
+        transport.responses = [httpx.Response(200, json=nvidia_response())]
+        await build(self._config("off"), transport).extract_document(extraction_request)
+        assert transport.last_body["chat_template_kwargs"] == {"enable_thinking": False}
+
+    async def test_on_turns_thinking_on(self, transport, extraction_request) -> None:
+        transport.responses = [httpx.Response(200, json=nvidia_response())]
+        await build(self._config("on"), transport).extract_document(extraction_request)
+        assert transport.last_body["chat_template_kwargs"] == {"enable_thinking": True}
+
+    async def test_default_sends_no_switch(self, transport, extraction_request) -> None:
+        transport.responses = [httpx.Response(200, json=nvidia_response())]
+        await build(self._config("default"), transport).extract_document(extraction_request)
+        assert "chat_template_kwargs" not in transport.last_body
+
+    async def test_the_switch_name_follows_the_model_family(
+        self, transport, extraction_request
+    ) -> None:
+        """A wrong switch name is silently ignored by the endpoint."""
+        transport.responses = [httpx.Response(200, json=nvidia_response())]
+        config = self._config("off", model="deepseek-ai/deepseek-vl")
+        await build(config, transport).extract_document(extraction_request)
+        assert transport.last_body["chat_template_kwargs"] == {"thinking": False}

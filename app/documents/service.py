@@ -20,6 +20,7 @@ from app.documents.extractor import DocumentExtractionError, extract_text
 from app.documents.schemas import DocumentAttachment
 from app.documents.storage import DocumentStorage, DocumentStorageError, get_document_storage
 from app.ollama_client import OllamaClient, get_ollama_client
+from app.shared.identity import ASSISTANT_IDENTITY
 
 _cfg = get_settings()
 
@@ -178,7 +179,7 @@ class DocumentService:
         """
         Build the document-aware (system_prompt, user_prompt) pair.
         """
-        base = system_prompt or "You are Atlas, an AI engineering platform."
+        base = system_prompt or f"You are Atlas, an AI engineering platform.\n\n{ASSISTANT_IDENTITY}"
         full_system = f"{base}\n\n{_DOCUMENT_SYSTEM_ADDITION}"
 
         doc_block = await self.build_document_block(conversation_id)

@@ -27,7 +27,17 @@ def validator() -> InvoiceSchemaValidator:
 
 class TestHappyPath:
     def test_a_well_formed_invoice_validates_without_warnings(self, validator) -> None:
-        result = validator.validate(VALID_INVOICE_JSON)
+        from datetime import date, timedelta
+
+        # Dated relative to today: the date-plausibility check flags a fixed
+        # fixture date once it is more than a year old.
+        issued = date.today() - timedelta(days=5)
+        current = {
+            **VALID_INVOICE_JSON,
+            "invoice_date": issued.isoformat(),
+            "due_date": (issued + timedelta(days=30)).isoformat(),
+        }
+        result = validator.validate(current)
         assert result.valid
         assert result.errors == ()
         assert result.warnings == (), result.warnings
@@ -159,6 +169,12 @@ class TestRejection:
         )
         assert not result.valid
 
+    def test_null_line_items_are_an_empty_list_not_a_schema_error(self, validator) -> None:
+        """The prompt's example shape invites ``"line_items": null``."""
+        result = validator.validate({"invoice_number": "X", "line_items": None})
+        assert result.valid
+        assert result.data["line_items"] == []
+
     def test_validation_never_raises(self, validator) -> None:
         for payload in (None, "text", 42, [], {"line_items": "not a list"}):
             assert validator.validate(payload) is not None
@@ -219,3 +235,121 @@ class TestSchemaExport:
     def test_the_schema_and_the_model_cannot_drift(self) -> None:
         schema = InvoiceSchemaValidator.json_schema()
         assert set(InvoiceDocument.model_fields) <= set(schema["properties"])
+
+
+class TestMultipleInvoices:
+    """One upload, several invoices — a scanned page of petty-cash receipts."""
+
+    def test_the_envelope_yields_one_entry_per_invoice_in_order(self, validator) -> None:
+        result = validator.validate_many(
+            {
+                "invoices": [
+                    {"invoice_number": "T02067275", "totals": {"grand_total": 28.40}},
+                    {"invoice_number": "091026/10027/14/00164", "totals": {"grand_total": 90.40}},
+                    {"invoice_number": "161026/10027/07/00059", "totals": {"grand_total": 21.00}},
+                    {"invoice_number": "131026/10027/15/00068", "totals": {"grand_total": 26.00}},
+                ]
+            }
+        )
+        assert result.valid
+        assert [d["invoice_number"] for d in result.data] == [
+            "T02067275",
+            "091026/10027/14/00164",
+            "161026/10027/07/00059",
+            "131026/10027/15/00068",
+        ]
+        assert [d["totals"]["grand_total"] for d in result.data] == [28.4, 90.4, 21.0, 26.0]
+
+    def test_a_single_invoice_object_becomes_a_one_element_list(self, validator) -> None:
+        """What prompt 1.0.0 asks for, so a pinned old version keeps working."""
+        result = validator.validate_many(VALID_INVOICE_JSON)
+        assert result.valid
+        assert len(result.data) == 1
+        assert result.data[0]["invoice_number"] == "INV-2026-0042"
+
+    def test_each_entry_keeps_every_field_the_single_shape_has(self, validator) -> None:
+        single = validator.validate(VALID_INVOICE_JSON).data
+        many = validator.validate_many({"invoices": [VALID_INVOICE_JSON]}).data
+        assert many == [single]
+
+    def test_warnings_name_the_invoice_they_belong_to(self, validator) -> None:
+        result = validator.validate_many(
+            {"invoices": [VALID_INVOICE_JSON, {"invoice_number": "INV-2"}]}
+        )
+        assert any(w.startswith("invoice 2: missing expected field") for w in result.warnings)
+        assert not any(w.startswith("invoice 1: missing expected field") for w in result.warnings)
+
+    def test_an_empty_entry_beside_real_ones_is_omitted_and_reported(self, validator) -> None:
+        result = validator.validate_many({"invoices": [VALID_INVOICE_JSON, {}]})
+        assert result.valid
+        assert len(result.data) == 1
+        assert any("omitted" in w and "invoice 2" in w for w in result.warnings)
+
+    def test_no_valid_entry_is_rejected(self, validator) -> None:
+        result = validator.validate_many({"invoices": [{}, {"line_items": []}]})
+        assert not result.valid
+        assert result.errors[0].startswith("invoice 1: no invoice fields")
+
+    def test_an_empty_list_is_rejected(self, validator) -> None:
+        result = validator.validate_many({"invoices": []})
+        assert not result.valid
+        assert "empty invoice list" in result.errors[0]
+
+    def test_a_non_object_is_rejected(self, validator) -> None:
+        result = validator.validate_many([VALID_INVOICE_JSON])
+        assert not result.valid and "not a JSON object" in result.errors[0]
+
+    def test_the_batch_schema_wraps_the_invoice_schema(self) -> None:
+        schema = InvoiceSchemaValidator.batch_json_schema()
+        assert schema["properties"]["invoices"]["type"] == "array"
+
+
+class TestReceiptTotals:
+    """Receipts print a total and no subtotal; a misread total must still warn."""
+
+    @staticmethod
+    def _receipt(total: float) -> dict:
+        return {
+            "invoice_number": "R-1",
+            "line_items": [{"description": "a", "amount": 5.20}, {"description": "b", "amount": 15.60}],
+            "totals": {"grand_total": total},
+        }
+
+    def test_a_total_that_disagrees_with_its_lines_warns(self, validator) -> None:
+        result = validator.validate(self._receipt(20.0))
+        assert result.valid
+        assert any("grand total is 20.00" in w for w in result.warnings)
+
+    def test_a_total_that_matches_its_lines_does_not_warn(self, validator) -> None:
+        result = validator.validate(self._receipt(20.80))
+        assert not any("grand total" in w for w in result.warnings)
+
+    def test_cash_rounding_is_within_tolerance(self, validator) -> None:
+        result = validator.validate(self._receipt(20.79))
+        assert not any("grand total" in w for w in result.warnings)
+
+
+class TestDatePlausibility:
+    """A misread year is a valid-looking date; it must be flagged, not trusted."""
+
+    def test_a_date_more_than_a_year_old_warns(self, validator) -> None:
+        from datetime import date, timedelta
+
+        old = (date.today() - timedelta(days=400)).isoformat()
+        result = validator.validate({"invoice_number": "X", "invoice_date": old})
+        assert result.valid
+        assert any("more than a year old" in w for w in result.warnings)
+
+    def test_a_future_date_warns(self, validator) -> None:
+        from datetime import date, timedelta
+
+        future = (date.today() + timedelta(days=30)).isoformat()
+        result = validator.validate({"invoice_number": "X", "invoice_date": future})
+        assert any("in the future" in w for w in result.warnings)
+
+    def test_a_recent_date_does_not_warn(self, validator) -> None:
+        from datetime import date, timedelta
+
+        recent = (date.today() - timedelta(days=5)).isoformat()
+        result = validator.validate({"invoice_number": "X", "invoice_date": recent})
+        assert not any("check the year" in w for w in result.warnings)

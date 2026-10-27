@@ -34,7 +34,7 @@ from app.document_platform.vlm.ports import DocumentPayload, ExtractionPrompt
 
 INVOICE_EXTRACTION_PROMPT_ID = "invoice.extract"
 
-DEFAULT_PROMPT_VERSION = "1.0.0"
+DEFAULT_PROMPT_VERSION = "2.1.0"
 
 #: How much OCR text is worth sending. Beyond this a model's attention is spread
 #: thinner than the extra pages are worth, and the tail of a long document is
@@ -57,6 +57,9 @@ class PromptTemplate:
     system: str
     user_template: str
     notes: str = ""
+    multi_invoice: bool = False
+    """Asks for ``{"invoices": [...]}`` — one entry per invoice in the document —
+    rather than a single invoice object."""
 
     def render(self, **context: Any) -> str:
         try:
@@ -179,6 +182,130 @@ INVOICE_PROMPT_V1 = PromptTemplate(
 )
 
 
+# ── v2.0.0 ───────────────────────────────────────────────────────────────────
+
+_V2_SYSTEM = (
+    "You are a precise document data extraction engine. You read invoices and "
+    "receipts and return structured JSON.\n"
+    "\n"
+    "A document may contain one invoice or several — for example a scanned page "
+    "with several receipts pasted side by side, or a PDF with one invoice per "
+    "page. Each separate invoice or receipt is its own entry in the invoices "
+    "list, in reading order (top to bottom, left to right, then page by page).\n"
+    "\n"
+    "Rules you must follow exactly:\n"
+    "1. Return a single JSON object with one key, invoices, and nothing else — "
+    "no prose, no markdown fences, no explanation before or after.\n"
+    "2. A new entry starts where a new invoice or receipt starts: its own "
+    "header, number, date or total. Line items belong to the entry whose "
+    "receipt they are printed on; never merge two receipts into one entry.\n"
+    "3. Copy values from the document. Never infer, never estimate, never "
+    "complete a value from what an invoice usually says.\n"
+    "4. Use null for anything the document does not state. A null is a correct "
+    "answer; a plausible guess is not.\n"
+    "5. Numbers must be JSON numbers with no currency symbols and no thousands "
+    "separators. Keep the decimals exactly as printed.\n"
+    "6. Dates must be YYYY-MM-DD. If a date is ambiguous, copy it as printed "
+    "rather than guessing the order of day and month.\n"
+    "7. Currency must be the ISO 4217 code (SGD, USD, MYR, EUR, ...) when the "
+    "document makes it unambiguous; otherwise null.\n"
+    "8. Include every line item you can read, in the order they appear.\n"
+    "9. Handwritten notes on a receipt go in that entry's notes field.\n"
+    "10. If the document holds no invoice, return one entry with document_type "
+    "set to what it actually is and every other field null."
+)
+
+_V2_USER = """Extract every invoice and receipt in this document.
+
+Return JSON with exactly this shape, one object in the invoices list per invoice:
+
+{schema}
+
+{sources}
+Return only the JSON object."""
+
+
+def _indent(text: str, spaces: int) -> str:
+    pad = " " * spaces
+    return "\n".join(pad + line for line in text.splitlines())
+
+
+_INVOICES_SHAPE_V2 = (
+    '{\n  "invoices": [\n' + _indent(_INVOICE_SHAPE_V1, 4) + ",\n    ...\n  ]\n}"
+)
+
+
+INVOICE_PROMPT_V2 = PromptTemplate(
+    prompt_id=INVOICE_EXTRACTION_PROMPT_ID,
+    version="2.0.0",
+    system=_V2_SYSTEM,
+    user_template=_V2_USER,
+    notes="Multi-invoice. Same per-invoice shape as 1.0.0, wrapped in an "
+    "invoices list, for uploads that carry several receipts on one page or "
+    "one invoice per page.",
+    multi_invoice=True,
+)
+
+
+# ── v2.1.0 ───────────────────────────────────────────────────────────────────
+
+_V2_1_SYSTEM = (
+    "You are a precise document data extraction engine. You read invoices and "
+    "receipts and return structured JSON.\n"
+    "\n"
+    "A document may contain one invoice or several — for example a scanned page "
+    "with several receipts pasted side by side, or a PDF with one invoice per "
+    "page. Each separate invoice or receipt is its own entry in the invoices "
+    "list, in reading order (top to bottom, left to right, then page by page).\n"
+    "\n"
+    "Rules you must follow exactly:\n"
+    "1. Return a single JSON object with one key, invoices, and nothing else — "
+    "no prose, no markdown fences, no explanation before or after.\n"
+    "2. A new entry starts where a new invoice or receipt starts: its own "
+    "header, number, date or total. Line items belong to the entry whose "
+    "receipt they are printed on; never merge two receipts into one entry.\n"
+    "3. Copy values from the document. Never infer, never estimate, never "
+    "complete a value from what an invoice usually says.\n"
+    "4. Write only the fields the document states. Leave a field out entirely "
+    "when the document does not state it — an absent field is a correct "
+    "answer; a plausible guess is not.\n"
+    "5. Numbers must be JSON numbers with no currency symbols and no thousands "
+    "separators. Keep the decimals exactly as printed.\n"
+    "6. Dates must be YYYY-MM-DD. Numeric dates on these documents are printed "
+    "day first: 22-10-26 and 22/10/2026 are both 22 October 2026, written "
+    "2026-10-22. A two-digit year is in the 2000s.\n"
+    "7. Currency must be the ISO 4217 code (SGD, USD, MYR, EUR, ...) when the "
+    "document makes it unambiguous: RM means MYR, S$ means SGD.\n"
+    "8. Include every line item you can read, in the order they appear.\n"
+    "9. Handwritten notes on a receipt go in that entry's notes field.\n"
+    "10. If the document holds no invoice, return one entry containing only "
+    "document_type, set to what the document actually is."
+)
+
+_V2_1_USER = """Extract every invoice and receipt in this document.
+
+Return JSON in this shape, one object in the invoices list per invoice, \
+writing only the fields the document states:
+
+{schema}
+
+{sources}
+Return only the JSON object."""
+
+
+INVOICE_PROMPT_V2_1 = PromptTemplate(
+    prompt_id=INVOICE_EXTRACTION_PROMPT_ID,
+    version="2.1.0",
+    system=_V2_1_SYSTEM,
+    user_template=_V2_1_USER,
+    notes="Speed. Same shape as 2.0.0, but fields the document does not state "
+    "are left out rather than written as null (the validator fills them), and "
+    "numeric dates are read day first — with thinking off, 2.0.0 read "
+    "22-10-26 as 2022-10-22.",
+    multi_invoice=True,
+)
+
+
 class InvoiceExtractionPromptProvider:
     """Produces the system and user prompts for invoice extraction.
 
@@ -200,7 +327,13 @@ class InvoiceExtractionPromptProvider:
         include_json_schema: bool = False,
     ) -> None:
         self._templates: dict[str, PromptTemplate] = dict(
-            templates if templates is not None else {"1.0.0": INVOICE_PROMPT_V1}
+            templates
+            if templates is not None
+            else {
+                "1.0.0": INVOICE_PROMPT_V1,
+                "2.0.0": INVOICE_PROMPT_V2,
+                "2.1.0": INVOICE_PROMPT_V2_1,
+            }
         )
         if version not in self._templates:
             raise DocumentVLMConfigurationError(
@@ -256,18 +389,23 @@ class InvoiceExtractionPromptProvider:
             )
 
         user = template.render(
-            schema=_INVOICE_SHAPE_V1,
+            schema=_INVOICES_SHAPE_V2 if template.multi_invoice else _INVOICE_SHAPE_V1,
             sources=self._sources_block(payload),
         )
+        response_schema = None
+        if self._include_json_schema:
+            response_schema = (
+                InvoiceSchemaValidator.batch_json_schema()
+                if template.multi_invoice
+                else InvoiceSchemaValidator.json_schema()
+            )
 
         return ExtractionPrompt(
             system=template.system,
             user=user,
             prompt_id=template.prompt_id,
             version=template.version,
-            response_schema=(
-                InvoiceSchemaValidator.json_schema() if self._include_json_schema else None
-            ),
+            response_schema=response_schema,
             max_output_tokens=(
                 self._max_output_tokens if max_output_tokens is None else max_output_tokens
             ),
@@ -339,6 +477,8 @@ __all__ = [
     "DEFAULT_PROMPT_VERSION",
     "INVOICE_EXTRACTION_PROMPT_ID",
     "INVOICE_PROMPT_V1",
+    "INVOICE_PROMPT_V2",
+    "INVOICE_PROMPT_V2_1",
     "InvoiceExtractionPromptProvider",
     "PromptProvider",
     "PromptTemplate",

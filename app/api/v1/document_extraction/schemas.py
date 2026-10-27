@@ -51,7 +51,10 @@ class ExtractionResponse(_Camel):
     processing_time: float = Field(
         ..., alias="processingTime", description="End-to-end pipeline time in milliseconds"
     )
-    data: dict[str, Any] = Field(default_factory=dict)
+    data: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="One invoice object per invoice found in the document, in reading order",
+    )
 
     request_id: str = Field("", alias="requestId")
     prompt_version: str = Field("", alias="promptVersion")

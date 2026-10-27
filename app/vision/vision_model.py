@@ -271,6 +271,11 @@ class VisionModel:
             stream=True,
         )
         async for chunk in stream:
+            # A chunk can carry no choices: nemotron-3.5-super-vl ends every
+            # stream with a usage-only chunk, and indexing it raised IndexError
+            # after the whole reply had already streamed.
+            if not chunk.choices:
+                continue
             content = chunk.choices[0].delta.content
             if content:
                 yield content

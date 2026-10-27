@@ -158,7 +158,7 @@ class TestFutureProviders:
         outcome = await pipeline.extract_invoice(filename="invoice.png", content=PNG_BYTES)
         assert outcome.success
         assert outcome.provider == "gemini"
-        assert outcome.data["invoice_number"] == "INV-2026-0042"
+        assert outcome.data[0]["invoice_number"] == "INV-2026-0042"
 
     def test_registering_a_name_twice_is_refused(self) -> None:
         """Silent last-import-wins would make which adapter answers a function

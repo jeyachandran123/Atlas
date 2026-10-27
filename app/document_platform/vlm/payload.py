@@ -45,6 +45,28 @@ IMAGE_MEDIA_TYPES = {
 
 SUPPORTED_EXTENSIONS = frozenset({".pdf", *IMAGE_MEDIA_TYPES})
 
+#: What a VLM endpoint accepts inline. TIFF and BMP are ordinary scan formats
+#: but OpenAI-compatible endpoints refuse them — NVIDIA answers HTTP 415 — so
+#: they are re-encoded as PNG before they leave this module.
+_VLM_MEDIA_TYPES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
+
+#: Default raw-byte budget for one rendered page. The deployment sets its own
+#: (DOCUMENT_VLM_MAX_IMAGE_BYTES) to match what its provider accepts inline.
+DEFAULT_MAX_IMAGE_BYTES = 1_400_000
+
+#: (scale, JPEG quality), tried in order until a page fits the byte budget and
+#: the side cap, so each page goes out at the highest resolution allowed.
+#: Resolution decides accuracy on dense scans. Four receipts photographed on
+#: one A4 page, asked one receipt's total (true: 26.00, 13/10/2026): at scale 1
+#: (595 px wide) "20.00, 14/01/2022"; scale 2 and 3 "28.00, 13/10/2026"; scale 4
+#: (2380 px, 1 MB) "26.00, 13/10/2026". A narrow receipt on a landscape A3 page
+#: had its total misread (20.0 for 20.8) in 2 of 3 runs at scale 2.
+_RENDER_LADDER = ((4.0, 85), (3.0, 85), (2.0, 80), (1.5, 80), (1.0, 70))
+
+#: Longest side of a rendered page. Scale 4 on A4 is 3368 px and was accepted;
+#: on A3 it would be 4762 px, beyond what that measurement covers.
+_MAX_PAGE_SIDE_PX = 3400
+
 #: Below this many characters per page, a PDF's text layer is decoration on a
 #: scan rather than the document's actual text. Matches the threshold the
 #: existing PDF parser uses to flag ``needs_ocr`` — one platform, one answer to
@@ -72,10 +94,12 @@ class DocumentPayloadBuilder:
         ocr: OcrService | None = None,
         max_pages: int = 8,
         max_bytes: int = 20 * 1024 * 1024,
+        max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
     ) -> None:
         self._ocr = ocr or OcrService()
         self._max_pages = max(1, max_pages)
         self._max_bytes = max_bytes
+        self._max_image_bytes = max_image_bytes
 
     async def build(
         self,
@@ -142,7 +166,10 @@ class DocumentPayloadBuilder:
         self, filename: str, content: bytes, extension: str
     ) -> PayloadBuildReport:
         media_type = IMAGE_MEDIA_TYPES[extension]
-        image = DocumentImage(data=content, media_type=media_type, page=1)
+        original = DocumentImage(data=content, media_type=media_type, page=1)
+        # The upload is the whole document: if it cannot be re-encoded, send it
+        # as it is and let the provider say what is wrong, rather than send nothing.
+        image = _vlm_ready(original) or original
 
         text, performed = await self._run_ocr(content, extension.lstrip("."))
 
@@ -173,13 +200,23 @@ class DocumentPayloadBuilder:
         per deployment.
         """
         text, page_count = await asyncio.to_thread(self._pdf_text, content)
-        images = await asyncio.to_thread(self._pdf_images, content, self._max_pages)
 
         notes: list[str] = []
         performed = False
         text_source = "pdf_text_layer" if text.strip() else "none"
 
         scanned = len(text.strip()) < _SCANNED_CHARS_PER_PAGE * max(1, page_count)
+        images = await asyncio.to_thread(self._pdf_images, content, self._max_pages)
+        if scanned and images:
+            # A scan's content is the rendered page; its embedded images are only
+            # the layers it was split into (see _render_pages). A PDF with no
+            # images at all is not rendered: a blank page is not a document.
+            images = (
+                await asyncio.to_thread(
+                    self._render_pages, content, self._max_pages, self._max_image_bytes
+                )
+                or images
+            )
         if scanned and images:
             notes.append("pdf text layer is empty or near-empty; treated as scanned")
             ocr_text, performed = await self._run_ocr_many(images)
@@ -243,13 +280,11 @@ class DocumentPayloadBuilder:
 
     @staticmethod
     def _pdf_images(content: bytes, limit: int) -> list[DocumentImage]:
-        """Pull embedded page images out of a PDF, best effort.
+        """Pull embedded images out of a PDF, best effort.
 
-        Embedded images rather than rendered pages: rasterising a PDF needs a
-        renderer this deployment does not ship, and a scanned invoice is
-        virtually always *one full-page image per page*, which is exactly what
-        this recovers. A born-digital PDF returns logos and nothing else — which
-        is why the text layer, not this, is authoritative when both exist.
+        The fallback when pages cannot be rendered, and the images of a
+        born-digital PDF — logos, mostly, which is why the text layer, not
+        this, is authoritative when both exist.
         """
         import io
 
@@ -274,12 +309,68 @@ class DocumentPayloadBuilder:
                     media_type = _media_type_for(name, data)
                     if not data or media_type is None:
                         continue
-                    collected.append(
+                    ready = _vlm_ready(
                         DocumentImage(data=data, media_type=media_type, page=number)
                     )
+                    if ready is not None:
+                        collected.append(ready)
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"PDF image extraction failed: {type(exc).__name__}: {exc}")
         return collected
+
+    @staticmethod
+    def _render_pages(
+        content: bytes, limit: int, max_bytes: int = DEFAULT_MAX_IMAGE_BYTES
+    ) -> list[DocumentImage]:
+        """Each page rendered whole, as one JPEG — the content of a scan.
+
+        A scanner app does not store a page as one picture. CamScanner splits
+        it into a faint 60 KB JPEG background and four or five 1-bit TIFF
+        layers that carry the actual text. Sending the embedded images sent a
+        blank-looking background (the model answered every field null), TIFFs
+        the endpoint refused with HTTP 415, and, with the image cap filled by
+        page 1's layers, never page 2. Rendering composites the layers back into
+        the page a person sees.
+
+        Each page is stepped down the render ladder until it fits the byte
+        budget and the side cap. Returns nothing if no renderer is installed or the PDF cannot
+        be rendered, and the caller falls back to embedded images.
+        """
+        try:
+            import pypdfium2 as pdfium
+        except ImportError:
+            logger.info("pypdfium2 not installed; a scanned PDF is sent as its embedded images")
+            return []
+
+        import io
+
+        rendered: list[DocumentImage] = []
+        document = None
+        try:
+            document = pdfium.PdfDocument(content)
+            for index in range(min(len(document), limit)):
+                page = document[index]
+                data = b""
+                longest = max(page.get_size()) or 1.0
+                for scale, quality in _RENDER_LADDER:
+                    scale = min(scale, _MAX_PAGE_SIDE_PX / longest)
+                    image = page.render(scale=scale).to_pil().convert("RGB")
+                    buffer = io.BytesIO()
+                    image.save(buffer, format="JPEG", quality=quality, optimize=True)
+                    data = buffer.getvalue()
+                    if len(data) <= max_bytes:
+                        break
+                rendered.append(DocumentImage(data=data, media_type="image/jpeg", page=index + 1))
+        except Exception as exc:  # noqa: BLE001 - a PDF we cannot render falls back
+            logger.warning(f"could not render PDF pages ({type(exc).__name__}: {exc})")
+            return []
+        finally:
+            if document is not None:
+                try:
+                    document.close()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(f"closing the rendered PDF failed: {exc}")
+        return rendered
 
     # ── OCR ──────────────────────────────────────────────────────────────────
 
@@ -309,6 +400,33 @@ class DocumentPayloadBuilder:
                     f"[page {image.page}]\n{text}" if image.page else text
                 )
         return "\n\n".join(chunks), performed
+
+
+def _vlm_ready(image: DocumentImage) -> DocumentImage | None:
+    """``image`` in a format a VLM endpoint accepts, or ``None`` if it cannot be.
+
+    TIFF and BMP become PNG; PNG keeps a bilevel fax scan's one bit per pixel,
+    so the re-encoding does not inflate it.
+    """
+    if image.media_type in _VLM_MEDIA_TYPES:
+        return image
+    import io
+
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(image.data)) as opened:
+            frame = (
+                opened
+                if opened.mode in ("1", "L", "LA", "P", "RGB", "RGBA")
+                else opened.convert("RGB")
+            )
+            buffer = io.BytesIO()
+            frame.save(buffer, format="PNG", optimize=True)
+    except Exception as exc:  # noqa: BLE001 - an undecodable image is skipped, not fatal
+        logger.debug(f"could not re-encode {image.media_type} as PNG: {exc}")
+        return None
+    return DocumentImage(data=buffer.getvalue(), media_type="image/png", page=image.page)
 
 
 def _media_type_for(name: str, data: bytes) -> str | None:

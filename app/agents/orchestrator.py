@@ -63,6 +63,7 @@ from app.memory import MemoryManager, get_memory_manager
 from app.ollama_client import get_ollama_client
 from app.retrieval.context_builder import ContextBuilder
 from app.retrieval.retriever import CodeRetriever
+from app.shared.identity import ASSISTANT_IDENTITY
 from app.shared.schemas import ToolCall
 from app.vector_store.base import VectorStore
 
@@ -70,7 +71,8 @@ from app.vector_store.base import VectorStore
 # ── Minimal safe fallback system prompt ──────────────────────────────────────
 _FALLBACK_SYSTEM_PROMPT = (
     "You are Atlas, an AI engineering platform. "
-    "Help the user with their software engineering question clearly and accurately."
+    "Help the user with their software engineering question clearly and accurately.\n\n"
+    + ASSISTANT_IDENTITY
 )
 
 

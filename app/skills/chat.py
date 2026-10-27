@@ -35,9 +35,15 @@ async def select_skills(
     try:
         from app.skills.service import SkillService
 
-        return await SkillService(db).select(
-            user_id, org_id, message, agent_mode, history, picked=picked
-        )
+        # A savepoint, because catching the exception is not enough: a failed
+        # query aborts the session's whole transaction, and the turn's next
+        # query then fails with "current transaction is aborted". With the
+        # skills tables missing (migration 0021 not applied) every chat turn
+        # died that way. Rolling back to the savepoint keeps the session usable.
+        async with db.begin_nested():
+            return await SkillService(db).select(
+                user_id, org_id, message, agent_mode, history, picked=picked
+            )
     except Exception as e:  # noqa: BLE001 — skills must never break a turn
         logger.warning(f"Skill selection failed (continuing without skills): {e}")
         return SkillSelection(message=message)

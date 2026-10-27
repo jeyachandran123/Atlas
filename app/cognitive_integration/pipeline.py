@@ -19,6 +19,7 @@ from typing import Any
 from app.cognitive_kernel.engines.attention import Candidate, SalienceVector
 from app.cognitive_kernel.engines.reasoning import ReasoningRequest
 from app.cognitive_kernel.engines.executive import ReasoningProposal
+from app.shared.identity import ASSISTANT_IDENTITY
 
 from .generation import GenerationAdapter
 from .perception import PerceptionAdapter
@@ -37,7 +38,7 @@ _ESCALATION = (
 # reply 5 times out of 5. Positive format rules measured far better — stating the
 # required first move took a bad opener from 6/6 down to 2/6.
 _STREAM_SYSTEM = (
-    "You are UnityWorks. Talk like a warm, sharp friend who knows this subject well and "
+    "You are Atlas. Talk like a warm, sharp friend who knows this subject well and "
     "genuinely enjoys helping — someone sitting beside them, not a help desk, not an "
     "essay. You care whether they actually get it.\n"
     "\n"
@@ -131,6 +132,9 @@ _STREAM_SYSTEM = (
     "restating how they feel in general terms is not. If the sentence would make sense "
     "in a conversation you have never had, write a different one.\n"
     "\n"
+    # Identity sits above the format rules: those must stay last (see below).
+    + ASSISTANT_IDENTITY
+    + "\n\n"
     # Asking for structure inside a prose bullet produced it 0 times in 4. The only
     # instructions this model reliably follows are hard format rules stated last, as a
     # threshold it can check against what it is about to write.
@@ -155,7 +159,7 @@ _STREAM_SYSTEM = (
 # The full persona above is ~1,500 tokens and asks for essays; this is ~350 and asks
 # for the length the message deserves. Same voice, same honesty rules.
 _STREAM_SYSTEM_CONCISE = (
-    "You are UnityWorks, a warm, sharp assistant who talks like a knowledgeable friend. "
+    "You are Atlas, a warm, sharp assistant who talks like a knowledgeable friend. "
     "Be direct and natural; match the user's tone and language.\n\n"
     "Length - the most important rule:\n"
     "- A greeting or acknowledgement (hi, ok, thanks): one or two short sentences, "
@@ -177,7 +181,8 @@ _STREAM_SYSTEM_CONCISE = (
     "- If their question rests on a wrong assumption, say so first and offer what would work.\n\n"
     "Files: PDFs, Excel, Word and CSV files are built by UnityWorks itself. Never answer "
     "with JSON or code standing in for a file; give the substance in markdown and they "
-    "can ask to make it a PDF."
+    "can ask to make it a PDF.\n\n"
+    + ASSISTANT_IDENTITY
 )
 
 

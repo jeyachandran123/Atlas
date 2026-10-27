@@ -16,6 +16,7 @@ re-derived per provider.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from collections.abc import Mapping
@@ -37,12 +38,19 @@ from app.document_platform.vlm.observability import (
 )
 from app.document_platform.vlm.payload import DocumentPayloadBuilder, PayloadBuildReport
 from app.document_platform.vlm.ports import (
+    DocumentPayload,
     DocumentVLMPort,
     ProviderHealth,
     TokenUsage,
     VLMExtractionRequest,
+    VLMExtractionResult,
 )
 from app.document_platform.vlm.prompts import InvoiceExtractionPromptProvider, PromptProvider
+from app.document_platform.vlm.regions import RegionLocator
+
+#: Receipt units extracted at once. A petty-cash page is four; more than this
+#: queue rather than all hitting the provider's rate limit together.
+_MAX_CONCURRENT_CALLS = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +67,9 @@ class ExtractionOutcome:
     provider: str
     model: str
     processing_time_ms: float
-    data: dict[str, Any] = field(default_factory=dict)
+    data: list[dict[str, Any]] = field(default_factory=list)
+    """One entry per invoice found in the document, in reading order — a scanned
+    page of receipts is one extraction holding several."""
     warnings: tuple[str, ...] = ()
     request_id: str = ""
     prompt_id: str = ""
@@ -89,11 +99,15 @@ class DocumentExtractionPipeline:
         payload_builder: DocumentPayloadBuilder | None = None,
         prompts: PromptProvider | None = None,
         validator: InvoiceSchemaValidator | None = None,
+        locator: RegionLocator | None = None,
     ) -> None:
         self._vlm = vlm
         self._payloads = payload_builder or DocumentPayloadBuilder()
         self._prompts = prompts or InvoiceExtractionPromptProvider()
         self._validator = validator or InvoiceSchemaValidator()
+        self._locator = locator
+        """Splits scanned pages into one unit per receipt. ``None`` sends each
+        document whole, in one call."""
 
     # ── introspection ────────────────────────────────────────────────────────
 
@@ -126,7 +140,7 @@ class DocumentExtractionPipeline:
         request_id: str | None = None,
         prompt_version: str | None = None,
     ) -> ExtractionOutcome:
-        """Extract one invoice, or raise a typed error explaining why not.
+        """Extract every invoice in one document, or raise a typed error explaining why not.
 
         Raises ``UnsupportedDocumentError``, ``DocumentTooLargeError`` or
         ``EmptyDocumentError`` when the input is the problem, a
@@ -147,35 +161,70 @@ class DocumentExtractionPipeline:
                     filename=filename, content=content, declared_mime=declared_mime
                 )
 
-            # 2 — prompt: versioned, built outside the adapter.
+            # 2 — locate: a scanned page becomes one unit per receipt, so a small
+            #     receipt fills its own image (see regions.py). Pixels only — a
+            #     text layer or OCR text describes whole pages, not crops.
+            units: list[DocumentPayload] = [report.payload]
+            if (
+                self._locator is not None
+                and report.payload.has_images
+                and not report.payload.has_text
+            ):
+                with _stage("locate", provider, stages):
+                    located = await self._locator.units(report.payload, correlation_id)
+                units = [
+                    DocumentPayload(
+                        images=unit.images,
+                        filename=filename,
+                        media_type=report.payload.media_type,
+                        page_count=len(unit.images),
+                    )
+                    for unit in located
+                ] or units
+
+            # 3 — prompt: versioned, built outside the adapter.
             with _stage("prompt", provider, stages):
-                prompt = self._prompts.build(report.payload, version=prompt_version)
+                prompts = [self._prompts.build(unit, version=prompt_version) for unit in units]
         except DocumentExtractionError:
             record_extraction("invoice", provider, "input_rejected")
             raise
+        prompt = prompts[0]
 
-        # 3 — the model. The only line in this file that touches a provider,
-        #     and it does so through the port.
-        request = VLMExtractionRequest(
-            payload=report.payload,
-            prompt=prompt,
-            request_id=correlation_id,
-            metadata={
-                "filename": filename,
-                "text_source": report.payload.text_source,
-                "page_count": report.payload.page_count,
-            },
-        )
+        # 4 — the model, one call per unit, concurrently. The only lines in this
+        #     file that touch a provider, and they do so through the port.
+        requests = [
+            VLMExtractionRequest(
+                payload=unit,
+                prompt=unit_prompt,
+                request_id=correlation_id,
+                metadata={
+                    "filename": filename,
+                    "text_source": unit.text_source,
+                    "page_count": unit.page_count,
+                },
+            )
+            for unit, unit_prompt in zip(units, prompts, strict=True)
+        ]
         try:
             with _stage("vlm", provider, stages):
-                result = await self._vlm.extract_document(request)
+                results = await self._extract_all(requests)
         except DocumentVLMError as exc:
             record_extraction("invoice", provider, "provider_error")
             raise exc
+        result = results[0]
 
-        # 4 — validation against the platform's schema.
+        # 5 — validation against the platform's schema.
         with _stage("validation", provider, stages):
-            validation = self._validator.validate(result.structured)
+            structured: Any = result.structured
+            if len(results) > 1:
+                structured = {
+                    "invoices": [
+                        entry
+                        for each in results
+                        for entry in InvoiceSchemaValidator.entries(dict(each.structured))
+                    ]
+                }
+            validation = self._validator.validate_many(structured)
 
         if not validation.valid:
             record_extraction("invoice", provider, "schema_error")
@@ -186,11 +235,11 @@ class DocumentExtractionPipeline:
                 provider=provider,
                 model=result.model,
                 request_id=correlation_id,
-                raw_excerpt=result.raw_text[:1000],
+                raw_excerpt="\n".join(each.raw_text for each in results)[:1000],
             )
 
         warnings = list(validation.warnings)
-        if result.truncated:
+        if any(each.truncated for each in results):
             # A truncated answer is a *fragment* presented as a whole. Saying so
             # is the difference between an invoice with three line items and an
             # invoice that had seven.
@@ -216,21 +265,38 @@ class DocumentExtractionPipeline:
             prompt_id=prompt.prompt_id,
             prompt_version=prompt.version,
             schema_version=validation.schema_version,
-            usage=result.usage,
-            retry_count=result.retry_count,
-            json_repaired=result.repaired,
+            usage=_total_usage([each.usage for each in results]),
+            retry_count=max(each.retry_count for each in results),
+            json_repaired=any(each.repaired for each in results),
             stages=dict(stages),
             document={
                 "filename": filename,
                 "media_type": report.payload.media_type,
                 "page_count": report.payload.page_count,
-                "images_sent": len(report.payload.images),
+                "images_sent": sum(len(unit.images) for unit in units),
                 "text_source": report.payload.text_source,
                 "text_chars": len(report.payload.ocr_text),
                 "ocr_provider": report.ocr_provider,
                 "ocr_performed": report.ocr_performed,
             },
         )
+
+    async def _extract_all(
+        self, requests: list[VLMExtractionRequest]
+    ) -> list[VLMExtractionResult]:
+        """Every unit's call, at most ``_MAX_CONCURRENT_CALLS`` at a time, results
+        in unit order. The first provider error fails the extraction: a document
+        with one receipt silently missing is worse than one that visibly failed."""
+        if len(requests) == 1:
+            return [await self._vlm.extract_document(requests[0])]
+
+        gate = asyncio.Semaphore(_MAX_CONCURRENT_CALLS)
+
+        async def one(request: VLMExtractionRequest) -> VLMExtractionResult:
+            async with gate:
+                return await self._vlm.extract_document(request)
+
+        return list(await asyncio.gather(*(one(request) for request in requests)))
 
     def estimate_cost(self, payload_report: PayloadBuildReport) -> dict[str, Any]:
         """What extracting this document would cost, before it is spent.
@@ -277,6 +343,21 @@ class _stage:
         self._into[self._name] = round(elapsed * 1000.0, 2)
         record_stage(self._name, self._provider, elapsed)
         return False
+
+
+def _total_usage(usages: list[TokenUsage]) -> TokenUsage:
+    """Tokens across every call. A field stays ``None`` if no call reported it —
+    "not reported" must not turn into a zero."""
+
+    def total(values: list[int | None]) -> int | None:
+        reported = [value for value in values if value is not None]
+        return sum(reported) if reported else None
+
+    return TokenUsage(
+        prompt_tokens=total([u.prompt_tokens for u in usages]),
+        completion_tokens=total([u.completion_tokens for u in usages]),
+        total_tokens=total([u.total_tokens for u in usages]),
+    )
 
 
 __all__ = [

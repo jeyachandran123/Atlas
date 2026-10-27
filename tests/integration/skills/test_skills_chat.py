@@ -416,3 +416,35 @@ async def test_workspace_gateway_injects_skills(monkeypatch) -> None:
     assert dict(seen)["question"] == "What is X?"
     assert frames[-1][1]["skills"] == [{"slug": "review-agent", "name": "Review Agent"}]
     assert recorded == [([{"slug": "review-agent", "name": "Review Agent"}], {"turn_id": "t1"})]
+
+
+# ── a failing skill lookup never breaks the turn ─────────────────────────────
+
+
+async def test_a_failing_skill_lookup_leaves_the_session_usable(
+    sk_session, sk_people, monkeypatch
+) -> None:
+    """With the skills tables missing (migration 0021 not applied), the lookup
+    failed, was caught — and still killed every chat turn, because the failed
+    statement left the session's transaction aborted and the turn's next query
+    raised. A failed flush poisons a session the same way on any database."""
+    from sqlalchemy import text
+
+    from app.db.models import Organization
+    from app.skills import chat as skills_chat
+    from app.skills.service import SkillService
+
+    async def broken_select(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        self.db.add(Organization(name=None, slug="broken"))  # NOT NULL violation
+        await self.db.flush()
+
+    monkeypatch.setattr(get_settings(), "enable_skills", True)
+    monkeypatch.setattr(SkillService, "select", broken_select)
+    dev = sk_people["dev"]
+
+    selection = await skills_chat.select_skills(
+        sk_session, user_id=dev.id, org_id=dev.org_id, message="hi"
+    )
+
+    assert selection.message == "hi", "the turn continues without skills"
+    assert (await sk_session.execute(text("SELECT 1"))).scalar() == 1

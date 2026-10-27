@@ -23,14 +23,15 @@ class TestRendering:
     def test_the_prompt_is_pinned_to_a_version(self, prompts, image_payload) -> None:
         prompt = prompts.build(image_payload)
         assert prompt.prompt_id == INVOICE_EXTRACTION_PROMPT_ID
-        assert prompt.version == "1.0.0"
-        assert prompt.pinned == "invoice.extract@1.0.0"
+        assert prompt.version == "2.1.0"
+        assert prompt.pinned == "invoice.extract@2.1.0"
 
     def test_the_system_prompt_forbids_invention(self, prompts, image_payload) -> None:
         """The rule that matters most: a plausible guess is not an answer."""
-        system = prompts.build(image_payload).system.lower()
-        assert "never infer" in system
-        assert "null" in system
+        for version in prompts.versions():
+            system = prompts.build(image_payload, version=version).system.lower()
+            assert "never infer" in system, version
+            assert "a plausible guess is not" in system, version
 
     def test_the_document_text_reaches_the_model(self, prompts, image_payload) -> None:
         prompt = prompts.build(image_payload)
@@ -87,9 +88,9 @@ class TestVersioning:
                 user_template="terse: {schema}{sources}",
             )
         )
-        assert provider.versions() == ("1.0.0", "1.1.0")
+        assert provider.versions() == ("1.0.0", "1.1.0", "2.0.0", "2.1.0")
         assert provider.build(image_payload, version="1.1.0").system == "terse system"
-        assert provider.build(image_payload).version == "1.0.0", "default is unchanged"
+        assert provider.build(image_payload).version == "2.1.0", "default is unchanged"
 
     def test_an_existing_version_cannot_be_edited(self) -> None:
         """Two records pinned to 1.0.0 must have been produced by the same
@@ -110,15 +111,38 @@ class TestVersioning:
         provider.register(
             PromptTemplate(
                 prompt_id=INVOICE_EXTRACTION_PROMPT_ID,
-                version="2.0.0",
-                system="v2",
-                user_template="v2 {schema}{sources}",
+                version="3.0.0",
+                system="v3",
+                user_template="v3 {schema}{sources}",
             )
         )
-        old = provider.build(image_payload, version="1.0.0")
-        new = provider.build(image_payload, version="2.0.0")
+        old = provider.build(image_payload, version="2.0.0")
+        new = provider.build(image_payload, version="3.0.0")
         assert old.system != new.system
-        assert (old.version, new.version) == ("1.0.0", "2.0.0")
+        assert (old.version, new.version) == ("2.0.0", "3.0.0")
+
+
+class TestMultiInvoice:
+    def test_the_default_version_asks_for_a_list_of_invoices(
+        self, prompts, image_payload
+    ) -> None:
+        prompt = prompts.build(image_payload)
+        assert '"invoices": [' in prompt.user
+        assert "several" in prompt.system
+        assert "never merge two receipts" in prompt.system
+
+    def test_version_one_still_asks_for_a_single_object(self, prompts, image_payload) -> None:
+        """A pinned 1.0.0 must render the words it always rendered."""
+        prompt = prompts.build(image_payload, version="1.0.0")
+        assert '"invoices"' not in prompt.user
+        assert "Return a single JSON object and nothing else" in prompt.system
+
+    def test_the_constrained_schema_matches_the_version(self, image_payload) -> None:
+        constrained = InvoiceExtractionPromptProvider(include_json_schema=True)
+        multi = constrained.build(image_payload).response_schema
+        single = constrained.build(image_payload, version="1.0.0").response_schema
+        assert "invoices" in multi["properties"]
+        assert "invoice_number" in single["properties"]
 
 
 class TestConfiguration:
@@ -140,7 +164,7 @@ class TestConfiguration:
     def test_the_provider_describes_itself_for_the_api(self, prompts) -> None:
         described = prompts.describe()
         assert described["prompt_id"] == INVOICE_EXTRACTION_PROMPT_ID
-        assert described["available_versions"] == ["1.0.0"]
+        assert described["available_versions"] == ["1.0.0", "2.0.0", "2.1.0"]
 
 
 class TestSeam:
@@ -184,3 +208,14 @@ class TestPayloadDescription:
 
     def test_a_single_page_is_described_in_the_singular(self, image_payload) -> None:
         assert "1 page image " in InvoiceExtractionPromptProvider().build(image_payload).user
+
+
+class TestSpeedPrompt:
+    def test_it_asks_for_stated_fields_only(self, prompts, image_payload) -> None:
+        prompt = prompts.build(image_payload, version="2.1.0")
+        assert "Leave a field out entirely" in prompt.system
+        assert '"invoices": [' in prompt.user
+
+    def test_it_reads_numeric_dates_day_first(self, prompts, image_payload) -> None:
+        """With thinking off, 2.0.0 read 22-10-26 as 2022-10-22."""
+        assert "22-10-26" in prompts.build(image_payload, version="2.1.0").system

@@ -9,6 +9,7 @@ tell that apart from a real extraction.
 from __future__ import annotations
 
 import io
+import os
 
 import pytest
 
@@ -183,3 +184,96 @@ class TestLimits:
         )
         with pytest.raises(DocumentTooLargeError):
             await DocumentPayloadBuilder(max_bytes=100).build(filename="a.png", content=big)
+
+
+def _image_bytes(fmt: str, size: tuple[int, int], noise: bool = False) -> bytes:
+    from PIL import Image
+
+    image = Image.new("RGB", size, "white")
+    if noise:
+        # Incompressible pixels, so the "scan" is reliably the largest image.
+        image = Image.frombytes("RGB", size, os.urandom(size[0] * size[1] * 3))
+    buffer = io.BytesIO()
+    image.save(buffer, format=fmt)
+    return buffer.getvalue()
+
+
+def scanned_pdf_bytes(pages: int = 2) -> bytes:
+    """A scanner-app PDF: per page, one large scan plus a small overlay image."""
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer)
+    for _ in range(pages):
+        scan = ImageReader(io.BytesIO(_image_bytes("JPEG", (400, 560), noise=True)))
+        overlay = ImageReader(io.BytesIO(_image_bytes("PNG", (20, 20))))
+        pdf.drawImage(scan, 0, 0, width=400, height=560)
+        pdf.drawImage(overlay, 500, 800, width=20, height=20)
+        pdf.showPage()
+    pdf.save()
+    return buffer.getvalue()
+
+
+class TestImagesAProviderAccepts:
+    async def test_a_tiff_upload_is_sent_as_png(self) -> None:
+        """NVIDIA answers HTTP 415 to an image/tiff data URL."""
+        report = await DocumentPayloadBuilder().build(
+            filename="scan.tiff", content=_image_bytes("TIFF", (40, 40))
+        )
+        image = report.payload.images[0]
+        assert image.media_type == "image/png"
+        assert image.data.startswith(b"\x89PNG")
+        assert report.payload.media_type == "image/tiff", "provenance keeps the upload's type"
+
+    async def test_a_bmp_upload_is_sent_as_png(self) -> None:
+        report = await DocumentPayloadBuilder().build(
+            filename="scan.bmp", content=_image_bytes("BMP", (40, 40))
+        )
+        assert report.payload.images[0].media_type == "image/png"
+
+    async def test_an_undecodable_upload_is_still_sent_as_it_is(self) -> None:
+        """The upload is the whole document; dropping it would send nothing."""
+        report = await DocumentPayloadBuilder().build(
+            filename="scan.tiff", content=b"II*\x00 not really"
+        )
+        assert report.payload.images[0].media_type == "image/tiff"
+
+    async def test_a_scanned_pdf_sends_each_page_rendered_not_its_layers(self) -> None:
+        """Sending the embedded layers sent a blank background, refused TIFFs,
+        and — with the image cap filled by page 1 — never page 2."""
+        report = await DocumentPayloadBuilder(ocr=OcrService(StubOcr())).build(
+            filename="receipts.pdf", content=scanned_pdf_bytes(pages=2)
+        )
+        images = report.payload.images
+        assert [image.page for image in images] == [1, 2]
+        assert all(image.media_type == "image/jpeg" for image in images)
+
+    async def test_rendered_pages_fit_the_configured_image_budget(self) -> None:
+        budget = 400_000  # the fixture's scan is incompressible noise
+        report = await DocumentPayloadBuilder(
+            ocr=OcrService(StubOcr()), max_image_bytes=budget
+        ).build(filename="receipts.pdf", content=scanned_pdf_bytes(pages=1))
+        assert report.payload.images[0].size_bytes <= budget
+
+    async def test_a_larger_budget_buys_a_sharper_page(self) -> None:
+        """Resolution decides accuracy: a dense page read right only at ~1 MB."""
+        from PIL import Image
+
+        def width(budget: int) -> int:
+            return Image.open(io.BytesIO(images[budget][0].data)).width
+
+        images = {}
+        for budget in (400_000, 4_000_000):
+            report = await DocumentPayloadBuilder(
+                ocr=OcrService(StubOcr()), max_image_bytes=budget
+            ).build(filename="receipts.pdf", content=scanned_pdf_bytes(pages=1))
+            images[budget] = report.payload.images
+        assert width(4_000_000) > width(400_000)
+
+    async def test_without_a_renderer_the_embedded_images_are_sent(self, monkeypatch) -> None:
+        monkeypatch.setattr(DocumentPayloadBuilder, "_render_pages", staticmethod(lambda *args: []))
+        report = await DocumentPayloadBuilder(ocr=OcrService(StubOcr())).build(
+            filename="receipts.pdf", content=scanned_pdf_bytes(pages=1)
+        )
+        assert len(report.payload.images) == 2, "the scan and its overlay"

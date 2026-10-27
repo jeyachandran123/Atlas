@@ -41,6 +41,11 @@ _MONEY_TOLERANCE = 0.02
 #: the absolute one.
 _MONEY_TOLERANCE_RATIO = 0.005
 
+#: An invoice dated further back than this is flagged for its year to be
+#: checked — claims are submitted within weeks, and a misread year is otherwise
+#: a perfectly valid-looking date.
+_STALE_INVOICE_DAYS = 366
+
 _CURRENCY_SYMBOLS = {
     "€": "EUR",
     "£": "GBP",
@@ -451,7 +456,9 @@ class InvoiceDocument(BaseModel):
             # A single line item emitted unwrapped, or keyed by index.
             values = list(items.values())
             known["line_items"] = values if all(isinstance(v, dict) for v in values) else [items]
-        elif items is not None and not isinstance(items, list):
+        elif not isinstance(items, list) and "line_items" in known:
+            # Includes null — the shape-by-example prompt invites it, and "no
+            # line items" is an answer, not a malformed document.
             known["line_items"] = []
         return known
 
@@ -532,6 +539,39 @@ class InvoiceValidationResult:
         return self.invoice.model_dump() if self.invoice is not None else {}
 
 
+@dataclass(frozen=True, slots=True)
+class InvoiceBatchValidationResult:
+    """The verdict on a document that may hold several invoices.
+
+    One scanned page of petty-cash receipts is one upload and one model call,
+    but four invoices. ``invoices`` are the ones that validated, in document
+    order; ``warnings`` carry each one's own warnings prefixed with its
+    position, plus a note for every entry that was omitted and why.
+    """
+
+    valid: bool
+    invoices: tuple[InvoiceDocument, ...] = ()
+    errors: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    schema_version: str = INVOICE_SCHEMA_VERSION
+
+    @property
+    def data(self) -> list[dict[str, Any]]:
+        return [invoice.model_dump() for invoice in self.invoices]
+
+
+class InvoiceBatch(BaseModel):
+    """The multi-invoice envelope, as a model is asked to emit it. Exists for
+    its JSON Schema; validation goes through ``validate_many``."""
+
+    invoices: list[InvoiceDocument] = Field(default_factory=list)
+
+
+#: Keys a model may put the invoice list under. ``invoices`` is what the prompt
+#: asks for; the others are what models emit when a page is mostly receipts.
+_BATCH_KEYS = ("invoices", "receipts", "documents")
+
+
 def _close_enough(left: float, right: float) -> bool:
     tolerance = max(_MONEY_TOLERANCE, abs(right) * _MONEY_TOLERANCE_RATIO)
     return abs(left - right) <= tolerance
@@ -582,6 +622,70 @@ class InvoiceSchemaValidator:
             valid=True, invoice=invoice, warnings=tuple(self._warnings(invoice))
         )
 
+    def validate_many(self, payload: Any) -> InvoiceBatchValidationResult:
+        """Validate a document that holds one invoice or several.
+
+        Accepts the ``{"invoices": [...]}`` envelope and, unchanged, the single
+        invoice object every earlier prompt version asks for — so the answer
+        is always a list, whichever prompt produced it.
+
+        An entry that fails validation is omitted with a warning as long as at
+        least one other entry passed: a model padding the list with an empty
+        object has not made the three real receipts beside it wrong. When none
+        pass, the whole extraction is invalid.
+        """
+        if not isinstance(payload, dict):
+            return InvoiceBatchValidationResult(
+                valid=False,
+                errors=(
+                    f"model returned {type(payload).__name__}, not a JSON object; "
+                    f"an invoice extraction must be an object",
+                ),
+            )
+
+        entries = self.entries(payload)
+        if not entries:
+            return InvoiceBatchValidationResult(
+                valid=False,
+                errors=(
+                    "the model returned an empty invoice list; the document may not "
+                    "be an invoice, or may not be legible",
+                ),
+            )
+
+        many = len(entries) > 1
+        invoices: list[InvoiceDocument] = []
+        warnings: list[str] = []
+        errors: list[str] = []
+        for position, entry in enumerate(entries, start=1):
+            result = self.validate(entry)
+            label = f"invoice {position}: "
+            if result.valid and result.invoice is not None:
+                invoices.append(result.invoice)
+                warnings.extend(label + warning for warning in result.warnings)
+            else:
+                errors.extend((label if many else "") + error for error in result.errors)
+
+        if not invoices:
+            return InvoiceBatchValidationResult(valid=False, errors=tuple(errors))
+
+        warnings.extend(
+            f"omitted from the result — {error}" for error in errors
+        )
+        return InvoiceBatchValidationResult(
+            valid=True, invoices=tuple(invoices), warnings=tuple(warnings)
+        )
+
+    @staticmethod
+    def entries(payload: dict[str, Any]) -> list[Any]:
+        """The invoice entries in ``payload``: the envelope's list, or the
+        payload itself when it is a single invoice."""
+        for key in _BATCH_KEYS:
+            value = payload.get(key)
+            if isinstance(value, list):
+                return list(value)
+        return [payload]
+
     def _warnings(self, invoice: InvoiceDocument) -> list[str]:
         found: list[str] = []
 
@@ -604,6 +708,20 @@ class InvoiceSchemaValidator:
             if not _close_enough(line_sum, totals.subtotal):
                 found.append(
                     f"line items sum to {line_sum:.2f} but subtotal is {totals.subtotal:.2f}"
+                )
+        elif (
+            invoice.line_items
+            and line_sum
+            and totals.grand_total is not None
+            and not any((totals.tax_total, totals.shipping_total, totals.discount_total))
+        ):
+            # Receipts usually print only a total. Without this check a misread
+            # total — 20.0 for a printed 20.80 whose lines sum to 20.80 — passed
+            # with no warning at all.
+            if not _close_enough(line_sum, totals.grand_total):
+                found.append(
+                    f"line items sum to {line_sum:.2f} but grand total is "
+                    f"{totals.grand_total:.2f}"
                 )
 
         if totals.subtotal is not None and totals.grand_total is not None:
@@ -645,6 +763,22 @@ class InvoiceSchemaValidator:
             except ValueError:
                 pass  # unparsed dates are already preserved verbatim; not an error
 
+        if invoice.invoice_date:
+            try:
+                issued = date.fromisoformat(invoice.invoice_date)
+            except ValueError:
+                issued = None
+            # A misread year looks like a valid date: a receipt printed
+            # 22/10/2026 in a font whose 6 resembles a 0 came back 2020-10-22.
+            # The check is on plausibility only; the date is returned as read.
+            today = date.today()
+            if issued is not None and issued > today:
+                found.append(f"invoice date {issued.isoformat()} is in the future; check the year")
+            elif issued is not None and (today - issued).days > _STALE_INVOICE_DAYS:
+                found.append(
+                    f"invoice date {issued.isoformat()} is more than a year old; check the year"
+                )
+
         return found
 
     @staticmethod
@@ -656,9 +790,16 @@ class InvoiceSchemaValidator:
         """
         return InvoiceDocument.model_json_schema()
 
+    @staticmethod
+    def batch_json_schema() -> dict[str, Any]:
+        """JSON Schema of the ``{"invoices": [...]}`` envelope."""
+        return InvoiceBatch.model_json_schema()
+
 
 __all__ = [
     "INVOICE_SCHEMA_VERSION",
+    "InvoiceBatch",
+    "InvoiceBatchValidationResult",
     "InvoiceDocument",
     "InvoiceLineItem",
     "InvoiceParty",

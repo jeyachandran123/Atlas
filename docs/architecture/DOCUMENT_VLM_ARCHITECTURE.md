@@ -233,28 +233,30 @@ Auth is the platform's existing dependency: `Authorization: Bearer <jwt>` or
   "provider": "nvidia",
   "model": "nvidia/llama-3.1-nemotron-nano-vl-8b-v1",
   "processingTime": 4182.55,
-  "data": {
-    "document_type": "invoice",
-    "invoice_number": "INV-2026-0042",
-    "purchase_order_number": "PO-9001",
-    "invoice_date": "2026-01-15",
-    "due_date": "2026-02-14",
-    "currency": "SGD",
-    "supplier": { "name": "...", "address": null, "tax_id": "...", "registration_number": null, "email": null, "phone": null },
-    "customer": { "name": "...", "...": null },
-    "line_items": [
-      { "line_number": 1, "description": "Steel bracket", "product_code": null,
-        "quantity": 10, "unit": null, "unit_price": 25.0, "discount": null,
-        "tax_rate": null, "tax_amount": null, "amount": 250.0 }
-    ],
-    "totals": { "subtotal": 280.0, "discount_total": null, "tax_total": 25.2,
-                "shipping_total": null, "grand_total": 305.2,
-                "amount_paid": null, "amount_due": 305.2 },
-    "payment_terms": "Net 30", "payment_reference": null,
-    "bank_details": null, "notes": null,
-    "additional_fields": {}
-  },
-  "requestId": "0f2c…", "promptVersion": "1.0.0", "schemaVersion": "1.0.0",
+  "data": [
+    {
+      "document_type": "invoice",
+      "invoice_number": "INV-2026-0042",
+      "purchase_order_number": "PO-9001",
+      "invoice_date": "2026-01-15",
+      "due_date": "2026-02-14",
+      "currency": "SGD",
+      "supplier": { "name": "...", "address": null, "tax_id": "...", "registration_number": null, "email": null, "phone": null },
+      "customer": { "name": "...", "...": null },
+      "line_items": [
+        { "line_number": 1, "description": "Steel bracket", "product_code": null,
+          "quantity": 10, "unit": null, "unit_price": 25.0, "discount": null,
+          "tax_rate": null, "tax_amount": null, "amount": 250.0 }
+      ],
+      "totals": { "subtotal": 280.0, "discount_total": null, "tax_total": 25.2,
+                  "shipping_total": null, "grand_total": 305.2,
+                  "amount_paid": null, "amount_due": 305.2 },
+      "payment_terms": "Net 30", "payment_reference": null,
+      "bank_details": null, "notes": null,
+      "additional_fields": {}
+    }
+  ],
+  "requestId": "0f2c…", "promptVersion": "2.1.0", "schemaVersion": "1.0.0",
   "warnings": [],
   "usage": { "promptTokens": 1200, "completionTokens": 180, "totalTokens": 1380 },
   "retryCount": 0, "jsonRepaired": false,
@@ -264,6 +266,14 @@ Auth is the platform's existing dependency: `Authorization: Bearer <jwt>` or
                 "textChars": 1840, "ocrProvider": "null", "ocrPerformed": false }
 }
 ```
+
+`data` is always an array — one object per invoice or receipt found in the upload, in reading
+order — so a scanned page of four petty-cash receipts and a single-invoice PDF have the same
+shape. Prompt `2.0.0` and later ask the model for `{"invoices": [...]}`; an older prompt version that
+answers with one invoice object is returned as a one-element array. An entry that fails
+validation beside others that pass is omitted with a warning; per-invoice warnings are
+prefixed `invoice N:`. The envelope fields (`usage`, `stages`, `document`, …) describe the
+one model call and are not repeated per invoice.
 
 `processingTime` is milliseconds, end to end. `stages` breaks it down so a slow extraction
 can be attributed to OCR, the model, or validation without a profiler.

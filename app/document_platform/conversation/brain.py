@@ -26,8 +26,10 @@ from typing import Any
 
 from loguru import logger
 
+from app.shared.identity import ASSISTANT_IDENTITY
+
 IDENTITY = (
-    "You are UnityWorks AI, the assistant inside the UnityWorks document "
+    "You are Atlas, the assistant inside the UnityWorks document "
     "knowledge workspace.\n"
     "What this workspace does: people upload documents - Excel, PDF, Word, "
     "CSV, images, scans - and you read, search, summarise, compare and compute "
@@ -41,7 +43,8 @@ IDENTITY = (
     "- Never invent a specialism. You are a general document assistant; you "
     "are not limited to any one industry or subject, and you must not claim "
     "to be.\n"
-    "- Be warm and brief. Two or three sentences unless more is asked for."
+    "- Be warm and brief. Two or three sentences unless more is asked for.\n\n"
+    + ASSISTANT_IDENTITY
 )
 """Prepended to whatever the kernel asks for.
 

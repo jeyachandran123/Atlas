@@ -26,6 +26,7 @@ from app.document_platform.processing.ocr import (
 from app.document_platform.vlm.payload import DocumentPayloadBuilder
 from app.document_platform.vlm.pipeline import DocumentExtractionPipeline
 from app.document_platform.vlm.prompts import InvoiceExtractionPromptProvider
+from app.document_platform.vlm.regions import RegionLocator
 
 
 def build_ocr_service(settings: Settings) -> OcrService:
@@ -56,12 +57,19 @@ def build_extraction_pipeline(
 ) -> DocumentExtractionPipeline:
     """Assemble the pipeline. ``vlm`` is injectable so tests never build a client."""
     cfg = settings or get_settings()
+    bound = vlm if vlm is not None else get_document_vlm(settings=cfg)
     return DocumentExtractionPipeline(
-        vlm if vlm is not None else get_document_vlm(settings=cfg),
+        bound,
+        locator=(
+            RegionLocator(bound, max_image_bytes=cfg.document_vlm_max_image_bytes)
+            if cfg.document_vlm_split_receipts
+            else None
+        ),
         payload_builder=DocumentPayloadBuilder(
             ocr=build_ocr_service(cfg),
             max_pages=cfg.document_vlm_max_pages,
             max_bytes=cfg.document_vlm_max_file_size_mb * 1024 * 1024,
+            max_image_bytes=cfg.document_vlm_max_image_bytes,
         ),
         prompts=build_prompt_provider(cfg),
     )

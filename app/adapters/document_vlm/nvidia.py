@@ -39,6 +39,7 @@ from app.document_platform.vlm.ports import (
     TokenUsage,
     VLMExtractionRequest,
 )
+from app.llm.profiles import thinking_kwarg
 
 IMAGE_FORMAT_URL = "image_url"
 """OpenAI-compatible ``{"type": "image_url", "image_url": {"url": "data:…"}}``."""
@@ -101,6 +102,12 @@ class NvidiaDocumentVLMAdapter(HttpDocumentVLMAdapter):
             "max_tokens": prompt.max_output_tokens,
             "stream": False,
         }
+        thinking = str(self._config.extra.get("thinking", "default"))
+        switch = thinking_kwarg(self._config.model)
+        if thinking in ("on", "off") and switch:
+            # A thinking VLM spent ~87% of an extraction's tokens reasoning; the
+            # switch is per family and a wrong name is silently ignored.
+            body["chat_template_kwargs"] = {switch: thinking == "on"}
         if prompt.response_schema is not None:
             # Honoured by endpoints that support constrained decoding and
             # ignored by those that do not — either way the platform validates.
@@ -362,6 +369,7 @@ def build_nvidia_adapter(settings: Any, **kwargs: Any) -> NvidiaDocumentVLMAdapt
             "max_images_per_request": getattr(
                 settings, "nvidia_max_images_per_request", DEFAULT_MAX_IMAGES
             ),
+            "thinking": getattr(settings, "nvidia_vlm_thinking", "default"),
             "price_per_million_input_tokens": getattr(
                 settings, "nvidia_price_per_million_input_tokens", 0.0
             ),
