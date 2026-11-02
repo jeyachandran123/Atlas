@@ -318,6 +318,7 @@ class ConversationRepository:
         agent_used: Optional[str] = None,
         tokens_used: int = 0,
         latency_ms: Optional[int] = None,
+        message_id: Optional[str] = None,
     ) -> Message:
         msg = Message(
             conversation_id=conversation_id,
@@ -327,6 +328,8 @@ class ConversationRepository:
             tokens_used=tokens_used,
             latency_ms=latency_ms,
         )
+        if message_id:
+            msg.id = message_id
         self.session.add(msg)
         await self.session.execute(
             update(Conversation)

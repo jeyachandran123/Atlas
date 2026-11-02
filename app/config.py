@@ -104,6 +104,12 @@ class Settings(BaseSettings):
     # ── LLM Provider ─────────────────────────────────────────────────────────────
     llm_provider: Literal["ollama", "nvidia"] = "nvidia"
 
+    # ── Voice agent (Gemini Live) ────────────────────────────────────────────────
+    # Empty key = voice is off: the composer hides the button, nothing else changes.
+    gemini_api_key: SecretStr = SecretStr("")
+    gemini_live_model: str = "gemini-3.8-live"
+    gemini_live_voice: str = "Sulafat"  # warm female voice; the owner asked for a female voice
+
     # ── NVIDIA ───────────────────────────────────────────────────────────────────
     nvidia_api_key: SecretStr = SecretStr("")
     # The vision stack carries its own NVIDIA key; the same credential in
