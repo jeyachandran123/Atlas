@@ -2,6 +2,7 @@
 
     GET  /chat/voice/config   → is voice on, and its session limits
     POST /chat/voice/session  → a short-lived token for one Gemini Live session
+    POST /chat/voice/search   → run a web search the voice model asked for
     POST /chat/voice/turns    → save finished turns as normal chat messages
 
 (No `from __future__ import annotations`: FastAPI must resolve real annotation objects.)
@@ -24,6 +25,7 @@ from app.documents.service import get_document_service
 from app.rate_limit import limiter
 from app.redis_client import push_session_message
 from app.voice.persona import MAX_DOCUMENT_CHARS, build_system_instruction
+from app.voice.search import TOOL_DECLARATION, voice_search
 from app.voice.service import (
     IDLE_TIMEOUT_SECONDS,
     MAX_SESSION_SECONDS,
@@ -32,6 +34,7 @@ from app.voice.service import (
     mint_live_token,
     voice_enabled,
 )
+from app.web_search.service import web_search_available
 
 router = APIRouter(prefix="/chat/voice", tags=["Voice"])
 
@@ -46,6 +49,10 @@ class SessionIn(BaseModel):
     conversation_id: str | None = None
     # Set when reconnecting a dropped session, so it continues with its context.
     resume_handle: str | None = Field(default=None, max_length=4096)
+
+
+class SearchIn(BaseModel):
+    query: str = Field(min_length=1, max_length=500)
 
 
 class TurnIn(BaseModel):
@@ -111,9 +118,12 @@ async def start_session(
             raise HTTPException(404, "Conversation not found")
         history, documents = await _context(db, body.conversation_id)
 
+    can_search = web_search_available()
     try:
         live = await mint_live_token(
-            build_system_instruction(history, documents), body.resume_handle
+            build_system_instruction(history, documents, can_search=can_search),
+            body.resume_handle,
+            tools=[TOOL_DECLARATION] if can_search else None,
         )
     except VoiceNotConfigured as exc:
         raise HTTPException(503, "voice_not_configured") from exc
@@ -128,6 +138,13 @@ async def start_session(
         "websocket_url": live.websocket_url,
         "expires_at": live.expires_at,
     }
+
+
+@router.post("/search")
+@limiter.limit("30/minute")
+async def search(request: Request, body: SearchIn, current_user: DevDep) -> dict:
+    """Run the web search the voice model asked for. Always a result, never an error."""
+    return await voice_search(body.query)
 
 
 @router.post("/turns")

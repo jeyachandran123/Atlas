@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 
 import httpx
 import pytest
@@ -12,11 +13,28 @@ from app.config import get_settings
 from app.shared.identity import ASSISTANT_IDENTITY
 from app.voice import service
 from app.voice.persona import MAX_DOCUMENT_CHARS, MAX_HISTORY_CHARS, build_system_instruction
+from app.voice.search import TOOL_DECLARATION
 
 
 class TestSystemInstruction:
     def test_it_says_who_atlas_is(self) -> None:
         assert ASSISTANT_IDENTITY in build_system_instruction([], "")
+
+    def test_it_starts_in_tanglish_but_may_follow_them(self) -> None:
+        text = build_system_instruction([], "")
+        assert "Start in Tanglish" in text
+        assert "follow them" in text
+
+    def test_with_search_it_knows_the_date_and_when_to_search(self) -> None:
+        text = build_system_instruction([], "", can_search=True, today=date(2026, 11, 3))
+        assert "Today is Tuesday, 3 November 2026" in text
+        assert "call web_search" in text
+        assert "files attached" in text
+
+    def test_without_search_it_sends_them_to_typed_chat(self) -> None:
+        text = build_system_instruction([], "")
+        assert "web_search" not in text
+        assert "Searching the web" in text
 
     def test_the_chat_so_far_is_included_in_order(self) -> None:
         text = build_system_instruction(
@@ -87,6 +105,22 @@ class TestMintToken:
         assert "contextWindowCompression" in setup
         detection = setup["realtimeInputConfig"]["automaticActivityDetection"]
         assert detection["startOfSpeechSensitivity"] == "START_SENSITIVITY_LOW"
+
+    async def test_tools_are_locked_into_the_token_only_when_given(self, monkeypatch) -> None:
+        _settings(monkeypatch)
+        bodies: list[dict] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            bodies.append(json.loads(request.content))
+            return httpx.Response(200, json={"name": "auth_tokens/abc"})
+
+        _transport(monkeypatch, handler)
+        await service.mint_live_token("x", tools=[TOOL_DECLARATION])
+        await service.mint_live_token("x")
+        assert bodies[0]["bidiGenerateContentSetup"]["tools"] == [
+            {"functionDeclarations": [TOOL_DECLARATION]}
+        ]
+        assert "tools" not in bodies[1]["bidiGenerateContentSetup"]
 
     async def test_a_resume_handle_is_locked_into_the_new_token(self, monkeypatch) -> None:
         """Sent only by the client, a handle silently starts a new session."""

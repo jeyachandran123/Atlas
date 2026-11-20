@@ -11,6 +11,7 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.db.models import Conversation, Message
 from app.voice import service
+from app.voice.search import TOOL_DECLARATION
 
 
 def turn(role: str, text: str, turn_id: str | None = None) -> dict:
@@ -29,16 +30,21 @@ def memory(monkeypatch) -> list[tuple]:
 
 
 handles: list[str | None] = []
+tools_seen: list[list[dict] | None] = []
 
 
 @pytest.fixture
 def minted(monkeypatch) -> list[str]:
     instructions: list[str] = []
     handles.clear()
+    tools_seen.clear()
 
-    async def mint(system_instruction: str, resume_handle: str | None = None) -> service.LiveToken:
+    async def mint(
+        system_instruction: str, resume_handle: str | None = None, tools: list[dict] | None = None
+    ) -> service.LiveToken:
         instructions.append(system_instruction)
         handles.append(resume_handle)
+        tools_seen.append(tools)
         return service.LiveToken(
             token="auth_tokens/abc",
             model="models/gemini-test-live",
@@ -110,6 +116,19 @@ class TestSession:
         assert response.status_code == 200
         assert handles == ["h-1"]
 
+    async def test_the_search_tool_comes_with_web_search(
+        self, sk_client, auth, minted, monkeypatch
+    ) -> None:
+        for available in (True, False):
+            monkeypatch.setattr(
+                "app.api.v1.voice.router.web_search_available", lambda on=available: on
+            )
+            await sk_client.post("/api/v1/chat/voice/session", json={}, headers=auth("dev"))
+        assert tools_seen[0] == [TOOL_DECLARATION]
+        assert "call web_search" in minted[0]
+        assert tools_seen[1] is None
+        assert "web_search" not in minted[1]
+
     async def test_someone_elses_chat_is_not_found(
         self, sk_client, auth, sk_people, sk_session, minted
     ) -> None:
@@ -129,6 +148,27 @@ class TestSession:
         )
         assert response.status_code == 503
         assert "voice_not_configured" in response.text
+
+
+class TestSearch:
+    async def test_the_model_query_is_searched(self, sk_client, auth, monkeypatch) -> None:
+        asked: list[str] = []
+
+        async def fake(query: str) -> dict:
+            asked.append(query)
+            return {"found": True, "note": "n", "results": []}
+
+        monkeypatch.setattr("app.api.v1.voice.router.voice_search", fake)
+        response = await sk_client.post(
+            "/api/v1/chat/voice/search", json={"query": "current CM of Tamil Nadu"},
+            headers=auth("dev"),
+        )
+        assert response.status_code == 200
+        assert asked == ["current CM of Tamil Nadu"]
+
+    async def test_signing_in_is_required(self, sk_client) -> None:
+        response = await sk_client.post("/api/v1/chat/voice/search", json={"query": "x"})
+        assert response.status_code in (401, 403)
 
 
 class TestTurns:

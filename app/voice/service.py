@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import httpx
 from loguru import logger
@@ -64,7 +65,11 @@ def _timestamp(moment: datetime) -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-async def mint_live_token(system_instruction: str, resume_handle: str | None = None) -> LiveToken:
+async def mint_live_token(
+    system_instruction: str,
+    resume_handle: str | None = None,
+    tools: list[dict] | None = None,
+) -> LiveToken:
     """One locked session token, or a typed error. Never exposes the key.
 
     Each reconnect gets a fresh token with the resume handle locked inside it.
@@ -81,7 +86,7 @@ async def mint_live_token(system_instruction: str, resume_handle: str | None = N
     model = f"models/{cfg.gemini_live_model}"
     now = datetime.now(UTC)
     expires = now + timedelta(seconds=MAX_SESSION_SECONDS + _TOKEN_GRACE_SECONDS)
-    body = {
+    body: dict[str, Any] = {
         "uses": 1,
         "expireTime": _timestamp(expires),
         "newSessionExpireTime": _timestamp(now + timedelta(seconds=_START_WINDOW_SECONDS)),
@@ -111,6 +116,9 @@ async def mint_live_token(system_instruction: str, resume_handle: str | None = N
             },
         },
     }
+    if tools:
+        # The browser runs these and returns the results; the model decides when.
+        body["bidiGenerateContentSetup"]["tools"] = [{"functionDeclarations": tools}]
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
